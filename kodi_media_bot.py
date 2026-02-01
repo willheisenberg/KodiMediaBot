@@ -3,6 +3,7 @@ from urllib.parse import unquote
 from pytube import Playlist, YouTube
 from telegram.ext import Application, MessageHandler, filters, CallbackQueryHandler, CommandHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import RetryAfter, TimedOut
 
 TOKEN = os.environ["TG_TOKEN"]
 KODI_URL = f"http://{os.environ.get('HOST_IP', '172.17.0.1')}:8080/jsonrpc"
@@ -47,6 +48,41 @@ PANEL_MSG_ID = {}
 LIST_DIRTY = False
 HIFI_STATUS_CACHE = "⚪ Hifi: Unknown"
 HIFI_STATUS_TS = 0.0
+TG_RATE_LOCK = asyncio.Lock()
+TG_LAST_TS = 0.0
+TG_MIN_INTERVAL = 1.1
+TG_MAX_RETRIES = 3
+
+# Serialize Telegram API calls to avoid send/edit/delete collisions.
+async def telegram_request(call, *args, **kwargs):
+    global TG_LAST_TS
+    for _ in range(TG_MAX_RETRIES):
+        async with TG_RATE_LOCK:
+            now = time.time()
+            wait = TG_MIN_INTERVAL - (now - TG_LAST_TS)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            try:
+                res = await call(*args, **kwargs)
+                TG_LAST_TS = time.time()
+                return res
+            except RetryAfter as e:
+                TG_LAST_TS = time.time()
+                await asyncio.sleep(e.retry_after)
+            except TimedOut:
+                TG_LAST_TS = time.time()
+                await asyncio.sleep(1.5)
+            except Exception:
+                TG_LAST_TS = time.time()
+                raise
+    async with TG_RATE_LOCK:
+        now = time.time()
+        wait = TG_MIN_INTERVAL - (now - TG_LAST_TS)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        res = await call(*args, **kwargs)
+        TG_LAST_TS = time.time()
+        return res
 
 # Mark the playlist display as needing refresh.
 def mark_list_dirty():
@@ -168,7 +204,7 @@ def get_hifi_power_status():
 async def send_and_track(ctx, chat_id, text, **kwargs):
     if "disable_web_page_preview" not in kwargs:
         kwargs["disable_web_page_preview"] = True
-    msg = await ctx.bot.send_message(chat_id=chat_id, text=text, **kwargs)
+    msg = await telegram_request(ctx.bot.send_message, chat_id=chat_id, text=text, **kwargs)
     if chat_id not in FIRST_BOT_ID:
         FIRST_BOT_ID[chat_id] = msg.message_id
     PREV_BOT_ID[chat_id] = LAST_BOT_ID.get(chat_id)
@@ -216,7 +252,8 @@ async def update_list_message(ctx, chat_id):
         LIST_MSG_ID[chat_id] = list_msg.message_id
         return
     try:
-        await ctx.bot.edit_message_text(
+        await telegram_request(
+            ctx.bot.edit_message_text,
             chat_id=chat_id,
             message_id=msg_id,
             text=build_list_text(),
@@ -307,7 +344,8 @@ async def update_now_playing_message(ctx, chat_id):
         PANEL_MSG_ID[chat_id] = panel_msg.message_id
         return
     try:
-        await ctx.bot.edit_message_text(
+        await telegram_request(
+            ctx.bot.edit_message_text,
             chat_id=chat_id,
             message_id=msg_id,
             text=f"🎛 Kodi Remote - Current track:\n{text}\n{hifi_text}",
@@ -398,7 +436,7 @@ async def _cleanup_after_delay(ctx, chat_id, start_id, end_id, start_inclusive):
                     continue
                 if mid == PANEL_MSG_ID.get(chat_id):
                     continue
-                await ctx.bot.delete_message(chat_id=chat_id, message_id=mid)
+                await telegram_request(ctx.bot.delete_message, chat_id=chat_id, message_id=mid)
             except Exception as e:
                 print(f"DELETE FAIL chat_id={chat_id} message_id={mid} err={e}", flush=True)
     LAST_CLEANUP_ID[chat_id] = end_id
