@@ -721,6 +721,16 @@ def play_index(i):
     mark_list_dirty()
     play_item(item)
 
+# Check if the requested index is already playing or starting.
+def is_requested_track_already_playing(i):
+    with LOCK:
+        if DISPLAY_INDEX is None or i != DISPLAY_INDEX:
+            return False
+        starting_until = STARTING_UNTIL
+    if starting_until and time.time() < starting_until:
+        return True
+    return bool(get_active_players())
+
 # Go back to the previous queue item.
 def back_queue():
     global CURRENT_INDEX, DISPLAY_INDEX, NEXT_INDEX, AUTOPLAY_ENABLED, START_LATCH_UNTIL
@@ -944,8 +954,12 @@ async def handle_command(update, ctx):
         sent = True
 
     elif cmd == "/play" and len(txt) > 1 and txt[1].isdigit():
-        play_index(int(txt[1]) - 1)
-        await send_and_track(ctx, chat_id, f"▶ Playing track {txt[1]}.")
+        i = int(txt[1]) - 1
+        if is_requested_track_already_playing(i):
+            await send_and_track(ctx, chat_id, "▶ This track is already playing.")
+        else:
+            play_index(i)
+            await send_and_track(ctx, chat_id, f"▶ Playing track {txt[1]}.")
         sent = True
 
     elif cmd == "/list":
@@ -986,8 +1000,12 @@ async def handle_text(update, ctx):
     if ctx.user_data.get("await_play_index"):
         ctx.user_data["await_play_index"] = False
         if txt.isdigit():
-            play_index(int(txt) - 1)
-            await send_and_track(ctx, chat_id, f"▶ Playing track {txt}.")
+            i = int(txt) - 1
+            if is_requested_track_already_playing(i):
+                await send_and_track(ctx, chat_id, "▶ Dieser Track läuft bereits.")
+            else:
+                play_index(i)
+                await send_and_track(ctx, chat_id, f"▶ Playing track {txt}.")
         else:
             await send_and_track(ctx, chat_id, "Please enter a number only.")
         sent = True
