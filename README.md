@@ -1,4 +1,4 @@
-# PartyQueue Bot (Docker)
+# Kodi Mdia Bot for Telegram
 
 This bot controls Kodi and a CEC device (HiFi/TV) via Telegram.
 
