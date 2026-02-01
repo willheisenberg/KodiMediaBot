@@ -9,7 +9,8 @@ RUN python -m pip install --upgrade pip
 RUN pip install --no-cache-dir \
     python-telegram-bot \
     requests \
-    pytube
+    pytube \
+    websockets
 
 COPY kodi_media_bot.py /kodi_media_bot.py
 

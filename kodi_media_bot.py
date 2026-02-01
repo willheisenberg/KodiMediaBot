@@ -1,12 +1,16 @@
-import os, re, threading, time, requests, asyncio, subprocess, html
+import os, re, threading, time, requests, asyncio, subprocess, html, json
 from urllib.parse import unquote
 from pytube import Playlist, YouTube
 from telegram.ext import Application, MessageHandler, filters, CallbackQueryHandler, CommandHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import RetryAfter, TimedOut
+import websockets
 
 TOKEN = os.environ["TG_TOKEN"]
-KODI_URL = f"http://{os.environ.get('HOST_IP', '172.17.0.1')}:8080/jsonrpc"
+KODI_HOST = os.environ["KODI_HOST"]
+KODI_PORT = os.environ["KODI_PORT"]
+KODI_WS_PORT = os.environ["KODI_WS_PORT"]
+KODI_URL = f"http://{KODI_HOST}:{KODI_PORT}/jsonrpc"
 AUTH = (os.environ["KODI_USER"], os.environ["KODI_PASS"])
 STARTUP_CHAT_ID = -1003641420817
 CEC_HOST = os.environ.get("CEC_HOST") or os.environ.get("HOST_IP", "172.17.0.1")
@@ -52,6 +56,20 @@ TG_RATE_LOCK = asyncio.Lock()
 TG_LAST_TS = 0.0
 TG_MIN_INTERVAL = 1.1
 TG_MAX_RETRIES = 3
+LAST_PROGRESS_TS = 0.0
+LAST_PROGRESS_TIME = None
+LAST_PROGRESS_TOTAL = None
+LAST_PROGRESS_INDEX = None
+RESUME_ATTEMPTS = {}
+RESUME_STALE_SEC = 12
+RESUME_MAX_ATTEMPTS = 2
+RESUME_MIN_REMAINING_SEC = 10
+RESUME_SEEK_WAIT_SEC = 20
+EXTERNAL_PLAYBACK = False
+BOT_STARTING_UNTIL = 0.0
+KODI_WS_URL = None
+APP_INSTANCE = None
+MAIN_LOOP = None
 
 # Serialize Telegram API calls to avoid send/edit/delete collisions.
 async def telegram_request(call, *args, **kwargs):
@@ -89,6 +107,26 @@ def mark_list_dirty():
     global LIST_DIRTY
     LIST_DIRTY = True
 
+# Clear bot playback state without stopping Kodi playback.
+def clear_bot_playback_state():
+    global AUTOPLAY_ENABLED, CURRENT_INDEX, DISPLAY_INDEX, EXTERNAL_PLAYBACK
+    with LOCK:
+        AUTOPLAY_ENABLED = False
+        CURRENT_INDEX = None
+        DISPLAY_INDEX = None
+        EXTERNAL_PLAYBACK = True
+        RESUME_ATTEMPTS.clear()
+    mark_list_dirty()
+
+# Refresh now-playing panel from non-async contexts.
+def schedule_now_playing_refresh():
+    if APP_INSTANCE is None or MAIN_LOOP is None:
+        return
+    asyncio.run_coroutine_threadsafe(
+        update_now_playing_message(APP_INSTANCE, STARTUP_CHAT_ID),
+        MAIN_LOOP,
+    )
+
 # Build the inline keyboard control panel markup.
 def control_panel():
     return InlineKeyboardMarkup([
@@ -123,6 +161,11 @@ def kodi_call(method: str, params: dict | None = None):
     if params:
         payload["params"] = params
     return requests.post(KODI_URL, auth=AUTH, json=payload, timeout=5).json()
+
+# Mark a short window where bot-initiated playback is expected.
+def mark_bot_starting():
+    global BOT_STARTING_UNTIL
+    BOT_STARTING_UNTIL = time.time() + 6
 
 # Return the first active Kodi player, if any.
 def get_active_player():
@@ -278,18 +321,33 @@ def format_kodi_time(t):
         return f"{h:d}:{m:02d}:{s:02d}"
     return f"{m:02d}:{s:02d}"
 
+# Convert Kodi time dict into total seconds.
+def kodi_time_seconds(t):
+    if not t:
+        return None
+    return t.get("hours", 0) * 3600 + t.get("minutes", 0) * 60 + t.get("seconds", 0)
+
+# Normalize a title for loose comparison.
+def normalize_title(s):
+    if not s:
+        return ""
+    return re.sub(r"\s+", " ", s).strip().casefold()
+
 # Assemble the now-playing display text.
 def get_now_playing_text():
+    global LAST_PROGRESS_TS, LAST_PROGRESS_TIME, LAST_PROGRESS_TOTAL, LAST_PROGRESS_INDEX, EXTERNAL_PLAYBACK
+    global AUTOPLAY_ENABLED, CURRENT_INDEX, DISPLAY_INDEX
     name = None
     link = None
     with LOCK:
-        if DISPLAY_INDEX is not None and 0 <= DISPLAY_INDEX < len(QUEUE):
+        if not EXTERNAL_PLAYBACK and DISPLAY_INDEX is not None and 0 <= DISPLAY_INDEX < len(QUEUE):
             it = QUEUE[DISPLAY_INDEX]
             name = it.get("title") or None
             link = it.get("link")
 
     players = get_active_players()
     if not players:
+        EXTERNAL_PLAYBACK = False
         if name:
             safe_name = html.escape(name, quote=False)
             if link:
@@ -298,9 +356,13 @@ def get_now_playing_text():
             return f"▶ {safe_name}"
         return "⏸ Nothing playing"
 
-    pid = players[0].get("playerid")
+    player = players[0]
+    pid = player.get("playerid")
     if pid is None:
+        EXTERNAL_PLAYBACK = False
         return "⏸ Nothing playing"
+
+    # External playback is now detected via Kodi WebSocket events.
 
     props = kodi_call(
         "Player.GetProperties",
@@ -322,6 +384,10 @@ def get_now_playing_text():
 
     cur = format_kodi_time(props.get("time"))
     total = format_kodi_time(props.get("totaltime"))
+    LAST_PROGRESS_TS = time.time()
+    LAST_PROGRESS_TIME = props.get("time")
+    LAST_PROGRESS_TOTAL = props.get("totaltime")
+    LAST_PROGRESS_INDEX = DISPLAY_INDEX
     safe_name = html.escape(name, quote=False)
     if link:
         safe_link = html.escape(link, quote=True)
@@ -368,6 +434,29 @@ async def refresh_hifi_status_cache(force=False):
         HIFI_STATUS_CACHE = "🔴 Hifi: Standby"
     # If unknown/None, keep previous value but still advance timestamp
     HIFI_STATUS_TS = now
+
+# Listen for Kodi playback events via WebSocket.
+async def kodi_ws_listener():
+    global KODI_WS_URL, BOT_STARTING_UNTIL
+    if KODI_WS_URL is None:
+        KODI_WS_URL = f"ws://{KODI_HOST}:{KODI_WS_PORT}/jsonrpc"
+    while True:
+        try:
+            async with websockets.connect(KODI_WS_URL, ping_interval=20, ping_timeout=20) as ws:
+                async for raw in ws:
+                    try:
+                        msg = json.loads(raw)
+                    except Exception:
+                        continue
+                    if msg.get("method") == "Player.OnPlay":
+                        now = time.time()
+                        if now > BOT_STARTING_UNTIL:
+                            clear_bot_playback_state()
+                            schedule_now_playing_refresh()
+                        else:
+                            BOT_STARTING_UNTIL = 0.0
+        except Exception:
+            await asyncio.sleep(3)
 
 # Background task to refresh list and now-playing messages.
 async def list_refresher(ctx):
@@ -458,11 +547,68 @@ async def warn_and_cleanup_chat(ctx, chat_id, user_msg_id, delay=5):
     except Exception as e:
         print(f"DELETE FAIL chat_id={chat_id} message_id={user_msg_id} err={e}", flush=True)
 
+# Try to seek to a time once a player is available.
+def seek_when_player_ready(t, context=""):
+    def _seek():
+        end = time.time() + RESUME_SEEK_WAIT_SEC
+        start_ts = time.time()
+        last_log_ts = 0.0
+        while time.time() < end:
+            players = get_active_players()
+            pid = players[0]["playerid"] if players else None
+            if pid is not None:
+                try:
+                    props = kodi_call(
+                        "Player.GetProperties",
+                        {"playerid": pid, "properties": ["totaltime", "canseek"]}
+                    ).get("result", {})
+                    if not props.get("canseek"):
+                        print(f"RESUME SEEK skip canseek=false playerid={pid} ctx={context}", flush=True)
+                        return
+                    total_sec = kodi_time_seconds(props.get("totaltime"))
+                    target_sec = kodi_time_seconds(t)
+                    if not total_sec or target_sec is None or total_sec <= 0:
+                        print(
+                            f"RESUME SEEK skip invalid times playerid={pid} ctx={context} "
+                            f"target={t} total={props.get('totaltime')}",
+                            flush=True
+                        )
+                        return
+                    percentage = max(0.0, min(100.0, (target_sec / total_sec) * 100.0))
+                    print(
+                        f"RESUME SEEK playerid={pid} ctx={context} target_sec={target_sec} "
+                        f"total_sec={total_sec} percentage={percentage:.3f}",
+                        flush=True
+                    )
+                    kodi_call(
+                        "Player.Seek",
+                        {"playerid": pid, "value": {"percentage": percentage}}
+                    )
+                except Exception:
+                    pass
+                return
+            now = time.time()
+            if now - last_log_ts >= 1.0:
+                elapsed = now - start_ts
+                print(
+                    f"RESUME SEEK waiting for playerid ctx={context} elapsed={elapsed:.1f}s players={players}",
+                    flush=True
+                )
+                last_log_ts = now
+            time.sleep(0.3)
+        print(f"RESUME SEEK gave up: no playerid ctx={context}", flush=True)
+    threading.Thread(target=_seek, daemon=True).start()
+
 # Start playback of a queue item via Kodi.
-def play_item(item: dict):
+def play_item(item: dict, resume_time=None):
     # Stop + clear Kodi state, but leave bot state unchanged.
     stop_all_players()
     kodi_clear_all_playlists()
+    mark_bot_starting()
+    print(
+        f"PLAY_ITEM start kind={item.get('kind')} title={item.get('title')} url={item.get('url')}",
+        flush=True,
+    )
 
     # Explicitly use audio (0) vs video (1) playlists.
     kind = item.get("kind", "video")
@@ -470,12 +616,25 @@ def play_item(item: dict):
         # Start SoundCloud via the audio playlist, then switch to the real stream.
         playlistid = 0
         kodi_add_to_playlist(item["url"], playlistid)
-        kodi_call("Player.Open", {"item": {"playlistid": playlistid, "position": 0}})
-        schedule_audio_resolve_and_open(playlistid)
+        res = kodi_call("Player.Open", {"item": {"playlistid": playlistid, "position": 0}})
+        print(f"PLAY_ITEM open audio res={res}", flush=True)
+        schedule_audio_resolve_and_open(playlistid, resume_time=resume_time)
     else:
         playlistid = 1
         kodi_add_to_playlist(item["url"], playlistid)
-        kodi_play_playlist(playlistid)
+        res = kodi_call("Player.Open", {"item": {"playlistid": playlistid}})
+        print(f"PLAY_ITEM open video res={res}", flush=True)
+        if resume_time is not None:
+            seek_when_player_ready(resume_time, context="video")
+    players = get_active_players()
+    print(f"PLAY_ITEM active_players={players}", flush=True)
+
+# Start playback and then seek to a saved timestamp.
+def resume_item_at_time(item: dict, t):
+    if not t:
+        play_item(item)
+        return
+    play_item(item, resume_time=t)
 
 # Stop all active Kodi players.
 def stop_all_players():
@@ -492,7 +651,7 @@ def stop_player_and_clear_playlists():
 
 # Stop playback and reset bot playback state.
 def hard_stop_and_clear():
-    global AUTOPLAY_ENABLED, CURRENT_INDEX, DISPLAY_INDEX, NEXT_INDEX, NO_PLAYER_STREAK
+    global AUTOPLAY_ENABLED, CURRENT_INDEX, DISPLAY_INDEX, NEXT_INDEX, NO_PLAYER_STREAK, LAST_PROGRESS_TS, LAST_PROGRESS_TIME, LAST_PROGRESS_TOTAL, LAST_PROGRESS_INDEX, EXTERNAL_PLAYBACK
     AUTOPLAY_ENABLED = False
     stop_all_players()
     kodi_clear_all_playlists()
@@ -500,6 +659,12 @@ def hard_stop_and_clear():
     DISPLAY_INDEX = None
     NEXT_INDEX = 0
     NO_PLAYER_STREAK = 0
+    LAST_PROGRESS_TS = 0.0
+    LAST_PROGRESS_TIME = None
+    LAST_PROGRESS_TOTAL = None
+    LAST_PROGRESS_INDEX = None
+    EXTERNAL_PLAYBACK = False
+    RESUME_ATTEMPTS.clear()
 
 # Clear both audio and video Kodi playlists.
 def kodi_clear_all_playlists():
@@ -666,7 +831,7 @@ def resolve_soundcloud_media_url(playlistid, timeout_s=6.0, interval_s=0.5):
     return None
 
 # Resolve SoundCloud stream URL asynchronously and open it.
-def schedule_audio_resolve_and_open(playlistid):
+def schedule_audio_resolve_and_open(playlistid, resume_time=None):
     # As soon as the real stream is available, open it and clear the playlist.
     # Worker to resolve and open the real SoundCloud stream.
     def _run():
@@ -675,6 +840,9 @@ def schedule_audio_resolve_and_open(playlistid):
             return
         kodi_call("Player.Open", {"item": {"file": url}})
         kodi_call("Playlist.Clear", {"playlistid": playlistid})
+        if resume_time is not None:
+            print("PLAY_ITEM audio stream opened; seeking...", flush=True)
+            seek_when_player_ready(resume_time, context="audio")
     threading.Thread(target=_run, daemon=True).start()
 
 
@@ -723,11 +891,17 @@ async def queue_playlist_async(pid):
 
 # Clear the queue and reset indices.
 def clear_queue():
-    global CURRENT_INDEX, NEXT_INDEX
+    global CURRENT_INDEX, NEXT_INDEX, LAST_PROGRESS_TS, LAST_PROGRESS_TIME, LAST_PROGRESS_TOTAL, LAST_PROGRESS_INDEX, EXTERNAL_PLAYBACK
     with LOCK:
         QUEUE.clear()
         CURRENT_INDEX = None
         NEXT_INDEX = 0
+        LAST_PROGRESS_TS = 0.0
+        LAST_PROGRESS_TIME = None
+        LAST_PROGRESS_TOTAL = None
+        LAST_PROGRESS_INDEX = None
+        EXTERNAL_PLAYBACK = False
+        RESUME_ATTEMPTS.clear()
     mark_list_dirty()
 
 # Remove a queue item by index with safety checks.
@@ -761,7 +935,7 @@ def delete_index(i):
 
 # Play a specific queue index and update state.
 def play_index(i):
-    global CURRENT_INDEX, DISPLAY_INDEX, NEXT_INDEX, AUTOPLAY_ENABLED, START_LATCH_UNTIL, NO_PLAYER_STREAK, STARTING_UNTIL
+    global CURRENT_INDEX, DISPLAY_INDEX, NEXT_INDEX, AUTOPLAY_ENABLED, START_LATCH_UNTIL, NO_PLAYER_STREAK, STARTING_UNTIL, EXTERNAL_PLAYBACK
     with LOCK:
         if i < 0 or i >= len(QUEUE):
             return
@@ -772,7 +946,9 @@ def play_index(i):
         START_LATCH_UNTIL = time.time() + 2
         STARTING_UNTIL = time.time() + 15
         NO_PLAYER_STREAK = 0
+        EXTERNAL_PLAYBACK = False
         item = QUEUE[i]
+        RESUME_ATTEMPTS.clear()
     mark_list_dirty()
     play_item(item)
 
@@ -826,6 +1002,72 @@ def autoplay_loop():
                     time.sleep(0.5)
                     continue
                 NO_PLAYER_STREAK += 1
+                # If we have recent progress on the current track, wait for resume
+                # before advancing to the next item.
+                if DISPLAY_INDEX is not None and LAST_PROGRESS_INDEX == DISPLAY_INDEX and LAST_PROGRESS_TIME:
+                    if now - LAST_PROGRESS_TS < RESUME_STALE_SEC:
+                        NO_PLAYER_STREAK = 0
+                        time.sleep(0.5)
+                        continue
+
+            resume_pending = False
+            if not players and DISPLAY_INDEX is not None and LAST_PROGRESS_INDEX == DISPLAY_INDEX and LAST_PROGRESS_TIME:
+                if now - LAST_PROGRESS_TS >= RESUME_STALE_SEC:
+                    remaining = None
+                    if LAST_PROGRESS_TOTAL:
+                        cur_sec = kodi_time_seconds(LAST_PROGRESS_TIME)
+                        total_sec = kodi_time_seconds(LAST_PROGRESS_TOTAL)
+                        if cur_sec is not None and total_sec is not None:
+                            remaining = max(total_sec - cur_sec, 0)
+                    if remaining is None or remaining > RESUME_MIN_REMAINING_SEC:
+                        attempts = RESUME_ATTEMPTS.get(DISPLAY_INDEX, 0)
+                        resume_pending = attempts < RESUME_MAX_ATTEMPTS
+                        if resume_pending:
+                            print(
+                                f"RESUME PENDING idx={DISPLAY_INDEX} attempts={attempts} "
+                                f"elapsed={now - LAST_PROGRESS_TS:.1f}s remaining={remaining}",
+                                flush=True,
+                            )
+
+            # If a track marker is still present but progress stopped updating, try to resume.
+            if not players and DISPLAY_INDEX is not None:
+                if LAST_PROGRESS_INDEX == DISPLAY_INDEX and LAST_PROGRESS_TIME:
+                    if now - LAST_PROGRESS_TS >= RESUME_STALE_SEC:
+                        remaining = None
+                        if LAST_PROGRESS_TOTAL:
+                            cur_sec = kodi_time_seconds(LAST_PROGRESS_TIME)
+                            total_sec = kodi_time_seconds(LAST_PROGRESS_TOTAL)
+                            if cur_sec is not None and total_sec is not None:
+                                remaining = max(total_sec - cur_sec, 0)
+                        if remaining is not None and remaining <= RESUME_MIN_REMAINING_SEC:
+                            continue
+                        attempts = RESUME_ATTEMPTS.get(DISPLAY_INDEX, 0)
+                        if attempts < RESUME_MAX_ATTEMPTS:
+                            RESUME_ATTEMPTS[DISPLAY_INDEX] = attempts + 1
+                            print(
+                                f"RESUME ATTEMPT idx={DISPLAY_INDEX} attempt={RESUME_ATTEMPTS[DISPLAY_INDEX]} "
+                                f"elapsed={now - LAST_PROGRESS_TS:.1f}s remaining={remaining}",
+                                flush=True,
+                            )
+                            with LOCK:
+                                if DISPLAY_INDEX is not None and DISPLAY_INDEX < len(QUEUE):
+                                    item = QUEUE[DISPLAY_INDEX]
+                                else:
+                                    item = None
+                            if item:
+                                # Double-check that no player is active before resuming.
+                                if get_active_players():
+                                    continue
+                                START_LATCH_UNTIL = time.time() + 2
+                                STARTING_UNTIL = time.time() + 15
+                                NO_PLAYER_STREAK = 0
+                                resume_item_at_time(item, LAST_PROGRESS_TIME)
+                                time.sleep(0.3)
+                                continue
+
+            if resume_pending:
+                time.sleep(0.3)
+                continue
 
             # If startup timeout elapsed and still no player, treat as failed and skip.
             if STARTING_UNTIL and now >= STARTING_UNTIL and not players:
@@ -1185,12 +1427,16 @@ def main():
     # Post startup messages and start background refresher.
     async def _post_init(app):
         try:
+            global APP_INSTANCE, MAIN_LOOP
+            APP_INSTANCE = app
+            MAIN_LOOP = asyncio.get_running_loop()
             STARTUP_POSTED[STARTUP_CHAT_ID] = True
             await send_info_list_panel(app, STARTUP_CHAT_ID)
             await refresh_hifi_status_cache(force=True)
         except Exception as e:
             print(f"STARTUP POST FAIL chat_id={STARTUP_CHAT_ID} err={e}", flush=True)
         asyncio.get_running_loop().create_task(list_refresher(app))
+        asyncio.get_running_loop().create_task(kodi_ws_listener())
     app.post_init = _post_init
 
     app.run_polling()

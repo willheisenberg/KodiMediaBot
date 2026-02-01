@@ -36,7 +36,9 @@ chmod 644 /storage/docker/partyqueue/id_ed25519.pub
 ```
 docker run -d --name partyqueue --restart unless-stopped --network host \
   -e TG_TOKEN="YOUR_TELEGRAM_BOT_TOKEN" \
-  -e HOST_IP=172.17.0.1 \
+  -e KODI_HOST=172.17.0.1 \
+  -e KODI_PORT=8080 \
+  -e KODI_WS_PORT=9090 \
   -e CEC_HOST=172.17.0.1 \
   -e KODI_USER="USER" \
   -e KODI_PASS="Password" \
