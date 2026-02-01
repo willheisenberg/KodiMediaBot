@@ -1,4 +1,4 @@
-# Kodi Mdia Bot for Telegram
+# Kodi Media Bot for Telegram
 
 This bot controls Kodi and a CEC device (HiFi/TV) via Telegram.
 
