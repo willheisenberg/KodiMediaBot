@@ -4,6 +4,8 @@ RUN apk add --no-cache nano openssh-client
 
 RUN apk add --no-cache nano
 
+RUN python -m pip install --upgrade pip
+
 RUN pip install --no-cache-dir \
     python-telegram-bot \
     requests \
