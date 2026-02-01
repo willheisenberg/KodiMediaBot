@@ -441,6 +441,23 @@ async def _cleanup_after_delay(ctx, chat_id, start_id, end_id, start_inclusive):
                 print(f"DELETE FAIL chat_id={chat_id} message_id={mid} err={e}", flush=True)
     LAST_CLEANUP_ID[chat_id] = end_id
 
+# Warn about off-topic chat and remove both messages.
+async def warn_and_cleanup_chat(ctx, chat_id, user_msg_id, delay=5):
+    warn = await send_and_track(
+        ctx,
+        chat_id,
+        "This group is not meant for conversations."
+    )
+    await asyncio.sleep(delay)
+    try:
+        await telegram_request(ctx.bot.delete_message, chat_id=chat_id, message_id=warn.message_id)
+    except Exception as e:
+        print(f"DELETE FAIL chat_id={chat_id} message_id={warn.message_id} err={e}", flush=True)
+    try:
+        await telegram_request(ctx.bot.delete_message, chat_id=chat_id, message_id=user_msg_id)
+    except Exception as e:
+        print(f"DELETE FAIL chat_id={chat_id} message_id={user_msg_id} err={e}", flush=True)
+
 # Start playback of a queue item via Kodi.
 def play_item(item: dict):
     # Stop + clear Kodi state, but leave bot state unchanged.
@@ -1033,6 +1050,7 @@ async def handle_text(update, ctx):
     chat_id = update.effective_chat.id
     prev_id = LAST_BOT_ID.get(chat_id)
     sent = False
+    msg_id = update.message.message_id
     txt = update.message.text.strip()
 
     if ctx.user_data.get("await_play_index"):
@@ -1145,6 +1163,10 @@ async def handle_text(update, ctx):
     if sent:
         schedule_cleanup(ctx, chat_id, prev_id)
         await update_list_message(ctx, chat_id)
+        return
+
+    # Everything else is treated as chat noise.
+    await warn_and_cleanup_chat(ctx, chat_id, msg_id)
 
 
 # Initialize the bot, handlers, and start polling.
