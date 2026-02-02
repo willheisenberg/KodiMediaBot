@@ -130,6 +130,11 @@ def schedule_now_playing_refresh():
         MAIN_LOOP,
     )
 
+# Refresh list + now-playing after playback state changes.
+def schedule_playback_refresh():
+    mark_list_dirty()
+    schedule_now_playing_refresh()
+
 # Build the inline keyboard control panel markup.
 def control_panel():
     return InlineKeyboardMarkup([
@@ -624,6 +629,7 @@ def play_item(item: dict, resume_time=None):
         kodi_add_to_playlist(item["url"], playlistid)
         res = kodi_call("Player.Open", {"item": {"playlistid": playlistid}})
         print(f"PLAY_ITEM open video res={res}", flush=True)
+        schedule_playback_refresh()
         if resume_time is not None:
             seek_when_player_ready(resume_time, context="video")
     players = get_active_players()
@@ -841,6 +847,7 @@ def schedule_audio_resolve_and_open(playlistid, resume_time=None):
         mark_bot_starting()
         kodi_call("Player.Open", {"item": {"file": url}})
         kodi_call("Playlist.Clear", {"playlistid": playlistid})
+        schedule_playback_refresh()
         if resume_time is not None:
             print("PLAY_ITEM audio stream opened; seeking...", flush=True)
             seek_when_player_ready(resume_time, context="audio")
