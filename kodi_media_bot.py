@@ -139,10 +139,12 @@ def schedule_playback_refresh():
 
 # Build the inline keyboard control panel markup.
 def control_panel():
+    play_label = "⏸" if WS_STATE == "playing" else "▶"
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("▶ Play No.", callback_data="play:ask"),
+            InlineKeyboardButton("▶ No.", callback_data="play:ask"),
             InlineKeyboardButton("⏮", callback_data="back"),
+            InlineKeyboardButton(play_label, callback_data="playpause"),
             InlineKeyboardButton("⏭", callback_data="skip"),
             InlineKeyboardButton("⏹ Stop", callback_data="stop"),
         ],
@@ -1181,6 +1183,27 @@ async def on_button(update, ctx):
         if back_queue():
             await send_and_track(ctx, chat_id, "⏮ Back")
             sent = True
+
+    elif cmd == "playpause":
+        if DISPLAY_INDEX is None:
+            with LOCK:
+                has_queue = len(QUEUE) > 0
+            if has_queue:
+                play_index(0)
+                await send_and_track(ctx, chat_id, "▶ Play")
+            else:
+                await send_and_track(ctx, chat_id, "⏹ Queue empty.")
+            sent = True
+        else:
+            pid = get_active_playerid()
+            if pid is not None:
+                kodi_call("Player.PlayPause", {"playerid": pid})
+                await send_and_track(ctx, chat_id, "⏯")
+                sent = True
+            else:
+                play_index(DISPLAY_INDEX)
+                await send_and_track(ctx, chat_id, "▶ Play")
+                sent = True
 
     elif cmd == "stop":
         hard_stop_and_clear()
