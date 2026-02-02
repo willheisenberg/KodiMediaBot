@@ -1044,6 +1044,8 @@ def autoplay_loop():
                         if remaining is not None and remaining <= RESUME_MIN_REMAINING_SEC:
                             # Track effectively ended; advance to next item.
                             STARTING_UNTIL = 0
+                            if REPEAT_MODE == "one":
+                                NEXT_INDEX = CURRENT_INDEX
                             CURRENT_INDEX = None
                             DISPLAY_INDEX = None
                             LAST_PROGRESS_TIME = None
