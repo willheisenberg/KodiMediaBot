@@ -61,16 +61,15 @@ LAST_PROGRESS_TIME = None
 LAST_PROGRESS_TOTAL = None
 LAST_PROGRESS_INDEX = None
 RESUME_ATTEMPTS = {}
-RESUME_STALE_SEC = 12
 RESUME_MAX_ATTEMPTS = 8
 RESUME_MIN_REMAINING_SEC = 10
 RESUME_SEEK_WAIT_SEC = 20
 EXTERNAL_PLAYBACK = False
-BOT_STARTING_UNTIL = 0.0
-BOT_STARTING_GRACE_SEC = 20
 BOT_EXPECTING_WS = 0
+WS_CONNECTED = False
 WS_PLAYING = False
 WS_LAST_EVENT_TS = 0.0
+WS_STATE = "unknown"
 KODI_WS_URL = None
 APP_INSTANCE = None
 MAIN_LOOP = None
@@ -173,10 +172,6 @@ def kodi_call(method: str, params: dict | None = None):
         payload["params"] = params
     return requests.post(KODI_URL, auth=AUTH, json=payload, timeout=5).json()
 
-# Mark a short window where bot-initiated playback is expected.
-def mark_bot_starting():
-    global BOT_STARTING_UNTIL
-    BOT_STARTING_UNTIL = time.time() + BOT_STARTING_GRACE_SEC
 
 # Return the first active Kodi player, if any.
 def get_active_player():
@@ -462,12 +457,13 @@ async def refresh_hifi_status_cache(force=False):
 
 # Listen for Kodi playback events via WebSocket.
 async def kodi_ws_listener():
-    global KODI_WS_URL, BOT_STARTING_UNTIL, WS_PLAYING, WS_LAST_EVENT_TS, BOT_EXPECTING_WS
+    global KODI_WS_URL, WS_PLAYING, WS_LAST_EVENT_TS, BOT_EXPECTING_WS, WS_CONNECTED, WS_STATE
     if KODI_WS_URL is None:
         KODI_WS_URL = f"ws://{KODI_HOST}:{KODI_WS_PORT}/jsonrpc"
     while True:
         try:
             async with websockets.connect(KODI_WS_URL, ping_interval=20, ping_timeout=20) as ws:
+                WS_CONNECTED = True
                 async for raw in ws:
                     try:
                         msg = json.loads(raw)
@@ -477,20 +473,31 @@ async def kodi_ws_listener():
                     if method in ("Player.OnPlay", "Player.OnAVStart"):
                         now = time.time()
                         WS_PLAYING = True
+                        WS_STATE = "playing"
                         WS_LAST_EVENT_TS = now
                         if BOT_EXPECTING_WS > 0:
                             BOT_EXPECTING_WS -= 1
-                            BOT_STARTING_UNTIL = 0.0
-                        elif now > BOT_STARTING_UNTIL:
+                        else:
                             clear_bot_playback_state()
                             schedule_now_playing_refresh()
-                        else:
-                            BOT_STARTING_UNTIL = 0.0
+                    elif method == "Player.OnPause":
+                        WS_PLAYING = False
+                        WS_STATE = "paused"
+                        WS_LAST_EVENT_TS = time.time()
+                        schedule_now_playing_refresh()
+                    elif method == "Player.OnResume":
+                        WS_PLAYING = True
+                        WS_STATE = "playing"
+                        WS_LAST_EVENT_TS = time.time()
+                        schedule_now_playing_refresh()
                     elif method == "Player.OnStop":
                         WS_PLAYING = False
+                        WS_STATE = "stopped"
                         WS_LAST_EVENT_TS = time.time()
                         schedule_now_playing_refresh()
         except Exception:
+            WS_CONNECTED = False
+            WS_STATE = "unknown"
             await asyncio.sleep(3)
 
 # Background task to refresh list and now-playing messages.
@@ -637,7 +644,6 @@ def play_item(item: dict, resume_time=None):
     global BOT_EXPECTING_WS
     stop_all_players()
     kodi_clear_all_playlists()
-    mark_bot_starting()
     BOT_EXPECTING_WS = 2
     print(
         f"PLAY_ITEM start kind={item.get('kind')} title={item.get('title')} url={item.get('url')}",
@@ -686,14 +692,13 @@ def stop_player_and_clear_playlists():
 
 # Stop playback and reset bot playback state.
 def hard_stop_and_clear():
-    global AUTOPLAY_ENABLED, CURRENT_INDEX, DISPLAY_INDEX, NEXT_INDEX, NO_PLAYER_STREAK, LAST_PROGRESS_TS, LAST_PROGRESS_TIME, LAST_PROGRESS_TOTAL, LAST_PROGRESS_INDEX, EXTERNAL_PLAYBACK, BOT_EXPECTING_WS
+    global AUTOPLAY_ENABLED, CURRENT_INDEX, DISPLAY_INDEX, NEXT_INDEX, LAST_PROGRESS_TS, LAST_PROGRESS_TIME, LAST_PROGRESS_TOTAL, LAST_PROGRESS_INDEX, EXTERNAL_PLAYBACK, BOT_EXPECTING_WS
     AUTOPLAY_ENABLED = False
     stop_all_players()
     kodi_clear_all_playlists()
     CURRENT_INDEX = None
     DISPLAY_INDEX = None
     NEXT_INDEX = 0
-    NO_PLAYER_STREAK = 0
     LAST_PROGRESS_TS = 0.0
     LAST_PROGRESS_TIME = None
     LAST_PROGRESS_TOTAL = None
@@ -736,9 +741,6 @@ DISPLAY_INDEX = None
 NEXT_INDEX = 0
 LOCK = threading.Lock()
 AUTOPLAY_ENABLED = True
-START_LATCH_UNTIL = 0
-NO_PLAYER_STREAK = 0
-STARTING_UNTIL = 0
 REPEAT_MODE = "off"
 
 # Create a queue item dict.
@@ -874,7 +876,6 @@ def schedule_audio_resolve_and_open(playlistid, resume_time=None):
         url = resolve_soundcloud_media_url(playlistid)
         if not url:
             return
-        mark_bot_starting()
         kodi_call("Player.Open", {"item": {"file": url}})
         kodi_call("Playlist.Clear", {"playlistid": playlistid})
         schedule_playback_refresh()
@@ -974,7 +975,7 @@ def delete_index(i):
 
 # Play a specific queue index and update state.
 def play_index(i):
-    global CURRENT_INDEX, DISPLAY_INDEX, NEXT_INDEX, AUTOPLAY_ENABLED, START_LATCH_UNTIL, NO_PLAYER_STREAK, STARTING_UNTIL, EXTERNAL_PLAYBACK
+    global CURRENT_INDEX, DISPLAY_INDEX, NEXT_INDEX, AUTOPLAY_ENABLED, EXTERNAL_PLAYBACK
     with LOCK:
         if i < 0 or i >= len(QUEUE):
             return
@@ -982,9 +983,6 @@ def play_index(i):
         DISPLAY_INDEX = i
         NEXT_INDEX = i + 1
         AUTOPLAY_ENABLED = True
-        START_LATCH_UNTIL = time.time() + 2
-        STARTING_UNTIL = time.time() + 15
-        NO_PLAYER_STREAK = 0
         EXTERNAL_PLAYBACK = False
         item = QUEUE[i]
         RESUME_ATTEMPTS.clear()
@@ -996,14 +994,13 @@ def is_requested_track_already_playing(i):
     with LOCK:
         if DISPLAY_INDEX is None or i != DISPLAY_INDEX:
             return False
-        starting_until = STARTING_UNTIL
-    if starting_until and time.time() < starting_until:
+    if BOT_EXPECTING_WS > 0:
         return True
-    return bool(get_active_players())
+    return WS_PLAYING
 
 # Go back to the previous queue item.
 def back_queue():
-    global CURRENT_INDEX, DISPLAY_INDEX, NEXT_INDEX, AUTOPLAY_ENABLED, START_LATCH_UNTIL
+    global CURRENT_INDEX, DISPLAY_INDEX, NEXT_INDEX, AUTOPLAY_ENABLED
 
     with LOCK:
         if DISPLAY_INDEX is None:
@@ -1016,139 +1013,106 @@ def back_queue():
 
 # Background loop that advances playback automatically.
 def autoplay_loop():
-    global CURRENT_INDEX, NEXT_INDEX, AUTOPLAY_ENABLED, START_LATCH_UNTIL, DISPLAY_INDEX, NO_PLAYER_STREAK, STARTING_UNTIL
-    global LAST_PROGRESS_INDEX, LAST_PROGRESS_TIME, LAST_PROGRESS_TOTAL, WS_PLAYING, WS_LAST_EVENT_TS
+    global CURRENT_INDEX, NEXT_INDEX, AUTOPLAY_ENABLED, DISPLAY_INDEX
+    global LAST_PROGRESS_INDEX, LAST_PROGRESS_TIME, LAST_PROGRESS_TOTAL, WS_PLAYING, WS_LAST_EVENT_TS, WS_CONNECTED, WS_STATE, BOT_EXPECTING_WS
 
     while True:
         try:
             now = time.time()
 
-            if now < START_LATCH_UNTIL:
-                time.sleep(0.2)
+            if not WS_CONNECTED:
+                time.sleep(0.5)
                 continue
 
             if not AUTOPLAY_ENABLED:
                 time.sleep(0.5)
                 continue
 
-            players = get_active_players()
-            if players:
-                NO_PLAYER_STREAK = 0
-                if not WS_PLAYING:
-                    WS_PLAYING = True
-                    WS_LAST_EVENT_TS = now
-                # Once a player appears, the "starting" phase is over.
-                STARTING_UNTIL = 0
-            else:
-                # While still "starting", do not increment or end.
-                if STARTING_UNTIL and now < STARTING_UNTIL:
-                    time.sleep(0.5)
-                    continue
-                # Ignore no-player gaps while Kodi still reports playing via WS events.
-                if WS_PLAYING:
-                    time.sleep(0.5)
-                    continue
-                NO_PLAYER_STREAK += 1
-                # If we have recent progress on the current track, wait for resume
-                # before advancing to the next item.
-                if DISPLAY_INDEX is not None and LAST_PROGRESS_INDEX == DISPLAY_INDEX and LAST_PROGRESS_TIME:
-                    if now - LAST_PROGRESS_TS < RESUME_STALE_SEC:
-                        NO_PLAYER_STREAK = 0
-                        time.sleep(0.5)
-                        continue
+            # Wait for the bot-initiated WS events before acting.
+            if BOT_EXPECTING_WS > 0:
+                time.sleep(0.2)
+                continue
+
+            if WS_STATE == "playing":
+                time.sleep(0.5)
+                continue
+
+            if WS_STATE == "paused":
+                time.sleep(0.5)
+                continue
 
             resume_pending = False
-            if not players and DISPLAY_INDEX is not None and LAST_PROGRESS_INDEX == DISPLAY_INDEX and LAST_PROGRESS_TIME:
-                if now - LAST_PROGRESS_TS >= RESUME_STALE_SEC:
+            if WS_STATE == "stopped" and DISPLAY_INDEX is not None and LAST_PROGRESS_INDEX == DISPLAY_INDEX and LAST_PROGRESS_TIME:
+                remaining = None
+                if LAST_PROGRESS_TOTAL:
+                    cur_sec = kodi_time_seconds(LAST_PROGRESS_TIME)
+                    total_sec = kodi_time_seconds(LAST_PROGRESS_TOTAL)
+                    if cur_sec is not None and total_sec is not None:
+                        remaining = max(total_sec - cur_sec, 0)
+                if remaining is None or remaining > RESUME_MIN_REMAINING_SEC:
+                    attempts = RESUME_ATTEMPTS.get(DISPLAY_INDEX, 0)
+                    resume_pending = attempts < RESUME_MAX_ATTEMPTS
+                    if resume_pending:
+                        print(
+                            f"RESUME PENDING idx={DISPLAY_INDEX} attempts={attempts} remaining={remaining}",
+                            flush=True,
+                        )
+
+            # If a track marker is still present but progress stopped updating, try to resume.
+            if WS_STATE == "stopped" and DISPLAY_INDEX is not None:
+                if LAST_PROGRESS_INDEX == DISPLAY_INDEX and LAST_PROGRESS_TIME:
                     remaining = None
                     if LAST_PROGRESS_TOTAL:
                         cur_sec = kodi_time_seconds(LAST_PROGRESS_TIME)
                         total_sec = kodi_time_seconds(LAST_PROGRESS_TOTAL)
                         if cur_sec is not None and total_sec is not None:
                             remaining = max(total_sec - cur_sec, 0)
-                    if remaining is None or remaining > RESUME_MIN_REMAINING_SEC:
-                        attempts = RESUME_ATTEMPTS.get(DISPLAY_INDEX, 0)
-                        resume_pending = attempts < RESUME_MAX_ATTEMPTS
-                        if resume_pending:
-                            print(
-                                f"RESUME PENDING idx={DISPLAY_INDEX} attempts={attempts} "
-                                f"elapsed={now - LAST_PROGRESS_TS:.1f}s remaining={remaining}",
-                                flush=True,
-                            )
-
-            # If a track marker is still present but progress stopped updating, try to resume.
-            if not players and DISPLAY_INDEX is not None:
-                if LAST_PROGRESS_INDEX == DISPLAY_INDEX and LAST_PROGRESS_TIME:
-                    if now - LAST_PROGRESS_TS >= RESUME_STALE_SEC:
-                        remaining = None
-                        if LAST_PROGRESS_TOTAL:
-                            cur_sec = kodi_time_seconds(LAST_PROGRESS_TIME)
-                            total_sec = kodi_time_seconds(LAST_PROGRESS_TOTAL)
-                            if cur_sec is not None and total_sec is not None:
-                                remaining = max(total_sec - cur_sec, 0)
-                        if remaining is not None and remaining <= RESUME_MIN_REMAINING_SEC:
-                            # Track effectively ended; advance to next item.
-                            STARTING_UNTIL = 0
-                            if REPEAT_MODE == "one":
-                                NEXT_INDEX = CURRENT_INDEX
-                            CURRENT_INDEX = None
-                            DISPLAY_INDEX = None
-                            LAST_PROGRESS_TIME = None
-                            LAST_PROGRESS_INDEX = None
-                            LAST_PROGRESS_TOTAL = None
-                            NO_PLAYER_STREAK = 3
-                            mark_list_dirty()
+                    if remaining is not None and remaining <= RESUME_MIN_REMAINING_SEC:
+                        # Track effectively ended; advance to next item.
+                        if REPEAT_MODE == "one":
+                            NEXT_INDEX = CURRENT_INDEX
+                        CURRENT_INDEX = None
+                        DISPLAY_INDEX = None
+                        LAST_PROGRESS_TIME = None
+                        LAST_PROGRESS_INDEX = None
+                        LAST_PROGRESS_TOTAL = None
+                        mark_list_dirty()
+                        continue
+                    attempts = RESUME_ATTEMPTS.get(DISPLAY_INDEX, 0)
+                    if attempts < RESUME_MAX_ATTEMPTS:
+                        RESUME_ATTEMPTS[DISPLAY_INDEX] = attempts + 1
+                        print(
+                            f"RESUME ATTEMPT idx={DISPLAY_INDEX} attempt={RESUME_ATTEMPTS[DISPLAY_INDEX]} "
+                            f"remaining={remaining}",
+                            flush=True,
+                        )
+                        with LOCK:
+                            if DISPLAY_INDEX is not None and DISPLAY_INDEX < len(QUEUE):
+                                item = QUEUE[DISPLAY_INDEX]
+                            else:
+                                item = None
+                        if item:
+                            resume_item_at_time(item, LAST_PROGRESS_TIME)
+                            time.sleep(0.3)
                             continue
-                        attempts = RESUME_ATTEMPTS.get(DISPLAY_INDEX, 0)
-                        if attempts < RESUME_MAX_ATTEMPTS:
-                            RESUME_ATTEMPTS[DISPLAY_INDEX] = attempts + 1
-                            print(
-                                f"RESUME ATTEMPT idx={DISPLAY_INDEX} attempt={RESUME_ATTEMPTS[DISPLAY_INDEX]} "
-                                f"elapsed={now - LAST_PROGRESS_TS:.1f}s remaining={remaining}",
-                                flush=True,
-                            )
-                            with LOCK:
-                                if DISPLAY_INDEX is not None and DISPLAY_INDEX < len(QUEUE):
-                                    item = QUEUE[DISPLAY_INDEX]
-                                else:
-                                    item = None
-                            if item:
-                                # Double-check that no player is active before resuming.
-                                if get_active_players():
-                                    continue
-                                START_LATCH_UNTIL = time.time() + 2
-                                STARTING_UNTIL = time.time() + 15
-                                NO_PLAYER_STREAK = 0
-                                resume_item_at_time(item, LAST_PROGRESS_TIME)
-                                time.sleep(0.3)
-                                continue
-                        else:
-                            # Resume attempts exhausted; treat as failed so autoplay can advance.
-                            STARTING_UNTIL = 0
-                            CURRENT_INDEX = None
-                            DISPLAY_INDEX = None
-                            NO_PLAYER_STREAK = 3
-                            mark_list_dirty()
+                    else:
+                        # Resume attempts exhausted; treat as failed so autoplay can advance.
+                        CURRENT_INDEX = None
+                        DISPLAY_INDEX = None
+                        mark_list_dirty()
 
             if resume_pending:
                 time.sleep(0.3)
                 continue
 
-            # If startup timeout elapsed and still no player, treat as failed and skip.
-            if STARTING_UNTIL and now >= STARTING_UNTIL and not players:
-                STARTING_UNTIL = 0
-                CURRENT_INDEX = None  # so the next item starts below
-                NO_PLAYER_STREAK = 3  # trigger "next"
-            
-            # Consider it "ended" only after 3 consecutive no-player checks.
-            if CURRENT_INDEX is not None and NO_PLAYER_STREAK >= 3:
-                if REPEAT_MODE == "one":
-                    NEXT_INDEX = CURRENT_INDEX
-                CURRENT_INDEX = None
-                time.sleep(0.3)
-                continue
+            if WS_STATE == "stopped":
+                if CURRENT_INDEX is not None:
+                    if REPEAT_MODE == "one":
+                        NEXT_INDEX = CURRENT_INDEX
+                    CURRENT_INDEX = None
+                    time.sleep(0.3)
+                    continue
 
-            if NO_PLAYER_STREAK >= 3 and CURRENT_INDEX is None:
                 with LOCK:
                     if NEXT_INDEX < len(QUEUE):
                         CURRENT_INDEX = NEXT_INDEX
@@ -1156,9 +1120,6 @@ def autoplay_loop():
                         item = QUEUE[CURRENT_INDEX]
                         NEXT_INDEX += 1
                         mark_list_dirty()
-                        START_LATCH_UNTIL = time.time() + 2
-                        STARTING_UNTIL = time.time() + 15
-                        NO_PLAYER_STREAK = 0
                     else:
                         if REPEAT_MODE == "all":
                             NEXT_INDEX = 0
