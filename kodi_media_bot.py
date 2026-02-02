@@ -68,6 +68,9 @@ RESUME_SEEK_WAIT_SEC = 20
 EXTERNAL_PLAYBACK = False
 BOT_STARTING_UNTIL = 0.0
 BOT_STARTING_GRACE_SEC = 20
+BOT_EXPECTING_WS = 0
+WS_PLAYING = False
+WS_LAST_EVENT_TS = 0.0
 KODI_WS_URL = None
 APP_INSTANCE = None
 MAIN_LOOP = None
@@ -139,9 +142,9 @@ def schedule_playback_refresh():
 def control_panel():
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("▶ Play", callback_data="play:ask"),
-            InlineKeyboardButton("⏭ Skip", callback_data="skip"),
-            InlineKeyboardButton("⏮ Back", callback_data="back"),
+            InlineKeyboardButton("▶ Play No.", callback_data="play:ask"),
+            InlineKeyboardButton("⏮", callback_data="back"),
+            InlineKeyboardButton("⏭", callback_data="skip"),
             InlineKeyboardButton("⏹ Stop", callback_data="stop"),
         ],
         [
@@ -292,7 +295,7 @@ def build_list_text():
         if not QUEUE:
             return "Queue empty."
         lines = [format_item_line(i, it) for i, it in enumerate(QUEUE)]
-        return "PLAYLIST:\n\n" + "\n".join(lines)
+        return "🎵 Playlist:\n\n" + "\n".join(lines)
 
 # Update or create the queue list message.
 async def update_list_message(ctx, chat_id):
@@ -301,6 +304,12 @@ async def update_list_message(ctx, chat_id):
         # Create list message if missing
         list_msg = await send_and_track(ctx, chat_id, build_list_text(), parse_mode="HTML")
         LIST_MSG_ID[chat_id] = list_msg.message_id
+        # If the panel exists, only create the list message; otherwise recreate both.
+        if PANEL_MSG_ID.get(chat_id):
+            list_msg = await send_and_track(ctx, chat_id, build_list_text(), parse_mode="HTML")
+            LIST_MSG_ID[chat_id] = list_msg.message_id
+        else:
+            await send_info_list_panel(ctx, chat_id)
         return
     try:
         await telegram_request(
@@ -344,7 +353,7 @@ def normalize_title(s):
 # Assemble the now-playing display text.
 def get_now_playing_text():
     global LAST_PROGRESS_TS, LAST_PROGRESS_TIME, LAST_PROGRESS_TOTAL, LAST_PROGRESS_INDEX, EXTERNAL_PLAYBACK
-    global AUTOPLAY_ENABLED, CURRENT_INDEX, DISPLAY_INDEX
+    global AUTOPLAY_ENABLED, CURRENT_INDEX, DISPLAY_INDEX, WS_PLAYING
     name = None
     link = None
     with LOCK:
@@ -355,6 +364,14 @@ def get_now_playing_text():
 
     players = get_active_players()
     if not players:
+        if WS_PLAYING and name:
+            safe_name = html.escape(name, quote=False)
+            if link:
+                safe_link = html.escape(link, quote=True)
+                return f"▶ <a href=\"{safe_link}\">{safe_name}</a>"
+            return f"▶ {safe_name}"
+        if WS_PLAYING and not name:
+            return "▶ Playing..."
         EXTERNAL_PLAYBACK = False
         if name:
             safe_name = html.escape(name, quote=False)
@@ -445,7 +462,7 @@ async def refresh_hifi_status_cache(force=False):
 
 # Listen for Kodi playback events via WebSocket.
 async def kodi_ws_listener():
-    global KODI_WS_URL, BOT_STARTING_UNTIL
+    global KODI_WS_URL, BOT_STARTING_UNTIL, WS_PLAYING, WS_LAST_EVENT_TS, BOT_EXPECTING_WS
     if KODI_WS_URL is None:
         KODI_WS_URL = f"ws://{KODI_HOST}:{KODI_WS_PORT}/jsonrpc"
     while True:
@@ -456,13 +473,23 @@ async def kodi_ws_listener():
                         msg = json.loads(raw)
                     except Exception:
                         continue
-                    if msg.get("method") == "Player.OnPlay":
+                    method = msg.get("method")
+                    if method in ("Player.OnPlay", "Player.OnAVStart"):
                         now = time.time()
-                        if now > BOT_STARTING_UNTIL:
+                        WS_PLAYING = True
+                        WS_LAST_EVENT_TS = now
+                        if BOT_EXPECTING_WS > 0:
+                            BOT_EXPECTING_WS -= 1
+                            BOT_STARTING_UNTIL = 0.0
+                        elif now > BOT_STARTING_UNTIL:
                             clear_bot_playback_state()
                             schedule_now_playing_refresh()
                         else:
                             BOT_STARTING_UNTIL = 0.0
+                    elif method == "Player.OnStop":
+                        WS_PLAYING = False
+                        WS_LAST_EVENT_TS = time.time()
+                        schedule_now_playing_refresh()
         except Exception:
             await asyncio.sleep(3)
 
@@ -607,9 +634,11 @@ def seek_when_player_ready(t, context=""):
 # Start playback of a queue item via Kodi.
 def play_item(item: dict, resume_time=None):
     # Stop + clear Kodi state, but leave bot state unchanged.
+    global BOT_EXPECTING_WS
     stop_all_players()
     kodi_clear_all_playlists()
     mark_bot_starting()
+    BOT_EXPECTING_WS = 2
     print(
         f"PLAY_ITEM start kind={item.get('kind')} title={item.get('title')} url={item.get('url')}",
         flush=True,
@@ -657,7 +686,7 @@ def stop_player_and_clear_playlists():
 
 # Stop playback and reset bot playback state.
 def hard_stop_and_clear():
-    global AUTOPLAY_ENABLED, CURRENT_INDEX, DISPLAY_INDEX, NEXT_INDEX, NO_PLAYER_STREAK, LAST_PROGRESS_TS, LAST_PROGRESS_TIME, LAST_PROGRESS_TOTAL, LAST_PROGRESS_INDEX, EXTERNAL_PLAYBACK
+    global AUTOPLAY_ENABLED, CURRENT_INDEX, DISPLAY_INDEX, NEXT_INDEX, NO_PLAYER_STREAK, LAST_PROGRESS_TS, LAST_PROGRESS_TIME, LAST_PROGRESS_TOTAL, LAST_PROGRESS_INDEX, EXTERNAL_PLAYBACK, BOT_EXPECTING_WS
     AUTOPLAY_ENABLED = False
     stop_all_players()
     kodi_clear_all_playlists()
@@ -670,6 +699,7 @@ def hard_stop_and_clear():
     LAST_PROGRESS_TOTAL = None
     LAST_PROGRESS_INDEX = None
     EXTERNAL_PLAYBACK = False
+    BOT_EXPECTING_WS = 0
     RESUME_ATTEMPTS.clear()
 
 # Clear both audio and video Kodi playlists.
@@ -899,7 +929,7 @@ async def queue_playlist_async(pid):
 
 # Clear the queue and reset indices.
 def clear_queue():
-    global CURRENT_INDEX, NEXT_INDEX, LAST_PROGRESS_TS, LAST_PROGRESS_TIME, LAST_PROGRESS_TOTAL, LAST_PROGRESS_INDEX, EXTERNAL_PLAYBACK
+    global CURRENT_INDEX, NEXT_INDEX, LAST_PROGRESS_TS, LAST_PROGRESS_TIME, LAST_PROGRESS_TOTAL, LAST_PROGRESS_INDEX, EXTERNAL_PLAYBACK, BOT_EXPECTING_WS
     with LOCK:
         QUEUE.clear()
         CURRENT_INDEX = None
@@ -909,6 +939,7 @@ def clear_queue():
         LAST_PROGRESS_TOTAL = None
         LAST_PROGRESS_INDEX = None
         EXTERNAL_PLAYBACK = False
+        BOT_EXPECTING_WS = 0
         RESUME_ATTEMPTS.clear()
     mark_list_dirty()
 
@@ -986,7 +1017,7 @@ def back_queue():
 # Background loop that advances playback automatically.
 def autoplay_loop():
     global CURRENT_INDEX, NEXT_INDEX, AUTOPLAY_ENABLED, START_LATCH_UNTIL, DISPLAY_INDEX, NO_PLAYER_STREAK, STARTING_UNTIL
-    global LAST_PROGRESS_INDEX, LAST_PROGRESS_TIME, LAST_PROGRESS_TOTAL
+    global LAST_PROGRESS_INDEX, LAST_PROGRESS_TIME, LAST_PROGRESS_TOTAL, WS_PLAYING, WS_LAST_EVENT_TS
 
     while True:
         try:
@@ -1003,11 +1034,18 @@ def autoplay_loop():
             players = get_active_players()
             if players:
                 NO_PLAYER_STREAK = 0
+                if not WS_PLAYING:
+                    WS_PLAYING = True
+                    WS_LAST_EVENT_TS = now
                 # Once a player appears, the "starting" phase is over.
                 STARTING_UNTIL = 0
             else:
                 # While still "starting", do not increment or end.
                 if STARTING_UNTIL and now < STARTING_UNTIL:
+                    time.sleep(0.5)
+                    continue
+                # Ignore no-player gaps while Kodi still reports playing via WS events.
+                if WS_PLAYING:
                     time.sleep(0.5)
                     continue
                 NO_PLAYER_STREAK += 1
