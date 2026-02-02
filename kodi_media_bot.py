@@ -154,6 +154,10 @@ def control_panel():
             InlineKeyboardButton("🗑 Delete all", callback_data="deleteall"),
         ],
         [
+            InlineKeyboardButton("🗑 Delete first", callback_data="delete:first"),
+            InlineKeyboardButton("🗑 Delete last", callback_data="delete:last"),
+        ],
+        [
             InlineKeyboardButton("🔊 +5", callback_data="vol:up5"),
             InlineKeyboardButton("🔊 +10", callback_data="vol:up10"),
         ],
@@ -1222,6 +1226,24 @@ async def on_button(update, ctx):
         await send_and_track(ctx, chat_id, "🗑 Queue cleared")
         sent = True
 
+    elif cmd == "delete:first":
+        ok, msg = delete_index(0)
+        if ok:
+            await send_and_track(ctx, chat_id, "🗑 First track deleted.")
+        else:
+            await send_and_track(ctx, chat_id, msg)
+        sent = True
+
+    elif cmd == "delete:last":
+        with LOCK:
+            last_idx = len(QUEUE) - 1
+        ok, msg = delete_index(last_idx)
+        if ok:
+            await send_and_track(ctx, chat_id, "🗑 Last track deleted.")
+        else:
+            await send_and_track(ctx, chat_id, msg)
+        sent = True
+
     elif cmd == "play:ask":
         await send_and_track(ctx, chat_id, "▶ Which number should be played? (e.g. 3)")
         ctx.user_data["await_play_index"] = True
@@ -1355,7 +1377,11 @@ async def handle_text(update, ctx):
         ctx.user_data["await_play_index"] = False
         if txt.isdigit():
             i = int(txt) - 1
-            if is_requested_track_already_playing(i):
+            with LOCK:
+                in_range = 0 <= i < len(QUEUE)
+            if not in_range:
+                await send_and_track(ctx, chat_id, "That number does not exist.")
+            elif is_requested_track_already_playing(i):
                 await send_and_track(ctx, chat_id, "▶ Dieser Track läuft bereits.")
             else:
                 play_index(i)
