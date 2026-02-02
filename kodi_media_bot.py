@@ -62,14 +62,17 @@ LAST_PROGRESS_TOTAL = None
 LAST_PROGRESS_INDEX = None
 RESUME_ATTEMPTS = {}
 RESUME_STALE_SEC = 12
-RESUME_MAX_ATTEMPTS = 2
+RESUME_MAX_ATTEMPTS = 8
 RESUME_MIN_REMAINING_SEC = 10
 RESUME_SEEK_WAIT_SEC = 20
 EXTERNAL_PLAYBACK = False
 BOT_STARTING_UNTIL = 0.0
+BOT_STARTING_GRACE_SEC = 20
 KODI_WS_URL = None
 APP_INSTANCE = None
 MAIN_LOOP = None
+AUTOPLAY_THREAD_STARTED = False
+AUTOPLAY_THREAD = None
 
 # Serialize Telegram API calls to avoid send/edit/delete collisions.
 async def telegram_request(call, *args, **kwargs):
@@ -165,7 +168,7 @@ def kodi_call(method: str, params: dict | None = None):
 # Mark a short window where bot-initiated playback is expected.
 def mark_bot_starting():
     global BOT_STARTING_UNTIL
-    BOT_STARTING_UNTIL = time.time() + 6
+    BOT_STARTING_UNTIL = time.time() + BOT_STARTING_GRACE_SEC
 
 # Return the first active Kodi player, if any.
 def get_active_player():
@@ -565,24 +568,21 @@ def seek_when_player_ready(t, context=""):
                     if not props.get("canseek"):
                         print(f"RESUME SEEK skip canseek=false playerid={pid} ctx={context}", flush=True)
                         return
-                    total_sec = kodi_time_seconds(props.get("totaltime"))
                     target_sec = kodi_time_seconds(t)
-                    if not total_sec or target_sec is None or total_sec <= 0:
+                    if target_sec is None:
                         print(
                             f"RESUME SEEK skip invalid times playerid={pid} ctx={context} "
-                            f"target={t} total={props.get('totaltime')}",
+                            f"target={t}",
                             flush=True
                         )
                         return
-                    percentage = max(0.0, min(100.0, (target_sec / total_sec) * 100.0))
                     print(
-                        f"RESUME SEEK playerid={pid} ctx={context} target_sec={target_sec} "
-                        f"total_sec={total_sec} percentage={percentage:.3f}",
+                        f"RESUME SEEK playerid={pid} ctx={context} target_sec={target_sec}",
                         flush=True
                     )
                     kodi_call(
                         "Player.Seek",
-                        {"playerid": pid, "value": {"percentage": percentage}}
+                        {"playerid": pid, "value": {"time": t}}
                     )
                 except Exception:
                     pass
@@ -838,6 +838,7 @@ def schedule_audio_resolve_and_open(playlistid, resume_time=None):
         url = resolve_soundcloud_media_url(playlistid)
         if not url:
             return
+        mark_bot_starting()
         kodi_call("Player.Open", {"item": {"file": url}})
         kodi_call("Playlist.Clear", {"playlistid": playlistid})
         if resume_time is not None:
@@ -978,6 +979,7 @@ def back_queue():
 # Background loop that advances playback automatically.
 def autoplay_loop():
     global CURRENT_INDEX, NEXT_INDEX, AUTOPLAY_ENABLED, START_LATCH_UNTIL, DISPLAY_INDEX, NO_PLAYER_STREAK, STARTING_UNTIL
+    global LAST_PROGRESS_INDEX, LAST_PROGRESS_TIME, LAST_PROGRESS_TOTAL
 
     while True:
         try:
@@ -1040,6 +1042,15 @@ def autoplay_loop():
                             if cur_sec is not None and total_sec is not None:
                                 remaining = max(total_sec - cur_sec, 0)
                         if remaining is not None and remaining <= RESUME_MIN_REMAINING_SEC:
+                            # Track effectively ended; advance to next item.
+                            STARTING_UNTIL = 0
+                            CURRENT_INDEX = None
+                            DISPLAY_INDEX = None
+                            LAST_PROGRESS_TIME = None
+                            LAST_PROGRESS_INDEX = None
+                            LAST_PROGRESS_TOTAL = None
+                            NO_PLAYER_STREAK = 3
+                            mark_list_dirty()
                             continue
                         attempts = RESUME_ATTEMPTS.get(DISPLAY_INDEX, 0)
                         if attempts < RESUME_MAX_ATTEMPTS:
@@ -1064,6 +1075,13 @@ def autoplay_loop():
                                 resume_item_at_time(item, LAST_PROGRESS_TIME)
                                 time.sleep(0.3)
                                 continue
+                        else:
+                            # Resume attempts exhausted; treat as failed so autoplay can advance.
+                            STARTING_UNTIL = 0
+                            CURRENT_INDEX = None
+                            DISPLAY_INDEX = None
+                            NO_PLAYER_STREAK = 3
+                            mark_list_dirty()
 
             if resume_pending:
                 time.sleep(0.3)
@@ -1114,7 +1132,13 @@ def autoplay_loop():
         time.sleep(1)
 
 
-threading.Thread(target=autoplay_loop, daemon=True).start()
+def start_autoplay_thread():
+    global AUTOPLAY_THREAD_STARTED, AUTOPLAY_THREAD
+    if AUTOPLAY_THREAD_STARTED and AUTOPLAY_THREAD and AUTOPLAY_THREAD.is_alive():
+        return
+    AUTOPLAY_THREAD_STARTED = True
+    AUTOPLAY_THREAD = threading.Thread(target=autoplay_loop, daemon=True)
+    AUTOPLAY_THREAD.start()
 
 # Handle /panel command and post the control panel.
 async def panel(update, ctx):
@@ -1414,6 +1438,8 @@ async def handle_text(update, ctx):
 # Initialize the bot, handlers, and start polling.
 def main():
     app = Application.builder().token(TOKEN).build()
+
+    start_autoplay_thread()
 
     app.add_handler(CommandHandler("panel", panel))
     app.add_handler(CallbackQueryHandler(on_button))
