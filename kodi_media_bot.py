@@ -421,11 +421,12 @@ async def update_now_playing_message(ctx, chat_id):
     msg_id = PANEL_MSG_ID.get(chat_id)
     text = get_now_playing_text()
     hifi_text = HIFI_STATUS_CACHE
+    repeat_text = f"🔁 Repeat: {REPEAT_MODE}"
     if not msg_id:
         panel_msg = await send_and_track(
             ctx,
             chat_id,
-            f"🎛 Kodi Remote - Current track:\n{text}\n{hifi_text}",
+            f"🎛 Kodi Remote - Current track:\n{text}\n{hifi_text} | {repeat_text}",
             reply_markup=control_panel(),
             parse_mode="HTML",
         )
@@ -436,7 +437,7 @@ async def update_now_playing_message(ctx, chat_id):
             ctx.bot.edit_message_text,
             chat_id=chat_id,
             message_id=msg_id,
-            text=f"🎛 Kodi Remote - Current track:\n{text}\n{hifi_text}",
+            text=f"🎛 Kodi Remote - Current track:\n{text}\n{hifi_text} | {repeat_text}",
             parse_mode="HTML",
             reply_markup=control_panel(),
         )
