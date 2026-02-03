@@ -145,10 +145,12 @@ def control_panel():
     play_label = "⏸" if WS_STATE == "playing" else "▶"
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("▶ No.", callback_data="play:ask"),
             InlineKeyboardButton("⏮", callback_data="back"),
             InlineKeyboardButton(play_label, callback_data="playpause"),
             InlineKeyboardButton("⏭", callback_data="skip"),
+        ],
+        [
+            InlineKeyboardButton("▶ No.", callback_data="play:ask"),
             InlineKeyboardButton("⏹", callback_data="stop"),
         ],
         [
@@ -168,10 +170,10 @@ def control_panel():
         [
             InlineKeyboardButton("⏱ % Seek", callback_data="seek:percent"),
             InlineKeyboardButton("🔁 Repeat", callback_data="repeat"),
-            InlineKeyboardButton("🗑 No.", callback_data="delete:ask"),
-            InlineKeyboardButton("🗑 All", callback_data="deleteall"),
         ],
         [
+            InlineKeyboardButton("🗑 No.", callback_data="delete:ask"),
+            InlineKeyboardButton("🗑 All", callback_data="deleteall"),
             InlineKeyboardButton("🗑 First", callback_data="delete:first"),
             InlineKeyboardButton("🗑 Last", callback_data="delete:last"),
         ],
@@ -1677,6 +1679,15 @@ async def handle_text(update, ctx):
     await warn_and_cleanup_chat(ctx, chat_id, msg_id)
 
 
+# Handle non-text messages (files, photos, videos, stickers, etc.).
+async def handle_nontext(update, ctx):
+    record_last_seen(ctx, update)
+    msg = update.effective_message
+    if not msg:
+        return
+    await warn_and_cleanup_chat(ctx, update.effective_chat.id, msg.message_id)
+
+
 # Initialize the bot, handlers, and start polling.
 def main():
     app = Application.builder().token(TOKEN).build()
@@ -1691,6 +1702,7 @@ def main():
         MessageHandler(filters.COMMAND & filters.TEXT, handle_command)
     )
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
+    app.add_handler(MessageHandler(filters.ATTACHMENT | filters.STICKER, handle_nontext))
 
     # Post startup messages and start background refresher.
     async def _post_init(app):
