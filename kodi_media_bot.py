@@ -146,16 +146,31 @@ def control_panel():
             InlineKeyboardButton("⏮", callback_data="back"),
             InlineKeyboardButton(play_label, callback_data="playpause"),
             InlineKeyboardButton("⏭", callback_data="skip"),
-            InlineKeyboardButton("⏹ Stop", callback_data="stop"),
+            InlineKeyboardButton("⏹", callback_data="stop"),
         ],
         [
+            InlineKeyboardButton("-10s", callback_data="seek:-10s"),
+            InlineKeyboardButton("-30s", callback_data="seek:-30s"),
+            InlineKeyboardButton("+10s", callback_data="seek:+10s"),
+            InlineKeyboardButton("+30s", callback_data="seek:+30s"),
+        ],
+        [
+            InlineKeyboardButton("-1m", callback_data="seek:-1m"),
+            InlineKeyboardButton("-5m", callback_data="seek:-5m"),
+            InlineKeyboardButton("-10m", callback_data="seek:-10m"),
+            InlineKeyboardButton("+1m", callback_data="seek:+1m"),
+            InlineKeyboardButton("+5m", callback_data="seek:+5m"),
+            InlineKeyboardButton("+10m", callback_data="seek:+10m"),
+        ],
+        [
+            InlineKeyboardButton("⏱ % Seek", callback_data="seek:percent"),
             InlineKeyboardButton("🔁 Repeat", callback_data="repeat"),
-            InlineKeyboardButton("🗑 Delete No.", callback_data="delete:ask"),
-            InlineKeyboardButton("🗑 Delete all", callback_data="deleteall"),
+            InlineKeyboardButton("🗑 No.", callback_data="delete:ask"),
+            InlineKeyboardButton("🗑 All", callback_data="deleteall"),
         ],
         [
-            InlineKeyboardButton("🗑 Delete first", callback_data="delete:first"),
-            InlineKeyboardButton("🗑 Delete last", callback_data="delete:last"),
+            InlineKeyboardButton("🗑 First", callback_data="delete:first"),
+            InlineKeyboardButton("🗑 Last", callback_data="delete:last"),
         ],
         [
             InlineKeyboardButton("🔊 +5", callback_data="vol:up5"),
@@ -344,6 +359,46 @@ def kodi_time_seconds(t):
     if not t:
         return None
     return t.get("hours", 0) * 3600 + t.get("minutes", 0) * 60 + t.get("seconds", 0)
+
+# Seek relative to the current position by a delta in seconds.
+def seek_relative_seconds(delta_sec: int):
+    pid = get_active_playerid()
+    if pid is None:
+        return False
+    props = kodi_call(
+        "Player.GetProperties",
+        {"playerid": pid, "properties": ["time", "totaltime", "canseek"]}
+    ).get("result", {})
+    if not props.get("canseek"):
+        return False
+    cur = props.get("time")
+    total = props.get("totaltime")
+    cur_sec = kodi_time_seconds(cur)
+    total_sec = kodi_time_seconds(total)
+    if cur_sec is None:
+        return False
+    if total_sec is None:
+        total_sec = max(cur_sec + 1, 1)
+    new_sec = max(0, min(cur_sec + delta_sec, total_sec))
+    h = int(new_sec // 3600)
+    m = int((new_sec % 3600) // 60)
+    s = int(new_sec % 60)
+    kodi_call("Player.Seek", {"playerid": pid, "value": {"time": {"hours": h, "minutes": m, "seconds": s}}})
+    return True
+
+# Seek to a percentage position (0-100).
+def seek_percent(percent: int):
+    pid = get_active_playerid()
+    if pid is None:
+        return False
+    props = kodi_call(
+        "Player.GetProperties",
+        {"playerid": pid, "properties": ["canseek"]}
+    ).get("result", {})
+    if not props.get("canseek"):
+        return False
+    kodi_call("Player.Seek", {"playerid": pid, "value": {"percentage": percent}})
+    return True
 
 # Normalize a title for loose comparison.
 def normalize_title(s):
@@ -1215,6 +1270,33 @@ async def on_button(update, ctx):
         await send_and_track(ctx, chat_id, "⏹ Stop")
         sent = True
 
+    elif cmd.startswith("seek:"):
+        if cmd == "seek:percent":
+            await send_and_track(ctx, chat_id, "⏱ Percent? (0-100)")
+            ctx.user_data["await_seek_percent"] = True
+            sent = True
+        else:
+            delta_map = {
+                "seek:-10s": -10,
+                "seek:-30s": -30,
+                "seek:+10s": 10,
+                "seek:+30s": 30,
+                "seek:-1m": -60,
+                "seek:-5m": -300,
+                "seek:-10m": -600,
+                "seek:+1m": 60,
+                "seek:+5m": 300,
+                "seek:+10m": 600,
+            }
+            delta = delta_map.get(cmd)
+            if delta is None:
+                await send_and_track(ctx, chat_id, "⚠ Unknown seek.")
+                sent = True
+            else:
+                ok = seek_relative_seconds(delta)
+                await send_and_track(ctx, chat_id, "⏩ Seeked." if ok else "⚠ Seek failed.")
+                sent = True
+
     elif cmd == "repeat":
         global REPEAT_MODE
         REPEAT_MODE = {"off":"one","one":"all","all":"off"}[REPEAT_MODE]
@@ -1388,6 +1470,23 @@ async def handle_text(update, ctx):
                 await send_and_track(ctx, chat_id, f"▶ Playing track {txt}.")
         else:
             await send_and_track(ctx, chat_id, "Please enter a number only.")
+        sent = True
+        if sent:
+            schedule_cleanup(ctx, chat_id, prev_id)
+            await update_list_message(ctx, chat_id)
+        return
+    if ctx.user_data.get("await_seek_percent"):
+        ctx.user_data["await_seek_percent"] = False
+        m = re.match(r"^\s*(\d{1,3})\s*%?\s*$", txt)
+        if m:
+            val = int(m.group(1))
+            if 0 <= val <= 100:
+                ok = seek_percent(val)
+                await send_and_track(ctx, chat_id, "⏩ Seeked." if ok else "⚠ Seek failed.")
+            else:
+                await send_and_track(ctx, chat_id, "Please enter a percentage from 0 to 100.")
+        else:
+            await send_and_track(ctx, chat_id, "Please enter a percentage from 0 to 100.")
         sent = True
         if sent:
             schedule_cleanup(ctx, chat_id, prev_id)
