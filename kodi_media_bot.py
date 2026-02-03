@@ -1585,11 +1585,11 @@ async def handle_text(update, ctx):
 
     if vid and pl:
         pending[uid] = {"video": vid.group(1), "list": pl.group(1)}
-        await send_and_track(ctx, chat_id, "1 = Song, L = Playlist")
+        await send_and_track(ctx, chat_id, "1 = Track, L = Playlist")
         sent = True
     elif vid:
         await queue_video_async(vid.group(1))
-        await send_and_track(ctx, chat_id, "✔ Song added to the queue.")
+        await send_and_track(ctx, chat_id, "✔ Track added to the queue.")
         sent = True
     elif pl:
         count = await queue_playlist_async(pl.group(1))
