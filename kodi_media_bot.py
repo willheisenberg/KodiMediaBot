@@ -1279,15 +1279,6 @@ def start_autoplay_thread():
     AUTOPLAY_THREAD = threading.Thread(target=autoplay_loop, daemon=True)
     AUTOPLAY_THREAD.start()
 
-# Handle /panel command and post the control panel.
-async def panel(update, ctx):
-    record_last_seen(ctx, update)
-    chat_id = update.effective_chat.id
-    prev_id = LAST_BOT_ID.get(chat_id)
-    await send_and_track(ctx, chat_id, "🎛 Kodi Remote - Current track:", reply_markup=control_panel())
-    schedule_cleanup(ctx, chat_id, prev_id)
-    await update_list_message(ctx, chat_id)
-
 # Handle inline keyboard button callbacks.
 async def on_button(update, ctx):
     q = update.callback_query
@@ -1624,12 +1615,10 @@ def main():
     app = Application.builder().token(TOKEN).build()
 
     start_autoplay_thread()
-
-    app.add_handler(CommandHandler("panel", panel))
     app.add_handler(CallbackQueryHandler(on_button))
 
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
-    app.add_handler(MessageHandler(filters.ATTACHMENT | filters.STICKER, handle_nontext))
+    app.add_handler(MessageHandler(filters.ATTACHMENT | filters.Sticker.ALL, handle_nontext))
 
     # Post startup messages and start background refresher.
     async def _post_init(app):
