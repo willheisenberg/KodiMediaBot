@@ -10,6 +10,7 @@ RUN pip install --no-cache-dir \
     python-telegram-bot \
     requests \
     pytube \
+    yt-dlp \
     websockets
 
 COPY kodi_media_bot.py /kodi_media_bot.py

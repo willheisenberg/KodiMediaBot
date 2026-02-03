@@ -1,6 +1,7 @@
 import os, re, threading, time, requests, asyncio, subprocess, html, json
 from urllib.parse import unquote
 from pytube import Playlist, YouTube
+from yt_dlp import YoutubeDL
 from telegram.ext import Application, MessageHandler, filters, CallbackQueryHandler, CommandHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import RetryAfter, TimedOut
@@ -20,6 +21,7 @@ CEC_CMD_VOL_DOWN = "0x42"
 YT = re.compile(r"(?:v=|youtu\.be/|shorts/)([A-Za-z0-9_-]{11})")
 PL = re.compile(r"(?:[?&]list=)([A-Za-z0-9_-]+)")
 SC = re.compile(r"https?://(www\.)?soundcloud\.com/[^/]+/[^/?#]+")
+SC_SET = re.compile(r"https?://(www\.)?soundcloud\.com/[^/]+/sets/[^/?#]+")
 SC_SHORT = re.compile(r"https?://on\.soundcloud\.com/[A-Za-z0-9]+")
 
 pending = {}
@@ -540,8 +542,11 @@ async def kodi_ws_listener():
                         if BOT_EXPECTING_WS > 0:
                             BOT_EXPECTING_WS -= 1
                         else:
-                            clear_bot_playback_state()
-                            schedule_now_playing_refresh()
+                            with LOCK:
+                                bot_active = AUTOPLAY_ENABLED and DISPLAY_INDEX is not None
+                            if not bot_active:
+                                clear_bot_playback_state()
+                                schedule_now_playing_refresh()
                     elif method == "Player.OnPause":
                         WS_PLAYING = False
                         WS_STATE = "paused"
@@ -706,14 +711,14 @@ def play_item(item: dict, resume_time=None):
     global BOT_EXPECTING_WS
     stop_all_players()
     kodi_clear_all_playlists()
-    BOT_EXPECTING_WS = 2
+    kind = item.get("kind", "video")
+    BOT_EXPECTING_WS = 3 if kind == "audio" else 2
     print(
         f"PLAY_ITEM start kind={item.get('kind')} title={item.get('title')} url={item.get('url')}",
         flush=True,
     )
 
     # Explicitly use audio (0) vs video (1) playlists.
-    kind = item.get("kind", "video")
     if kind == "audio":
         # Start SoundCloud via the audio playlist, then switch to the real stream.
         playlistid = 0
@@ -874,6 +879,9 @@ def is_sc_track_url(url):
     # Accept only artist/track links; reject discover/sets and other non-track paths
     return bool(re.match(r"^https?://(www\.)?soundcloud\.com/[^/]+/[^/?#]+", url)) and "discover/sets" not in url
 
+def is_sc_set_url(url):
+    return bool(re.match(r"^https?://(www\.)?soundcloud\.com/[^/]+/sets/[^/?#]+", url)) and "discover/sets" not in url
+
 # Resolve a SoundCloud short link to a full track URL.
 def resolve_sc_short(url):
     try:
@@ -946,6 +954,52 @@ def schedule_audio_resolve_and_open(playlistid, resume_time=None):
             seek_when_player_ready(resume_time, context="audio")
     threading.Thread(target=_run, daemon=True).start()
 
+# Expand a SoundCloud set into track URLs using yt-dlp.
+def expand_soundcloud_set(url):
+    clean = re.sub(r"\?.*$", "", url)
+    ydl_opts = {"quiet": True, "skip_download": True, "extract_flat": True}
+    try:
+        with YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(clean, download=False)
+    except Exception:
+        return []
+    entries = info.get("entries") or []
+    urls = []
+    for e in entries:
+        u = e.get("url") or e.get("webpage_url")
+        if u and u.startswith("http"):
+            urls.append(u)
+    if not urls or any(u.startswith("https://api-v2.soundcloud.com/") for u in urls):
+        ydl_opts = {"quiet": True, "skip_download": True, "extract_flat": False}
+        try:
+            with YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(clean, download=False)
+        except Exception:
+            return []
+        entries = info.get("entries") or []
+        urls = []
+        for e in entries:
+            u = e.get("webpage_url") or e.get("url")
+            if u and u.startswith("http"):
+                urls.append(u)
+    return [u for u in urls if is_sc_track_url(u)]
+
+def queue_soundcloud_set(url):
+    tracks = expand_soundcloud_set(url)
+    for t in tracks:
+        queue_item(make_soundcloud(t))
+    mark_list_dirty()
+    return len(tracks)
+
+async def queue_soundcloud_set_async(url):
+    try:
+        tracks = await asyncio.to_thread(expand_soundcloud_set, url)
+    except Exception:
+        tracks = []
+    for t in tracks:
+        queue_item(make_soundcloud(t))
+    mark_list_dirty()
+    return len(tracks)
 
 # Append an item to the queue and mark list dirty.
 def queue_item(item):
@@ -1528,6 +1582,18 @@ async def handle_text(update, ctx):
         return
 
     # ---- Check SoundCloud first ----
+    sc_set = SC_SET.search(txt)
+    if sc_set and is_sc_set_url(sc_set.group(0)):
+        count = await queue_soundcloud_set_async(sc_set.group(0))
+        if count > 0:
+            await send_and_track(ctx, chat_id, f"✔ SoundCloud set with {count} tracks added.")
+        else:
+            await send_and_track(ctx, chat_id, "⚠ This SoundCloud set could not be added.")
+        sent = True
+        if sent:
+            schedule_cleanup(ctx, chat_id, prev_id)
+            await update_list_message(ctx, chat_id)
+        return
     sc = SC.search(txt)
     if not sc:
         scs = SC_SHORT.search(txt)
@@ -1536,6 +1602,17 @@ async def handle_text(update, ctx):
                 resolved = await asyncio.to_thread(resolve_sc_short, scs.group(0))
             except Exception:
                 resolved = None
+            if resolved and is_sc_set_url(resolved):
+                count = await queue_soundcloud_set_async(resolved)
+                if count > 0:
+                    await send_and_track(ctx, chat_id, f"✔ SoundCloud set with {count} tracks added.")
+                else:
+                    await send_and_track(ctx, chat_id, "⚠ This SoundCloud set could not be added.")
+                sent = True
+                if sent:
+                    schedule_cleanup(ctx, chat_id, prev_id)
+                    await update_list_message(ctx, chat_id)
+                return
             if resolved and is_sc_track_url(resolved):
                 txt = resolved
                 sc = SC.search(txt)
