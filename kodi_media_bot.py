@@ -779,18 +779,29 @@ def skip_queue():
     global CURRENT_INDEX, DISPLAY_INDEX, NEXT_INDEX, AUTOPLAY_ENABLED
 
     with LOCK:
-        if DISPLAY_INDEX is None:
-            i = 0
-        else:
-            i = DISPLAY_INDEX + 1
-
-        if i >= len(QUEUE):
+        if not QUEUE:
             AUTOPLAY_ENABLED = False
             CURRENT_INDEX = None
             DISPLAY_INDEX = None
             NEXT_INDEX = 0
             stop_player_and_clear_playlists()
             return False
+
+        if REPEAT_MODE == "one" and DISPLAY_INDEX is not None:
+            i = DISPLAY_INDEX
+        else:
+            i = 0 if DISPLAY_INDEX is None else DISPLAY_INDEX + 1
+
+        if i >= len(QUEUE):
+            if REPEAT_MODE == "all":
+                i = 0
+            else:
+                AUTOPLAY_ENABLED = False
+                CURRENT_INDEX = None
+                DISPLAY_INDEX = None
+                NEXT_INDEX = 0
+                stop_player_and_clear_playlists()
+                return False
 
     play_index(i)
     return True
@@ -1112,9 +1123,20 @@ def back_queue():
     global CURRENT_INDEX, DISPLAY_INDEX, NEXT_INDEX, AUTOPLAY_ENABLED
 
     with LOCK:
-        if DISPLAY_INDEX is None:
+        if not QUEUE:
             return False
-        i = max(DISPLAY_INDEX - 1, 0)
+        if REPEAT_MODE == "one" and DISPLAY_INDEX is not None:
+            i = DISPLAY_INDEX
+        else:
+            if DISPLAY_INDEX is None:
+                i = len(QUEUE) - 1 if REPEAT_MODE == "all" else 0
+            else:
+                i = DISPLAY_INDEX - 1
+                if i < 0:
+                    if REPEAT_MODE == "all":
+                        i = len(QUEUE) - 1
+                    else:
+                        i = 0
 
     play_index(i)
     return True
