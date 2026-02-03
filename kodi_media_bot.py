@@ -157,6 +157,8 @@ def control_panel():
         [
             InlineKeyboardButton("🗑 No.", callback_data="delete:ask"),
             InlineKeyboardButton("🗑 All", callback_data="deleteall"),
+        ],
+        [
             InlineKeyboardButton("🗑 First", callback_data="delete:first"),
             InlineKeyboardButton("🗑 Last", callback_data="delete:last"),
         ],
@@ -365,6 +367,8 @@ def seek_relative_seconds(delta_sec: int):
     total_sec = kodi_time_seconds(total)
     if cur_sec is None:
         return False
+    if total_sec is not None and delta_sec > 0 and cur_sec + delta_sec >= total_sec:
+        return skip_queue()
     if total_sec is None:
         total_sec = max(cur_sec + 1, 1)
     new_sec = max(0, min(cur_sec + delta_sec, total_sec))
@@ -1501,7 +1505,7 @@ async def handle_text(update, ctx):
     if uid in pending:
         if txt.lower() == "1":
             await queue_video_async(pending[uid]["video"])
-            await send_and_track(ctx, chat_id, "✔ Song added to the queue.")
+            await send_and_track(ctx, chat_id, "✔ Track added to the queue.")
             pending.pop(uid)
         elif txt.lower() == "l":
             count = await queue_playlist_async(pending[uid]["list"])
