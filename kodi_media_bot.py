@@ -133,7 +133,7 @@ def control_panel():
             InlineKeyboardButton("⏭", callback_data="skip"),
         ],
         [
-            InlineKeyboardButton("▶ No.", callback_data="play:ask"),
+            InlineKeyboardButton("▶ №", callback_data="play:ask"),
             InlineKeyboardButton("⏹", callback_data="stop"),
         ],
         [
@@ -155,7 +155,7 @@ def control_panel():
             InlineKeyboardButton("🔁 Repeat", callback_data="repeat"),
         ],
         [
-            InlineKeyboardButton("🗑 No.", callback_data="delete:ask"),
+            InlineKeyboardButton("🗑 №", callback_data="delete:ask"),
             InlineKeyboardButton("🗑 All", callback_data="deleteall"),
         ],
         [
