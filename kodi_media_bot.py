@@ -14,7 +14,7 @@ KODI_WS_PORT = os.environ["KODI_WS_PORT"]
 KODI_URL = f"http://{KODI_HOST}:{KODI_PORT}/jsonrpc"
 AUTH = (os.environ["KODI_USER"], os.environ["KODI_PASS"])
 STARTUP_CHAT_ID = -1003641420817
-CEC_HOST = os.environ.get("CEC_HOST") or os.environ.get("HOST_IP", "172.17.0.1")
+CEC_HOST = os.environ.get("CEC_HOST") or os.environ.get("HOST_IP")
 CEC_CMD_VOL_UP = "0x41"
 CEC_CMD_VOL_DOWN = "0x42"
 
@@ -54,6 +54,7 @@ PANEL_MSG_ID = {}
 LIST_DIRTY = False
 HIFI_STATUS_CACHE = "⚪ Hifi: Unknown"
 HIFI_STATUS_TS = 0.0
+DEBUG_WS = os.environ.get("DEBUG_WS") in ("1", "true", "True", "yes", "YES")
 TG_RATE_LOCK = asyncio.Lock()
 TG_LAST_TS = 0.0
 TG_MIN_INTERVAL = 1.1
@@ -534,6 +535,8 @@ async def kodi_ws_listener():
                     except Exception:
                         continue
                     method = msg.get("method")
+                    if DEBUG_WS and method:
+                        print(f"WS EVENT method={method} msg={msg}", flush=True)
                     if method in ("Player.OnPlay", "Player.OnAVStart"):
                         now = time.time()
                         WS_PLAYING = True
@@ -541,6 +544,11 @@ async def kodi_ws_listener():
                         WS_LAST_EVENT_TS = now
                         if BOT_EXPECTING_WS > 0:
                             BOT_EXPECTING_WS -= 1
+                            if DEBUG_WS:
+                                print(
+                                    f"WS EXPECT dec method={method} remaining={BOT_EXPECTING_WS}",
+                                    flush=True,
+                                )
                         else:
                             with LOCK:
                                 bot_active = AUTOPLAY_ENABLED and DISPLAY_INDEX is not None
@@ -712,7 +720,7 @@ def play_item(item: dict, resume_time=None):
     stop_all_players()
     kodi_clear_all_playlists()
     kind = item.get("kind", "video")
-    BOT_EXPECTING_WS = 3 if kind == "audio" else 2
+    BOT_EXPECTING_WS = 2
     print(
         f"PLAY_ITEM start kind={item.get('kind')} title={item.get('title')} url={item.get('url')}",
         flush=True,
