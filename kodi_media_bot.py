@@ -2,7 +2,7 @@ import os, re, threading, time, requests, asyncio, subprocess, html, json
 from urllib.parse import unquote
 from pytube import Playlist, YouTube
 from yt_dlp import YoutubeDL
-from telegram.ext import Application, MessageHandler, filters, CallbackQueryHandler, CommandHandler
+from telegram.ext import Application, MessageHandler, filters, CallbackQueryHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import RetryAfter, TimedOut
 import websockets
@@ -25,23 +25,6 @@ SC_SET = re.compile(r"https?://(www\.)?soundcloud\.com/[^/]+/sets/[^/?#]+")
 SC_SHORT = re.compile(r"https?://on\.soundcloud\.com/[A-Za-z0-9]+")
 
 pending = {}
-
-HELP_TEXT = (
-    "Commands:\n"
-    "/info – this help\n"
-    "/list – current queue (numbered)\n"
-    "/play <n> – plays item n (queue stays)\n"
-    "/stop – stop playback\n"
-    "/skip – next track\n"
-    "/back – previous track\n"
-    "/delete <n> – remove item n\n"
-    "/deleteall – clear the queue\n"
-    "/repeat – toggle: off → one → all\n"
-    "\n"
-    "Post links:\n"
-    "- YouTube video link → appended to the end\n"
-    "- YouTube link with ?list=… → bot asks: 1 (video only) or L (full list)\n"
-)
 
 LAST_BOT_ID = {}
 PREV_BOT_ID = {}
@@ -1436,80 +1419,6 @@ async def on_button(update, ctx):
 
 
 
-# Handle slash commands from chat.
-async def handle_command(update, ctx):
-    if not update.message or not update.message.text:
-        return  # <<< VERY IMPORTANT
-
-    record_last_seen(ctx, update)
-    chat_id = update.effective_chat.id
-    prev_id = LAST_BOT_ID.get(chat_id)
-    sent = False
-    txt = update.message.text.split()
-    cmd = txt[0].split("@", 1)[0].lower()
-
-
-    if cmd == "/info":
-        await send_and_track(ctx, chat_id, HELP_TEXT)
-        sent = True
-
-    elif cmd == "/skip":
-        if skip_queue():
-            await send_and_track(ctx, chat_id, "⏭ Next")
-            sent = True
-        else:
-            await send_and_track(ctx, chat_id, "⏹ End of queue.")
-            sent = True
-
-    elif cmd == "/back":
-        if back_queue():
-            await send_and_track(ctx, chat_id, "⏮ Previous track.")
-            sent = True
-        else:
-            await send_and_track(ctx, chat_id, "No previous track.")
-            sent = True
-
-    elif cmd == "/stop":
-        hard_stop_and_clear()
-        await send_and_track(ctx, chat_id, "⏹ Stop")
-        sent = True
-
-    elif cmd == "/play" and len(txt) > 1 and txt[1].isdigit():
-        i = int(txt[1]) - 1
-        if is_requested_track_already_playing(i):
-            await send_and_track(ctx, chat_id, "▶ This track is already playing.")
-        else:
-            play_index(i)
-            await send_and_track(ctx, chat_id, f"▶ Playing track {txt[1]}.")
-        sent = True
-
-    elif cmd == "/list":
-        await update_list_message(ctx, chat_id)
-        sent = True
-
-    elif cmd == "/repeat":
-        global REPEAT_MODE
-        REPEAT_MODE = {"off":"one","one":"all","all":"off"}[REPEAT_MODE]
-        await send_and_track(ctx, chat_id, f"🔁 Repeat-Modus: {REPEAT_MODE}")
-        sent = True
-
-    elif cmd == "/delete" and len(txt) > 1 and txt[1].isdigit():
-        ok, msg = delete_index(int(txt[1]) - 1)
-        if ok:
-            await send_and_track(ctx, chat_id, "🗑 Track deleted.")
-        else:
-            await send_and_track(ctx, chat_id, msg)
-        sent = True
-
-    elif cmd == "/deleteall":
-        clear_queue()
-        await send_and_track(ctx, chat_id, "🗑 Queue cleared.")
-        sent = True
-
-    if sent:
-        schedule_cleanup(ctx, chat_id, prev_id)
-        await update_list_message(ctx, chat_id)
-
 # Handle text messages and URL inputs.
 async def handle_text(update, ctx):
     record_last_seen(ctx, update)
@@ -1697,10 +1606,6 @@ def main():
     app.add_handler(CommandHandler("panel", panel))
     app.add_handler(CallbackQueryHandler(on_button))
 
-    # IMPORTANT – re-enable your existing handlers
-    app.add_handler(
-        MessageHandler(filters.COMMAND & filters.TEXT, handle_command)
-    )
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
     app.add_handler(MessageHandler(filters.ATTACHMENT | filters.STICKER, handle_nontext))
 
