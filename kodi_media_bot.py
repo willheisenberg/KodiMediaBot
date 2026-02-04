@@ -398,6 +398,30 @@ def normalize_title(s):
         return ""
     return re.sub(r"\s+", " ", s).strip().casefold()
 
+# Build a display name from a Kodi player item.
+def kodi_item_name(item):
+    if not item:
+        return ""
+    artists = item.get("artist") or []
+    title = item.get("title") or ""
+    label = item.get("label") or ""
+    if artists and title:
+        return f"{', '.join(artists)} - {title}"
+    return label or title or ""
+
+# Check whether a Kodi item matches a queue item.
+def kodi_item_matches_queue(item, qitem):
+    if not item or not qitem:
+        return False
+    item_file = item.get("file") or ""
+    q_url = qitem.get("url") or ""
+    if item_file and q_url and item_file == q_url:
+        return True
+    item_name = normalize_title(kodi_item_name(item))
+    q_title = normalize_title(qitem.get("title") or "")
+    if not item_name or not q_title:
+        return False
+    return item_name in q_title or q_title in item_name
 # Assemble the now-playing display text.
 def get_now_playing_text():
     global LAST_PROGRESS_TS, LAST_PROGRESS_TIME, LAST_PROGRESS_TOTAL, LAST_PROGRESS_INDEX, EXTERNAL_PLAYBACK
@@ -539,9 +563,20 @@ async def kodi_ws_listener():
                                     flush=True,
                                 )
                         else:
+                            player = msg.get("params", {}).get("data", {}).get("player", {})
+                            pid = player.get("playerid")
+                            item = None
+                            if pid is not None:
+                                item = kodi_call(
+                                    "Player.GetItem",
+                                    {"playerid": pid, "properties": ["title", "artist", "label", "file"]},
+                                ).get("result", {}).get("item", {})
                             with LOCK:
-                                bot_active = AUTOPLAY_ENABLED and DISPLAY_INDEX is not None
-                            if not bot_active:
+                                if DISPLAY_INDEX is not None and 0 <= DISPLAY_INDEX < len(QUEUE):
+                                    qitem = QUEUE[DISPLAY_INDEX]
+                                else:
+                                    qitem = None
+                            if not kodi_item_matches_queue(item, qitem):
                                 clear_bot_playback_state()
                                 schedule_now_playing_refresh()
                     elif method == "Player.OnPause":
