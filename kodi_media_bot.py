@@ -1,5 +1,5 @@
 import os, re, threading, time, requests, asyncio, subprocess, html, json
-from urllib.parse import unquote
+from urllib.parse import unquote, quote_plus
 from pytube import Playlist, YouTube
 from yt_dlp import YoutubeDL
 from telegram.ext import Application, MessageHandler, filters, CallbackQueryHandler
@@ -61,6 +61,8 @@ APP_INSTANCE = None
 MAIN_LOOP = None
 AUTOPLAY_THREAD_STARTED = False
 AUTOPLAY_THREAD = None
+LAST_WS_ITEM = {}
+LAST_WS_PLAYERID = None
 
 # Serialize Telegram API calls to avoid send/edit/delete collisions.
 async def telegram_request(call, *args, **kwargs):
@@ -184,6 +186,18 @@ def kodi_call(method: str, params: dict | None = None):
     return requests.post(KODI_URL, auth=AUTH, json=payload, timeout=5).json()
 
 
+def kodi_call_with_props(method, id_key, id_value, properties):
+    props = list(properties)
+    while props:
+        res = kodi_call(method, {id_key: id_value, "properties": props})
+        if not res.get("error"):
+            return res
+        if DEBUG_WS:
+            print(f"LIB FETCH retry method={method} props={props} err={res.get('error')}", flush=True)
+        props = props[:-1]
+    return kodi_call(method, {id_key: id_value, "properties": []})
+
+
 # Return the first active Kodi player, if any.
 def get_active_player():
     players = get_active_players()
@@ -197,6 +211,15 @@ def get_active_playerid():
 # Fetch the list of active Kodi players.
 def get_active_players():
     return kodi_call("Player.GetActivePlayers").get("result", [])
+
+
+def pick_playerid(players):
+    if not players:
+        return None
+    for p in players:
+        if p.get("type") == "video":
+            return p.get("playerid")
+    return players[0].get("playerid")
 
 # Send repeated CEC volume commands over SSH.
 def run_cec_volume(times: int, cmd_hex: str) -> bool:
@@ -409,6 +432,96 @@ def kodi_item_name(item):
         return f"{', '.join(artists)} - {title}"
     return label or title or ""
 
+
+def fetch_library_item(item_type, item_id):
+    if not item_type or item_id is None:
+        return {}
+    itype = item_type.lower()
+    if itype == "movie":
+        res = kodi_call_with_props(
+            "VideoLibrary.GetMovieDetails",
+            "movieid",
+            item_id,
+            ["title", "year", "originaltitle", "uniqueid", "imdbnumber"],
+        )
+        if DEBUG_WS and res.get("error"):
+            print(f"LIB FETCH movie error={res.get('error')} id={item_id}", flush=True)
+        return (res.get("result", {}) or {}).get("moviedetails", {}) or {}
+    if itype == "episode":
+        res = kodi_call_with_props(
+            "VideoLibrary.GetEpisodeDetails",
+            "episodeid",
+            item_id,
+            ["title", "showtitle", "season", "episode", "uniqueid", "imdbnumber"],
+        )
+        if DEBUG_WS and res.get("error"):
+            print(f"LIB FETCH episode error={res.get('error')} id={item_id}", flush=True)
+        return (res.get("result", {}) or {}).get("episodedetails", {}) or {}
+    if itype == "tvshow":
+        res = kodi_call_with_props(
+            "VideoLibrary.GetTVShowDetails",
+            "tvshowid",
+            item_id,
+            ["title", "year", "uniqueid", "imdbnumber"],
+        )
+        if DEBUG_WS and res.get("error"):
+            print(f"LIB FETCH tvshow error={res.get('error')} id={item_id}", flush=True)
+        return (res.get("result", {}) or {}).get("tvshowdetails", {}) or {}
+    return {}
+
+
+def external_item_display(item):
+    if not item:
+        if DEBUG_WS:
+            print("EXT ITEM display: empty item", flush=True)
+        return None, None
+    itype = (item.get("type") or "").lower()
+    title = item.get("title") or ""
+    label = item.get("label") or ""
+    imdbnumber = item.get("imdbnumber") or ""
+    uniqueid = item.get("uniqueid") or {}
+    imdb_id = ""
+    if isinstance(uniqueid, dict):
+        imdb_id = uniqueid.get("imdb") or ""
+    file_url = item.get("file") or ""
+    showtitle = item.get("showtitle") or ""
+    season = item.get("season")
+    episode = item.get("episode")
+    artist = item.get("artist") or []
+    album = item.get("album") or ""
+    channel = item.get("channel") or ""
+
+    link = None
+    if file_url.startswith("http"):
+        link = file_url
+    if link and ("youtu" in link or "soundcloud" in link):
+        pass
+    elif imdbnumber and re.match(r"^tt\d+$", imdbnumber):
+        link = f"https://www.imdb.com/title/{imdbnumber}/"
+    elif imdb_id and re.match(r"^tt\d+$", imdb_id):
+        link = f"https://www.imdb.com/title/{imdb_id}/"
+    elif itype in ("movie", "episode", "tvshow"):
+        q = showtitle or title or label
+        if q:
+            link = f"https://www.imdb.com/find?q={quote_plus(q)}"
+
+    if itype == "episode":
+        base = showtitle or label or title
+        ep_title = title or ""
+        if base:
+            if isinstance(season, int) and isinstance(episode, int):
+                return f"{base} S{season:02d}E{episode:02d} – {ep_title}".strip(" –"), link
+            return f"{base} – {ep_title}".strip(" –"), link
+    if itype == "movie":
+        return title or label or "Unknown", link
+    if artist and title:
+        return f"{', '.join(artist)} - {title}", link
+    if album and title:
+        return f"{album} - {title}", link
+    if channel:
+        return channel, link
+    return label or title or None, link
+
 # Check whether a Kodi item matches a queue item.
 def kodi_item_matches_queue(item, qitem):
     if not item or not qitem:
@@ -453,8 +566,14 @@ def get_now_playing_text():
             return f"▶ {safe_name}"
         return "⏸ Nothing playing"
 
-    player = players[0]
-    pid = player.get("playerid")
+    pid = None
+    if LAST_WS_PLAYERID is not None:
+        for p in players:
+            if p.get("playerid") == LAST_WS_PLAYERID:
+                pid = LAST_WS_PLAYERID
+                break
+    if pid is None:
+        pid = pick_playerid(players)
     if pid is None:
         EXTERNAL_PLAYBACK = False
         return "⏸ Nothing playing"
@@ -469,15 +588,31 @@ def get_now_playing_text():
     if not name:
         item = kodi_call(
             "Player.GetItem",
-            {"playerid": pid, "properties": ["title", "artist", "label"]}
+            {"playerid": pid, "properties": ["title", "artist", "file", "showtitle", "season", "episode", "album", "channel"]}
         ).get("result", {}).get("item", {})
-        artists = item.get("artist") or []
-        title = item.get("title") or ""
-        label = item.get("label") or ""
-        if artists and title:
-            name = f"{', '.join(artists)} - {title}"
-        else:
-            name = label or title or "Unknown"
+
+        # Enrich with library data so we can resolve uniqueid/imdb links.
+        ws_id = LAST_WS_ITEM.get("id")
+        ws_type = LAST_WS_ITEM.get("type")
+        ws_title = LAST_WS_ITEM.get("title")
+        if DEBUG_WS:
+            print(f"EXT ITEM fallback ws_id={ws_id} ws_type={ws_type} ws_title={ws_title}", flush=True)
+        if ws_id is not None and ws_type:
+            lib_item = fetch_library_item(ws_type, ws_id)
+            if lib_item:
+                lib_item["type"] = ws_type
+                if item:
+                    item = {**item, **lib_item}
+                else:
+                    item = lib_item
+        if not item and ws_title:
+            item = {"type": ws_type, "title": ws_title}
+
+        name, link = external_item_display(item)
+        if not name:
+            if DEBUG_WS:
+                print(f"EXT ITEM unknown item={item}", flush=True)
+            name = "Unknown"
 
     cur = format_kodi_time(props.get("time"))
     total = format_kodi_time(props.get("totaltime"))
@@ -555,6 +690,14 @@ async def kodi_ws_listener():
                         WS_PLAYING = True
                         WS_STATE = "playing"
                         WS_LAST_EVENT_TS = now
+                        player_params = msg.get("params", {}).get("data", {}).get("player", {}) or {}
+                        if "playerid" in player_params:
+                            global LAST_WS_PLAYERID
+                            LAST_WS_PLAYERID = player_params.get("playerid")
+                        item_params = msg.get("params", {}).get("data", {}).get("item", {}) or {}
+                        if "id" in item_params or "type" in item_params or "title" in item_params:
+                            LAST_WS_ITEM.clear()
+                            LAST_WS_ITEM.update({k: item_params.get(k) for k in ("id", "type", "title")})
                         if BOT_EXPECTING_WS > 0:
                             BOT_EXPECTING_WS -= 1
                             if DEBUG_WS:
@@ -569,7 +712,7 @@ async def kodi_ws_listener():
                             if pid is not None:
                                 item = kodi_call(
                                     "Player.GetItem",
-                                    {"playerid": pid, "properties": ["title", "artist", "label", "file"]},
+                                    {"playerid": pid, "properties": ["title", "artist", "file"]},
                                 ).get("result", {}).get("item", {})
                             with LOCK:
                                 if DISPLAY_INDEX is not None and 0 <= DISPLAY_INDEX < len(QUEUE):
