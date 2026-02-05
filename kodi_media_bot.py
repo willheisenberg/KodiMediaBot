@@ -690,14 +690,17 @@ async def kodi_ws_listener():
                         WS_PLAYING = True
                         WS_STATE = "playing"
                         WS_LAST_EVENT_TS = now
-                        player_params = msg.get("params", {}).get("data", {}).get("player", {}) or {}
+                        data = msg.get("params", {}).get("data", {}) or {}
+                        player_params = data.get("player", {}) or {}
+                        item_params = data.get("item", {}) or {}
                         if "playerid" in player_params:
                             global LAST_WS_PLAYERID
                             LAST_WS_PLAYERID = player_params.get("playerid")
-                        item_params = msg.get("params", {}).get("data", {}).get("item", {}) or {}
-                        if "id" in item_params or "type" in item_params or "title" in item_params:
+                        if any(k in item_params for k in ("id", "type", "title")):
                             LAST_WS_ITEM.clear()
-                            LAST_WS_ITEM.update({k: item_params.get(k) for k in ("id", "type", "title")})
+                            for k in ("id", "type", "title"):
+                                if k in item_params:
+                                    LAST_WS_ITEM[k] = item_params.get(k)
                         if BOT_EXPECTING_WS > 0:
                             BOT_EXPECTING_WS -= 1
                             if DEBUG_WS:
@@ -706,7 +709,7 @@ async def kodi_ws_listener():
                                     flush=True,
                                 )
                         else:
-                            player = msg.get("params", {}).get("data", {}).get("player", {})
+                            player = data.get("player", {}) or {}
                             pid = player.get("playerid")
                             item = None
                             if pid is not None:
