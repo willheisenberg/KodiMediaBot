@@ -144,7 +144,7 @@ def run_cec_power(on: bool) -> bool:
 def get_hifi_power_status():
     cmd = (
         f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{CEC_HOST} "
-        f"cec-ctl --show-topology | awk '/Audio System{{f=1}} f && /Power Status{{print $NF; exit}}'"
+        f"cec-ctl --show-topology | awk '/Audio System/ {{f=1}} f && /Power Status/ {{print $NF; exit}}'"
     )
     try:
         res = subprocess.run(cmd, shell=True, check=False, capture_output=True, text=True)
