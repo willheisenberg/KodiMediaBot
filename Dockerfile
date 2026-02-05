@@ -13,6 +13,10 @@ RUN pip install --no-cache-dir \
     yt-dlp \
     websockets
 
-COPY kodi_media_bot.py /kodi_media_bot.py
+COPY main.py /main.py
+COPY telegram_ui.py /telegram_ui.py
+COPY queue_state.py /queue_state.py
+COPY kodi_api.py /kodi_api.py
+COPY playlist_store.py /playlist_store.py
 
-CMD ["python", "/kodi_media_bot.py"]
+CMD ["python", "/main.py"]

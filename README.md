@@ -3,7 +3,11 @@
 This bot controls Kodi and a CEC device (HiFi/TV) via Telegram.
 
 ## Files
-- `kodi_media_bot.py`: the file copied into the Docker image.
+- `main.py`: entrypoint.
+- `telegram_ui.py`: Telegram UI handlers.
+- `queue_state.py`: queue + playback state.
+- `kodi_api.py`: Kodi JSON-RPC + WS helpers.
+- `playlist_store.py`: save/load playlist JSON.
 - `Dockerfile`: builds the image.
 
 ## Build
@@ -53,6 +57,7 @@ docker run -d --name partyqueue --restart unless-stopped --network host \
   -e KODI_PASS="Password" \
   -e SC_CLIENT_ID="YOUR_CLIENT_ID" \
   -v /storage/docker/partyqueue:/root/.ssh:ro \
+  -v /storage/docker/partyqueue/playlists:/data/playlists \
   partyqueue
 ```
 
@@ -64,6 +69,8 @@ Notes:
 - `KODI_WS_PORT` configures the Kodi websocket port.
 - `DEBUG_WS=1` enables websocket debug logging.
 - `SC_CLIENT_ID` configures the SoundCloud client id.
+- Playlists are saved to `/data/playlists` inside the container. Mount a host path to persist them.
+- Use the “Save” and “Load” buttons in the Telegram panel to store or restore the queue.
 
 ## Troubleshooting
 - `ssh: not found`: install `openssh-client` in the image.
