@@ -725,6 +725,7 @@ async def kodi_ws_listener():
                             if not kodi_item_matches_queue(item, qitem):
                                 clear_bot_playback_state()
                                 schedule_now_playing_refresh()
+                        schedule_playback_refresh()
                     elif method == "Player.OnPause":
                         WS_PLAYING = False
                         WS_STATE = "paused"
@@ -802,7 +803,7 @@ def schedule_cleanup(ctx, chat_id, prev_id):
 
 # Delete a range of messages after a delay.
 async def _cleanup_after_delay(ctx, chat_id, start_id, end_id, start_inclusive):
-    await asyncio.sleep(7)
+    await asyncio.sleep(4)
     print(f"RUN CLEANUP chat_id={chat_id} start_id={start_id} end_id={end_id} inclusive={start_inclusive}", flush=True)
     if start_id is not None:
         begin = start_id if start_inclusive else start_id + 1
