@@ -1,5 +1,5 @@
-import os, re, threading, time, requests, asyncio, subprocess, html, json
-from urllib.parse import unquote, quote_plus
+import os, re, threading, time, requests, asyncio, subprocess, html, json, unicodedata
+from urllib.parse import unquote, quote_plus, urlparse, parse_qs
 from pytube import Playlist, YouTube
 from yt_dlp import YoutubeDL
 from telegram.ext import Application, MessageHandler, filters, CallbackQueryHandler
@@ -63,6 +63,17 @@ AUTOPLAY_THREAD_STARTED = False
 AUTOPLAY_THREAD = None
 LAST_WS_ITEM = {}
 LAST_WS_PLAYERID = None
+LAST_WS_YT_ID = ""
+LAST_WS_PLAYING_FILE = ""
+LAST_WS_SC_URL = ""
+LAST_WS_SC_TRACK_ID = ""
+LAST_WS_SC_LOOKUP_TS = 0.0
+LAST_WS_SC_PROBE_TS = 0.0
+LAST_WS_SC_PROBE_ACTIVE = False
+SC_CLIENT_ID_CACHE = ""
+SC_CLIENT_ID_TS = 0.0
+SC_PERMALINK_CACHE = {}
+SC_PERMALINK_TTL = 3600.0
 
 # Serialize Telegram API calls to avoid send/edit/delete collisions.
 async def telegram_request(call, *args, **kwargs):
@@ -469,8 +480,260 @@ def fetch_library_item(item_type, item_id):
         return (res.get("result", {}) or {}).get("tvshowdetails", {}) or {}
     return {}
 
+def extract_youtube_id(url):
+    if not url:
+        return ""
+    m = YT.search(url)
+    if m:
+        return m.group(1)
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return ""
+    qs = parse_qs(parsed.query)
+    vid_param = (qs.get("video_id") or [""])[0]
+    if vid_param and re.match(r"^[A-Za-z0-9_-]{11}$", vid_param):
+        return vid_param
+    file_param = (qs.get("file") or [""])[0]
+    if file_param:
+        base = file_param.split("/")[-1]
+        if "." in base:
+            base = base.split(".", 1)[0]
+        if re.match(r"^[A-Za-z0-9_-]{11}$", base):
+            return base
+    for part in parsed.path.split("/"):
+        if re.match(r"^[A-Za-z0-9_-]{11}$", part):
+            return part
+    return ""
+
+def soundcloud_slug(text):
+    if not text:
+        return ""
+    norm = unicodedata.normalize("NFKD", text)
+    norm = norm.encode("ascii", "ignore").decode()
+    norm = norm.lower()
+    norm = re.sub(r"[^a-z0-9]+", "-", norm).strip("-")
+    return norm
+
+def soundcloud_track_slug_from_url(url):
+    if not url:
+        return ""
+    m = re.match(r"^https?://(www\.)?soundcloud\.com/[^/]+/([^/?#]+)", url)
+    if not m:
+        return ""
+    return m.group(2) or ""
+
+def guess_soundcloud_link(artist, title):
+    if isinstance(artist, list):
+        artist = artist[0] if artist else ""
+    if not artist or not title:
+        return ""
+    a = soundcloud_slug(artist)
+    t = soundcloud_slug(title)
+    if not a or not t:
+        return ""
+    return f"https://soundcloud.com/{a}/{t}"
+
+def extract_soundcloud_url(file_url):
+    if not file_url:
+        return ""
+    if file_url.startswith("plugin://plugin.audio.soundcloud/play/"):
+        try:
+            parsed = urlparse(file_url)
+            qs = parse_qs(parsed.query)
+            raw = (qs.get("url") or [""])[0]
+            if raw:
+                clean = re.sub(r"\?.*$", "", unquote(raw))
+                if SC.match(clean):
+                    return clean
+                return unquote(raw)
+        except Exception:
+            return ""
+    return ""
+
+def read_soundcloud_client_id():
+    global SC_CLIENT_ID_CACHE, SC_CLIENT_ID_TS
+    now = time.time()
+    if SC_CLIENT_ID_CACHE and now - SC_CLIENT_ID_TS < 300:
+        return SC_CLIENT_ID_CACHE
+    env_id = os.environ.get("SC_CLIENT_ID")
+    if env_id:
+        SC_CLIENT_ID_CACHE = env_id.strip()
+        SC_CLIENT_ID_TS = now
+        return SC_CLIENT_ID_CACHE
+    path = os.environ.get(
+        "SC_CLIENT_ID_FILE",
+        "/storage/.kodi/userdata/addon_data/plugin.audio.soundcloud/cache/api-client-id",
+    )
+    try:
+        with open(path, "r") as f:
+            SC_CLIENT_ID_CACHE = f.read().strip()
+            SC_CLIENT_ID_TS = now
+            return SC_CLIENT_ID_CACHE
+    except Exception as e:
+        return ""
+
+def extract_soundcloud_track_id(text):
+    if not text:
+        return ""
+    m = re.search(r"soundcloud:tracks:(\d+)", text)
+    if m:
+        return m.group(1)
+    m = re.search(r"/tracks/(\d+)", text)
+    if m:
+        return m.group(1)
+    return ""
+
+def get_cached_soundcloud_permalink(track_id):
+    if not track_id:
+        return ""
+    hit = SC_PERMALINK_CACHE.get(track_id)
+    if not hit:
+        return ""
+    url, ts = hit
+    if time.time() - ts > SC_PERMALINK_TTL:
+        SC_PERMALINK_CACHE.pop(track_id, None)
+        return ""
+    return url
+
+def cache_soundcloud_permalink(track_id, url):
+    if not track_id or not url:
+        return
+    SC_PERMALINK_CACHE[track_id] = (url, time.time())
+
+def fetch_soundcloud_permalink(track_id):
+    if not track_id:
+        return ""
+    cached = get_cached_soundcloud_permalink(track_id)
+    if cached:
+        return cached
+    client_id = read_soundcloud_client_id()
+    if not client_id:
+        return ""
+    api_url = f"https://api-v2.soundcloud.com/tracks/{track_id}?client_id={client_id}"
+    try:
+        resp = requests.get(api_url, timeout=6)
+        if not resp.ok:
+            return ""
+        data = resp.json() or {}
+        url = data.get("permalink_url") or ""
+        if url:
+            cache_soundcloud_permalink(track_id, url)
+        return url
+    except Exception as e:
+        return ""
+
+def maybe_cache_soundcloud_url(file_url):
+    global LAST_WS_SC_URL
+    sc_url = extract_soundcloud_url(file_url)
+    if sc_url:
+        LAST_WS_SC_URL = sc_url
+
+def resolve_soundcloud_link_from_kodi():
+    global LAST_WS_SC_TRACK_ID, LAST_WS_SC_URL
+    pid = get_active_playerid()
+    if pid is None:
+        return ""
+    cur_title = ""
+    try:
+        item = kodi_call(
+            "Player.GetItem",
+            {"playerid": pid, "properties": ["file"]},
+        ).get("result", {}).get("item", {})
+        cur_title = item.get("title") or item.get("label") or ""
+        file_url = item.get("file") or ""
+        sc = extract_soundcloud_url(file_url)
+        if sc:
+            return sc
+        track_id = extract_soundcloud_track_id(file_url)
+        if track_id:
+            link = fetch_soundcloud_permalink(track_id)
+            if link:
+                LAST_WS_SC_TRACK_ID = track_id
+                LAST_WS_SC_URL = link
+                return link
+    except Exception:
+        pass
+    try:
+        res = kodi_call(
+            "Playlist.GetItems",
+            {"playlistid": 0, "properties": ["file"]},
+        )
+        items = res.get("result", {}).get("items", []) or []
+        want = normalize_title(cur_title)
+        matched = None
+        for it in items:
+            if want:
+                label = it.get("label") or it.get("title") or ""
+                if normalize_title(label) == want:
+                    matched = it
+                    break
+        if matched is not None:
+            items = [matched]
+        for it in items:
+            file_url = it.get("file") or ""
+            sc = extract_soundcloud_url(file_url)
+            if sc:
+                return sc
+            if "media_url=" in file_url:
+                try:
+                    qs = parse_qs(urlparse(file_url).query)
+                    media_url = (qs.get("media_url") or [""])[0]
+                except Exception:
+                    media_url = ""
+                track_id = extract_soundcloud_track_id(media_url)
+                if track_id:
+                    link = fetch_soundcloud_permalink(track_id)
+                    if link:
+                        LAST_WS_SC_TRACK_ID = track_id
+                        LAST_WS_SC_URL = link
+                        return link
+    except Exception:
+        pass
+    return ""
+
+def schedule_soundcloud_permalink_probe(timeout_s=2.0, interval_s=0.2):
+    global LAST_WS_SC_PROBE_TS, LAST_WS_SC_PROBE_ACTIVE, LAST_WS_SC_URL, LAST_WS_SC_TRACK_ID
+    now = time.time()
+    if LAST_WS_SC_PROBE_ACTIVE and now - LAST_WS_SC_PROBE_TS < timeout_s:
+        return
+    LAST_WS_SC_PROBE_TS = now
+    LAST_WS_SC_PROBE_ACTIVE = True
+
+    def _run():
+        global LAST_WS_SC_PROBE_ACTIVE, LAST_WS_SC_URL
+        end = time.time() + timeout_s
+        while time.time() < end:
+            try:
+                pid = get_active_playerid()
+                if pid is None:
+                    time.sleep(interval_s)
+                    continue
+                item = kodi_call(
+                    "Player.GetItem",
+                    {"playerid": pid, "properties": ["file"]},
+                ).get("result", {}).get("item", {})
+                file_url = item.get("file") or ""
+                sc = extract_soundcloud_url(file_url)
+                if sc:
+                    LAST_WS_SC_URL = sc
+                    break
+                track_id = extract_soundcloud_track_id(file_url)
+                if track_id:
+                    link = fetch_soundcloud_permalink(track_id)
+                    if link:
+                        LAST_WS_SC_URL = link
+                        LAST_WS_SC_TRACK_ID = track_id
+                        break
+            except Exception:
+                pass
+            time.sleep(interval_s)
+        LAST_WS_SC_PROBE_ACTIVE = False
+
+    threading.Thread(target=_run, daemon=True).start()
 
 def external_item_display(item):
+    global LAST_WS_SC_LOOKUP_TS, LAST_WS_SC_URL, LAST_WS_SC_TRACK_ID
     if not item:
         if DEBUG_WS:
             print("EXT ITEM display: empty item", flush=True)
@@ -492,8 +755,54 @@ def external_item_display(item):
     channel = item.get("channel") or ""
 
     link = None
+    # If Kodi gives a plugin youtube URL, derive a public link.
+    if not link and file_url.startswith("plugin://plugin.video.youtube/"):
+        yt_id = extract_youtube_id(file_url)
+        if yt_id:
+            link = f"https://youtu.be/{yt_id}"
+    # If Kodi gives a local youtube manifest URL, derive a public link.
+    yt_id_from_file = extract_youtube_id(file_url) if file_url else ""
+    if yt_id_from_file and "/youtube/manifest/" in file_url:
+        link = f"https://youtu.be/{yt_id_from_file}"
+    # If Kodi gives a plugin.video.youtube URL, derive a public link.
+    if not link and file_url.startswith("plugin://plugin.video.youtube/"):
+        yt_id = extract_youtube_id(file_url)
+        if yt_id:
+            link = f"https://youtu.be/{yt_id}"
+    sc_from_plugin = extract_soundcloud_url(file_url)
+    if sc_from_plugin:
+        link = sc_from_plugin
     if file_url.startswith("http"):
         link = file_url
+        yt_id = extract_youtube_id(link)
+        if yt_id:
+            link = f"https://youtu.be/{yt_id}"
+        elif "sndcdn" in link:
+            track_id = extract_soundcloud_track_id(file_url)
+            if LAST_WS_SC_URL and LAST_WS_SC_TRACK_ID and track_id and track_id == LAST_WS_SC_TRACK_ID:
+                link = LAST_WS_SC_URL
+                return label or title or None, link
+            schedule_soundcloud_permalink_probe()
+            now = time.time()
+            if now - LAST_WS_SC_LOOKUP_TS > 2.0:
+                LAST_WS_SC_LOOKUP_TS = now
+                sc = resolve_soundcloud_link_from_kodi()
+                if sc:
+                    LAST_WS_SC_URL = sc
+                    link = sc
+                    return label or title or None, link
+            sc_link = guess_soundcloud_link(artist, title)
+            link = sc_link or None
+        elif "/youtube/manifest/" in link and ("127.0.0.1" in link or "localhost" in link):
+            # If we can extract a video id, prefer the public link instead of hiding.
+            yt_id = extract_youtube_id(link)
+            if yt_id:
+                link = f"https://youtu.be/{yt_id}"
+            else:
+                link = None
+    if not link and itype in ("video", "movie") and LAST_WS_YT_ID:
+        if "youtube" in (file_url or "") or "manifest" in (file_url or "") or "youtube" in (LAST_WS_PLAYING_FILE or ""):
+            link = f"https://youtu.be/{LAST_WS_YT_ID}"
     if link and ("youtu" in link or "soundcloud" in link):
         pass
     elif imdbnumber and re.match(r"^tt\d+$", imdbnumber):
@@ -530,6 +839,14 @@ def kodi_item_matches_queue(item, qitem):
     q_url = qitem.get("url") or ""
     if item_file and q_url and item_file == q_url:
         return True
+    # SoundCloud: match by track slug even if the artist differs.
+    q_link = qitem.get("link") or ""
+    if q_link and "soundcloud.com" in q_link:
+        item_title = item.get("title") or item.get("label") or ""
+        q_slug = soundcloud_track_slug_from_url(q_link)
+        t_slug = soundcloud_slug(item_title)
+        if q_slug and t_slug and (q_slug == t_slug or q_slug in t_slug or t_slug in q_slug):
+            return True
     item_name = normalize_title(kodi_item_name(item))
     q_title = normalize_title(qitem.get("title") or "")
     if not item_name or not q_title:
@@ -590,6 +907,7 @@ def get_now_playing_text():
             "Player.GetItem",
             {"playerid": pid, "properties": ["title", "artist", "file", "showtitle", "season", "episode", "album", "channel"]}
         ).get("result", {}).get("item", {})
+        maybe_cache_soundcloud_url(item.get("file"))
 
         # Enrich with library data so we can resolve uniqueid/imdb links.
         ws_id = LAST_WS_ITEM.get("id")
@@ -608,7 +926,18 @@ def get_now_playing_text():
         if not item and ws_title:
             item = {"type": ws_type, "title": ws_title}
 
-        name, link = external_item_display(item)
+        # If the current item matches the queue, prefer the queue link/title.
+        with LOCK:
+            if DISPLAY_INDEX is not None and 0 <= DISPLAY_INDEX < len(QUEUE):
+                qitem = QUEUE[DISPLAY_INDEX]
+            else:
+                qitem = None
+        if qitem and kodi_item_matches_queue(item, qitem):
+            EXTERNAL_PLAYBACK = False
+            name = qitem.get("title") or None
+            link = qitem.get("link")
+        else:
+            name, link = external_item_display(item)
         if not name:
             if DEBUG_WS:
                 print(f"EXT ITEM unknown item={item}", flush=True)
@@ -671,6 +1000,7 @@ async def refresh_hifi_status_cache(force=False):
 # Listen for Kodi playback events via WebSocket.
 async def kodi_ws_listener():
     global KODI_WS_URL, WS_PLAYING, WS_LAST_EVENT_TS, BOT_EXPECTING_WS, WS_CONNECTED, WS_STATE
+    global LAST_WS_YT_ID, LAST_WS_PLAYING_FILE
     if KODI_WS_URL is None:
         KODI_WS_URL = f"ws://{KODI_HOST}:{KODI_WS_PORT}/jsonrpc"
     while True:
@@ -685,6 +1015,14 @@ async def kodi_ws_listener():
                     method = msg.get("method")
                     if DEBUG_WS and method:
                         print(f"WS EVENT method={method} msg={msg}", flush=True)
+                    if method == "Other.playback_init":
+                        data = msg.get("params", {}).get("data", {}) or {}
+                        vid = data.get("video_id") or ""
+                        playing_file = data.get("playing_file") or ""
+                        if vid:
+                            LAST_WS_YT_ID = vid
+                        if playing_file:
+                            LAST_WS_PLAYING_FILE = playing_file
                     if method in ("Player.OnPlay", "Player.OnAVStart"):
                         now = time.time()
                         WS_PLAYING = True
@@ -798,8 +1136,17 @@ def schedule_cleanup(ctx, chat_id, prev_id):
     print(f"SCHEDULE CLEANUP chat_id={chat_id} prev_id={prev_id} end_id={end_id} inclusive={start_inclusive} last_cleanup={LAST_CLEANUP_ID.get(chat_id)}", flush=True)
     if hasattr(ctx, "application"):
         ctx.application.create_task(_cleanup_after_delay(ctx, chat_id, prev_id, end_id, start_inclusive))
+    elif MAIN_LOOP is not None:
+        asyncio.run_coroutine_threadsafe(
+            _cleanup_after_delay(ctx, chat_id, prev_id, end_id, start_inclusive),
+            MAIN_LOOP,
+        )
     else:
-        asyncio.create_task(_cleanup_after_delay(ctx, chat_id, prev_id, end_id, start_inclusive))
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_cleanup_after_delay(ctx, chat_id, prev_id, end_id, start_inclusive))
+        except RuntimeError:
+            print("SCHEDULE CLEANUP skipped: no running event loop", flush=True)
 
 # Delete a range of messages after a delay.
 async def _cleanup_after_delay(ctx, chat_id, start_id, end_id, start_inclusive):
@@ -901,6 +1248,7 @@ def play_item(item: dict, resume_time=None):
     if kind == "audio":
         # Start SoundCloud via the audio playlist, then switch to the real stream.
         playlistid = 0
+        maybe_cache_soundcloud_url(item.get("url"))
         kodi_add_to_playlist(item["url"], playlistid)
         res = kodi_call("Player.Open", {"item": {"playlistid": playlistid, "position": 0}})
         print(f"PLAY_ITEM open audio res={res}", flush=True)
