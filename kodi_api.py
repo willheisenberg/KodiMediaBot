@@ -530,7 +530,7 @@ def external_item_display(item):
             else:
                 link = None
     if not link and itype in ("video", "movie") and LAST_WS_YT_ID:
-        if "youtube" in (file_url or "") or "manifest" in (file_url or "") or "youtube" in (LAST_WS_PLAYING_FILE or ""):
+        if "youtube" in (file_url or "") or "manifest" in (file_url or ""):
             link = f"https://youtu.be/{LAST_WS_YT_ID}"
     if link and ("youtu" in link or "soundcloud" in link):
         pass
@@ -698,6 +698,10 @@ async def kodi_ws_listener():
                                     "Player.GetItem",
                                     {"playerid": pid, "properties": ["title", "artist", "file"]},
                                 ).get("result", {}).get("item", {})
+                                playing_file = (item or {}).get("file") or ""
+                                LAST_WS_PLAYING_FILE = playing_file
+                                if "youtube" not in playing_file and "manifest" not in playing_file:
+                                    LAST_WS_YT_ID = ""
                             with qs.LOCK:
                                 if qs.DISPLAY_INDEX is not None and 0 <= qs.DISPLAY_INDEX < len(qs.QUEUE):
                                     qitem = qs.QUEUE[qs.DISPLAY_INDEX]

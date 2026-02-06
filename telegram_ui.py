@@ -261,7 +261,23 @@ def get_now_playing_text():
     if not name:
         item = kodi_api.kodi_call(
             "Player.GetItem",
-            {"playerid": pid, "properties": ["title", "artist", "file", "showtitle", "season", "episode", "album", "channel"]}
+            {
+                "playerid": pid,
+                "properties": [
+                    "title",
+                    "artist",
+                    "file",
+                    "showtitle",
+                    "season",
+                    "episode",
+                    "album",
+                    "channel",
+                    "imdbnumber",
+                    "uniqueid",
+                    "year",
+                    "originaltitle",
+                ],
+            }
         ).get("result", {}).get("item", {})
         kodi_api.maybe_cache_soundcloud_url(item.get("file"))
 
