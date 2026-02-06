@@ -3,10 +3,11 @@ import html
 import os
 import re
 import time
+import traceback
 
 from telegram.ext import Application, MessageHandler, filters, CallbackQueryHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.error import RetryAfter, TimedOut
+from telegram.error import RetryAfter, TimedOut, NetworkError
 
 import kodi_api
 import playlist_store
@@ -1058,6 +1059,7 @@ def run(token: str):
 
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
     app.add_handler(MessageHandler(filters.ATTACHMENT | filters.Sticker.ALL, handle_nontext))
+    app.add_error_handler(_error_handler)
 
     async def _post_init(app):
         try:
@@ -1074,3 +1076,12 @@ def run(token: str):
     app.post_init = _post_init
 
     app.run_polling()
+
+
+async def _error_handler(update, ctx):
+    err = ctx.error
+    if isinstance(err, NetworkError):
+        print(f"TG WARN network error: {err}", flush=True)
+        return
+    print(f"TG ERROR: {err}", flush=True)
+    traceback.print_exception(type(err), err, err.__traceback__)
