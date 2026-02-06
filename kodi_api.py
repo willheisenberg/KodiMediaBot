@@ -686,7 +686,25 @@ async def kodi_ws_listener():
                                 if k in item_params:
                                     LAST_WS_ITEM[k] = item_params.get(k)
                         import queue_state as qs
-                        if qs.BOT_EXPECTING_WS > 0:
+                        player = data.get("player", {}) or {}
+                        pid = player.get("playerid")
+                        item = None
+                        if pid is not None:
+                            item = kodi_call(
+                                "Player.GetItem",
+                                {"playerid": pid, "properties": ["title", "artist", "file", "type", "label"]},
+                            ).get("result", {}).get("item", {})
+                            playing_file = (item or {}).get("file") or ""
+                            LAST_WS_PLAYING_FILE = playing_file
+                            if "youtube" not in playing_file and "manifest" not in playing_file:
+                                LAST_WS_YT_ID = ""
+                        with qs.LOCK:
+                            if qs.DISPLAY_INDEX is not None and 0 <= qs.DISPLAY_INDEX < len(qs.QUEUE):
+                                qitem = qs.QUEUE[qs.DISPLAY_INDEX]
+                            else:
+                                qitem = None
+                        matches = kodi_item_matches_queue(item, qitem)
+                        if qs.BOT_EXPECTING_WS > 0 and matches:
                             qs.BOT_EXPECTING_WS -= 1
                             if DEBUG_WS:
                                 print(
@@ -694,24 +712,7 @@ async def kodi_ws_listener():
                                     flush=True,
                                 )
                         else:
-                            player = data.get("player", {}) or {}
-                            pid = player.get("playerid")
-                            item = None
-                            if pid is not None:
-                                item = kodi_call(
-                                    "Player.GetItem",
-                                    {"playerid": pid, "properties": ["title", "artist", "file"]},
-                                ).get("result", {}).get("item", {})
-                                playing_file = (item or {}).get("file") or ""
-                                LAST_WS_PLAYING_FILE = playing_file
-                                if "youtube" not in playing_file and "manifest" not in playing_file:
-                                    LAST_WS_YT_ID = ""
-                            with qs.LOCK:
-                                if qs.DISPLAY_INDEX is not None and 0 <= qs.DISPLAY_INDEX < len(qs.QUEUE):
-                                    qitem = qs.QUEUE[qs.DISPLAY_INDEX]
-                                else:
-                                    qitem = None
-                            if not kodi_item_matches_queue(item, qitem):
+                            if not matches:
                                 print(
                                     "WS MISMATCH clear_bot_playback_state "
                                     f"item_file={(item or {}).get('file')} "
