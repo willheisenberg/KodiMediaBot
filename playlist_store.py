@@ -30,12 +30,36 @@ def unique_playlist_path(dir_path: str, base_name: str) -> str:
     return os.path.join(dir_path, f"{base}-{int(time.time())}.json")
 
 
+def playlist_path_for_name(dir_path: str, name: str) -> str:
+    base = sanitize_playlist_name(name)
+    return os.path.join(dir_path, f"{base}.json")
+
+
 def save_playlist_to_disk(dir_path: str, name: str, items: list[dict]):
     if not ensure_playlist_dir(dir_path):
         return False, "Playlist directory is not available."
     if not items:
         return False, "Queue empty."
     path = unique_playlist_path(dir_path, name)
+    data = {
+        "name": name,
+        "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "queue": items,
+    }
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return False, f"Save failed: {e}"
+    return True, os.path.basename(path)
+
+
+def save_playlist_to_disk_overwrite(dir_path: str, name: str, items: list[dict]):
+    if not ensure_playlist_dir(dir_path):
+        return False, "Playlist directory is not available."
+    if not items:
+        return False, "Queue empty."
+    path = playlist_path_for_name(dir_path, name)
     data = {
         "name": name,
         "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),

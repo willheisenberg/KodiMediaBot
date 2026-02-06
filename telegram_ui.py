@@ -571,9 +571,13 @@ async def on_button(update, ctx):
 
     elif cmd.startswith("seek:"):
         if cmd == "seek:percent":
-            await send_and_track(ctx, chat_id, "⏱ Percent? (0-100)")
+            if ctx.user_data.get("await_seek_percent"):
+                return
+            msg = await send_and_track(ctx, chat_id, "⏱ Percent? (0-100)")
             ctx.user_data["await_seek_percent"] = True
+            ctx.user_data["await_seek_percent_msg_id"] = msg.message_id
             sent = True
+            skip_cleanup = True
         else:
             delta_map = {
                 "seek:-10s": -10,
@@ -726,6 +730,7 @@ async def handle_text(update, ctx):
     chat_id = update.effective_chat.id
     prev_id = LAST_BOT_ID.get(chat_id)
     sent = False
+    skip_cleanup = False
     msg_id = update.message.message_id
     txt = update.message.text.strip()
 
@@ -734,20 +739,72 @@ async def handle_text(update, ctx):
         prompt_id = ctx.user_data.pop("await_playlist_save_msg_id", None)
         with queue_state.LOCK:
             items = list(queue_state.QUEUE)
-        ok, res = playlist_store.save_playlist_to_disk(PLAYLIST_DIR, txt, items)
-        if ok:
-            await send_and_track(ctx, chat_id, f"💾 Saved as {os.path.splitext(res)[0]}")
+        path = playlist_store.playlist_path_for_name(PLAYLIST_DIR, txt)
+        if os.path.exists(path):
+            msg = await send_and_track(ctx, chat_id, "Playlist already exists. Replace? (y/n)")
+            ctx.user_data["await_playlist_overwrite_confirm"] = True
+            ctx.user_data["await_playlist_overwrite_msg_id"] = msg.message_id
+            ctx.user_data["playlist_overwrite_name"] = txt
+            ctx.user_data["playlist_overwrite_items"] = items
+            sent = True
+            skip_cleanup = True
         else:
-            await send_and_track(ctx, chat_id, f"⚠ {res}")
-        sent = True
+            ok, res = playlist_store.save_playlist_to_disk(PLAYLIST_DIR, txt, items)
+            if ok:
+                await send_and_track(ctx, chat_id, f"💾 Saved as {os.path.splitext(res)[0]}")
+            else:
+                await send_and_track(ctx, chat_id, f"⚠ {res}")
+            sent = True
         if prompt_id:
             try:
                 await telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=prompt_id)
             except Exception:
                 pass
-        if sent:
+        if sent and not skip_cleanup:
             schedule_cleanup(ctx, chat_id, prev_id)
             await update_list_message(ctx, chat_id)
+        return
+
+    if ctx.user_data.get("await_playlist_overwrite_confirm"):
+        txt_lower = txt.strip().lower()
+        if txt_lower in ("y", "yes"):
+            ctx.user_data["await_playlist_overwrite_confirm"] = False
+            prompt_id = ctx.user_data.pop("await_playlist_overwrite_msg_id", None)
+            name = ctx.user_data.pop("playlist_overwrite_name", "")
+            items = ctx.user_data.pop("playlist_overwrite_items", [])
+            ok, res = playlist_store.save_playlist_to_disk_overwrite(PLAYLIST_DIR, name, items)
+            if ok:
+                await send_and_track(ctx, chat_id, f"💾 Saved as {os.path.splitext(res)[0]}")
+            else:
+                await send_and_track(ctx, chat_id, f"⚠ {res}")
+            sent = True
+            if prompt_id:
+                try:
+                    await telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=prompt_id)
+                except Exception:
+                    pass
+            if sent:
+                schedule_cleanup(ctx, chat_id, prev_id)
+                await update_list_message(ctx, chat_id)
+            return
+        if txt_lower in ("n", "no"):
+            ctx.user_data["await_playlist_overwrite_confirm"] = False
+            prompt_id = ctx.user_data.pop("await_playlist_overwrite_msg_id", None)
+            ctx.user_data.pop("playlist_overwrite_name", None)
+            ctx.user_data.pop("playlist_overwrite_items", None)
+            await send_and_track(ctx, chat_id, "Cancelled.")
+            sent = True
+            if prompt_id:
+                try:
+                    await telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=prompt_id)
+                except Exception:
+                    pass
+            if sent:
+                schedule_cleanup(ctx, chat_id, prev_id)
+                await update_list_message(ctx, chat_id)
+            return
+        await send_and_track(ctx, chat_id, "Please answer with y or n.")
+        sent = True
         return
 
     if ctx.user_data.get("await_playlist_load_index"):
@@ -836,6 +893,7 @@ async def handle_text(update, ctx):
         return
     if ctx.user_data.get("await_seek_percent"):
         ctx.user_data["await_seek_percent"] = False
+        prompt_id = ctx.user_data.pop("await_seek_percent_msg_id", None)
         m = re.match(r"^\s*(\d{1,3})\s*%?\s*$", txt)
         if m:
             val = int(m.group(1))
@@ -847,6 +905,11 @@ async def handle_text(update, ctx):
         else:
             await send_and_track(ctx, chat_id, "Please enter a percentage from 0 to 100.")
         sent = True
+        if prompt_id:
+            try:
+                await telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=prompt_id)
+            except Exception:
+                pass
         if sent:
             schedule_cleanup(ctx, chat_id, prev_id)
             await update_list_message(ctx, chat_id)
