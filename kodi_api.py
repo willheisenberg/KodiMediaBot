@@ -571,6 +571,10 @@ def kodi_item_matches_queue(item, qitem):
         return True
     q_link = qitem.get("link") or ""
     if q_link and "soundcloud.com" in q_link:
+        if item_file and "sndcdn" in item_file:
+            return True
+        if LAST_WS_SC_URL and LAST_WS_SC_URL == q_link:
+            return True
         item_title = item.get("title") or item.get("label") or ""
         q_slug = soundcloud_track_slug_from_url(q_link)
         t_slug = soundcloud_slug(item_title)
@@ -708,6 +712,15 @@ async def kodi_ws_listener():
                                 else:
                                     qitem = None
                             if not kodi_item_matches_queue(item, qitem):
+                                print(
+                                    "WS MISMATCH clear_bot_playback_state "
+                                    f"item_file={(item or {}).get('file')} "
+                                    f"item_title={(item or {}).get('title')} "
+                                    f"q_url={(qitem or {}).get('url')} "
+                                    f"q_title={(qitem or {}).get('title')} "
+                                    f"q_link={(qitem or {}).get('link')}",
+                                    flush=True,
+                                )
                                 qs.clear_bot_playback_state()
                                 qs.schedule_now_playing_refresh()
                         qs.schedule_playback_refresh()
