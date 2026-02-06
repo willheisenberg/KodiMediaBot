@@ -763,7 +763,7 @@ async def handle_text(update, ctx):
                     with queue_state.LOCK:
                         queue_state.QUEUE.extend(items)
                     queue_state.mark_list_dirty()
-                    await send_and_track(ctx, chat_id, f"📂 Loaded {files[i]}")
+                    await send_and_track(ctx, chat_id, f"📂 Loaded {os.path.splitext(files[i])[0]}")
                 else:
                     await send_and_track(ctx, chat_id, f"⚠ {items}")
             else:
