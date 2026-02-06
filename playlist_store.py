@@ -72,3 +72,14 @@ def load_playlist_from_disk(dir_path: str, filename: str):
     if not isinstance(items, list):
         return False, "Invalid playlist format."
     return True, items
+
+
+def delete_playlist_from_disk(dir_path: str, filename: str):
+    path = os.path.join(dir_path, filename)
+    if not os.path.exists(path):
+        return False, "Playlist file not found."
+    try:
+        os.remove(path)
+    except Exception as e:
+        return False, f"Delete failed: {e}"
+    return True, filename

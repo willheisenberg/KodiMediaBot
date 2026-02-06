@@ -177,6 +177,7 @@ def control_panel():
         ],
         [
             InlineKeyboardButton("💾 Save", callback_data="plist:save"),
+            InlineKeyboardButton("🎵 Delete", callback_data="plist:delete"),
             InlineKeyboardButton("📂 Load", callback_data="plist:load"),
         ],
     ])
@@ -527,6 +528,7 @@ async def on_button(update, ctx):
     chat_id = update.effective_chat.id
     prev_id = LAST_BOT_ID.get(chat_id)
     sent = False
+    skip_cleanup = False
 
     if cmd == "skip":
         if queue_state.skip_queue():
@@ -623,34 +625,65 @@ async def on_button(update, ctx):
         sent = True
 
     elif cmd == "play:ask":
-        await send_and_track(ctx, chat_id, "▶ Which number should be played? (e.g. 3)")
+        if ctx.user_data.get("await_play_index"):
+            return
+        msg = await send_and_track(ctx, chat_id, "▶ Which number should be played? (e.g. 3)")
         ctx.user_data["await_play_index"] = True
+        ctx.user_data["await_play_msg_id"] = msg.message_id
         sent = True
+        skip_cleanup = True
     elif cmd == "delete:ask":
-        await send_and_track(ctx, chat_id, "🗑 Which number should be deleted? (e.g. 3)")
+        if ctx.user_data.get("await_delete_index"):
+            return
+        msg = await send_and_track(ctx, chat_id, "🗑 Which number should be deleted? (e.g. 3)")
         ctx.user_data["await_delete_index"] = True
+        ctx.user_data["await_delete_msg_id"] = msg.message_id
         sent = True
+        skip_cleanup = True
     elif cmd == "plist:save":
+        if ctx.user_data.get("await_playlist_save_name"):
+            return
         with queue_state.LOCK:
             has_queue = len(queue_state.QUEUE) > 0
         if not has_queue:
             await send_and_track(ctx, chat_id, "🗒 Queue is empty.")
             sent = True
         else:
-            await send_and_track(ctx, chat_id, "💾 Playlist name?")
+            msg = await send_and_track(ctx, chat_id, "💾 Playlist name?")
             ctx.user_data["await_playlist_save_name"] = True
+            ctx.user_data["await_playlist_save_msg_id"] = msg.message_id
             sent = True
+            skip_cleanup = True
     elif cmd == "plist:load":
+        if ctx.user_data.get("await_playlist_load_index"):
+            return
         files = playlist_store.list_playlist_files(PLAYLIST_DIR)
         if not files:
             await send_and_track(ctx, chat_id, "📂 No saved playlists found.")
             sent = True
         else:
-            lines = [f"{i+1}. {f}" for i, f in enumerate(files)]
-            await send_and_track(ctx, chat_id, "📂 Select a playlist:\n" + "\n".join(lines))
+            lines = [f"{i+1}. {os.path.splitext(f)[0]}" for i, f in enumerate(files)]
+            msg = await send_and_track(ctx, chat_id, "📂 Select a playlist:\n" + "\n".join(lines))
             ctx.user_data["await_playlist_load_index"] = True
+            ctx.user_data["await_playlist_load_msg_id"] = msg.message_id
             ctx.user_data["playlist_load_files"] = files
             sent = True
+            skip_cleanup = True
+    elif cmd == "plist:delete":
+        if ctx.user_data.get("await_playlist_delete_index"):
+            return
+        files = playlist_store.list_playlist_files(PLAYLIST_DIR)
+        if not files:
+            await send_and_track(ctx, chat_id, "🗑 No saved playlists found.")
+            sent = True
+        else:
+            lines = [f"{i+1}. {os.path.splitext(f)[0]}" for i, f in enumerate(files)]
+            msg = await send_and_track(ctx, chat_id, "🗑 Delete which playlist?\n" + "\n".join(lines))
+            ctx.user_data["await_playlist_delete_index"] = True
+            ctx.user_data["await_playlist_delete_msg_id"] = msg.message_id
+            ctx.user_data["playlist_delete_files"] = files
+            sent = True
+            skip_cleanup = True
     elif cmd == "vol:up5":
         ok = await asyncio.to_thread(kodi_api.run_cec_volume, 9, kodi_api.CEC_CMD_VOL_UP)
         await send_and_track(ctx, chat_id, "🔊 +5" if ok else "⚠ Volume +5 failed")
@@ -682,7 +715,7 @@ async def on_button(update, ctx):
         await update_now_playing_message(ctx, chat_id)
         sent = True
 
-    if sent:
+    if sent and not skip_cleanup:
         schedule_cleanup(ctx, chat_id, prev_id)
         await update_list_message(ctx, chat_id)
 
@@ -698,14 +731,20 @@ async def handle_text(update, ctx):
 
     if ctx.user_data.get("await_playlist_save_name"):
         ctx.user_data["await_playlist_save_name"] = False
+        prompt_id = ctx.user_data.pop("await_playlist_save_msg_id", None)
         with queue_state.LOCK:
             items = list(queue_state.QUEUE)
         ok, res = playlist_store.save_playlist_to_disk(PLAYLIST_DIR, txt, items)
         if ok:
-            await send_and_track(ctx, chat_id, f"💾 Saved as {res}")
+            await send_and_track(ctx, chat_id, f"💾 Saved as {os.path.splitext(res)[0]}")
         else:
             await send_and_track(ctx, chat_id, f"⚠ {res}")
         sent = True
+        if prompt_id:
+            try:
+                await telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=prompt_id)
+            except Exception:
+                pass
         if sent:
             schedule_cleanup(ctx, chat_id, prev_id)
             await update_list_message(ctx, chat_id)
@@ -713,6 +752,7 @@ async def handle_text(update, ctx):
 
     if ctx.user_data.get("await_playlist_load_index"):
         ctx.user_data["await_playlist_load_index"] = False
+        prompt_id = ctx.user_data.pop("await_playlist_load_msg_id", None)
         files = ctx.user_data.pop("playlist_load_files", [])
         if txt.isdigit():
             i = int(txt) - 1
@@ -731,6 +771,38 @@ async def handle_text(update, ctx):
         else:
             await send_and_track(ctx, chat_id, "Please enter a number only.")
         sent = True
+        if prompt_id:
+            try:
+                await telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=prompt_id)
+            except Exception:
+                pass
+        if sent:
+            schedule_cleanup(ctx, chat_id, prev_id)
+            await update_list_message(ctx, chat_id)
+        return
+
+    if ctx.user_data.get("await_playlist_delete_index"):
+        ctx.user_data["await_playlist_delete_index"] = False
+        prompt_id = ctx.user_data.pop("await_playlist_delete_msg_id", None)
+        files = ctx.user_data.pop("playlist_delete_files", [])
+        if txt.isdigit():
+            i = int(txt) - 1
+            if 0 <= i < len(files):
+                ok, res = playlist_store.delete_playlist_from_disk(PLAYLIST_DIR, files[i])
+                if ok:
+                    await send_and_track(ctx, chat_id, f"🗑 Deleted {res}")
+                else:
+                    await send_and_track(ctx, chat_id, f"⚠ {res}")
+            else:
+                await send_and_track(ctx, chat_id, "That number does not exist.")
+        else:
+            await send_and_track(ctx, chat_id, "Please enter a number only.")
+        sent = True
+        if prompt_id:
+            try:
+                await telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=prompt_id)
+            except Exception:
+                pass
         if sent:
             schedule_cleanup(ctx, chat_id, prev_id)
             await update_list_message(ctx, chat_id)
@@ -738,6 +810,7 @@ async def handle_text(update, ctx):
 
     if ctx.user_data.get("await_play_index"):
         ctx.user_data["await_play_index"] = False
+        prompt_id = ctx.user_data.pop("await_play_msg_id", None)
         if txt.isdigit():
             i = int(txt) - 1
             with queue_state.LOCK:
@@ -752,6 +825,11 @@ async def handle_text(update, ctx):
         else:
             await send_and_track(ctx, chat_id, "Please enter a number only.")
         sent = True
+        if prompt_id:
+            try:
+                await telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=prompt_id)
+            except Exception:
+                pass
         if sent:
             schedule_cleanup(ctx, chat_id, prev_id)
             await update_list_message(ctx, chat_id)
@@ -775,6 +853,7 @@ async def handle_text(update, ctx):
         return
     if ctx.user_data.get("await_delete_index"):
         ctx.user_data["await_delete_index"] = False
+        prompt_id = ctx.user_data.pop("await_delete_msg_id", None)
         if txt.isdigit():
             ok, msg = queue_state.delete_index(int(txt) - 1)
             if ok:
@@ -784,6 +863,11 @@ async def handle_text(update, ctx):
         else:
             await send_and_track(ctx, chat_id, "Please enter a number only.")
         sent = True
+        if prompt_id:
+            try:
+                await telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=prompt_id)
+            except Exception:
+                pass
         if sent:
             schedule_cleanup(ctx, chat_id, prev_id)
             await update_list_message(ctx, chat_id)
