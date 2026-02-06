@@ -30,9 +30,14 @@ HIFI_STATUS_CACHE = "⚪ Hifi: Unknown"
 HIFI_STATUS_TS = 0.0
 
 TG_RATE_LOCK = asyncio.Lock()
+TG_DELETE_RATE_LOCK = asyncio.Lock()
 TG_LAST_TS = 0.0
-TG_MIN_INTERVAL = 1.1
+TG_DELETE_LAST_TS = 0.0
+TG_MIN_INTERVAL = 0.6
+TG_DELETE_MIN_INTERVAL = 1.0
 TG_MAX_RETRIES = 3
+TG_DYNAMIC_DELAY = 0.0
+TG_DYNAMIC_UNTIL = 0.0
 
 APP_INSTANCE = None
 MAIN_LOOP = None
@@ -40,11 +45,12 @@ MAIN_LOOP = None
 
 # Serialize Telegram API calls to avoid send/edit/delete collisions.
 async def telegram_request(call, *args, **kwargs):
-    global TG_LAST_TS
+    global TG_LAST_TS, TG_DYNAMIC_DELAY, TG_DYNAMIC_UNTIL
     for _ in range(TG_MAX_RETRIES):
         async with TG_RATE_LOCK:
             now = time.time()
-            wait = TG_MIN_INTERVAL - (now - TG_LAST_TS)
+            extra = TG_DYNAMIC_DELAY if now < TG_DYNAMIC_UNTIL else 0.0
+            wait = TG_MIN_INTERVAL + extra - (now - TG_LAST_TS)
             if wait > 0:
                 await asyncio.sleep(wait)
             try:
@@ -53,6 +59,8 @@ async def telegram_request(call, *args, **kwargs):
                 return res
             except RetryAfter as e:
                 TG_LAST_TS = time.time()
+                TG_DYNAMIC_DELAY = max(TG_DYNAMIC_DELAY, min(e.retry_after, 2.0))
+                TG_DYNAMIC_UNTIL = time.time() + 60.0
                 await asyncio.sleep(e.retry_after)
             except TimedOut:
                 TG_LAST_TS = time.time()
@@ -62,11 +70,47 @@ async def telegram_request(call, *args, **kwargs):
                 raise
     async with TG_RATE_LOCK:
         now = time.time()
-        wait = TG_MIN_INTERVAL - (now - TG_LAST_TS)
+        extra = TG_DYNAMIC_DELAY if now < TG_DYNAMIC_UNTIL else 0.0
+        wait = TG_MIN_INTERVAL + extra - (now - TG_LAST_TS)
         if wait > 0:
             await asyncio.sleep(wait)
         res = await call(*args, **kwargs)
         TG_LAST_TS = time.time()
+        return res
+
+
+async def telegram_request_delete(call, *args, **kwargs):
+    global TG_DELETE_LAST_TS, TG_DYNAMIC_DELAY, TG_DYNAMIC_UNTIL
+    for _ in range(TG_MAX_RETRIES):
+        async with TG_DELETE_RATE_LOCK:
+            now = time.time()
+            extra = TG_DYNAMIC_DELAY if now < TG_DYNAMIC_UNTIL else 0.0
+            wait = TG_DELETE_MIN_INTERVAL + extra - (now - TG_DELETE_LAST_TS)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            try:
+                res = await call(*args, **kwargs)
+                TG_DELETE_LAST_TS = time.time()
+                return res
+            except RetryAfter as e:
+                TG_DELETE_LAST_TS = time.time()
+                TG_DYNAMIC_DELAY = max(TG_DYNAMIC_DELAY, min(e.retry_after, 2.0))
+                TG_DYNAMIC_UNTIL = time.time() + 60.0
+                await asyncio.sleep(e.retry_after)
+            except TimedOut:
+                TG_DELETE_LAST_TS = time.time()
+                await asyncio.sleep(1.5)
+            except Exception:
+                TG_DELETE_LAST_TS = time.time()
+                raise
+    async with TG_DELETE_RATE_LOCK:
+        now = time.time()
+        extra = TG_DYNAMIC_DELAY if now < TG_DYNAMIC_UNTIL else 0.0
+        wait = TG_DELETE_MIN_INTERVAL + extra - (now - TG_DELETE_LAST_TS)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        res = await call(*args, **kwargs)
+        TG_DELETE_LAST_TS = time.time()
         return res
 
 
@@ -448,7 +492,7 @@ async def _cleanup_after_delay(ctx, chat_id, start_id, end_id, start_inclusive):
                     continue
                 if mid == PANEL_MSG_ID.get(chat_id):
                     continue
-                await telegram_request(ctx.bot.delete_message, chat_id=chat_id, message_id=mid)
+                await telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=mid)
             except Exception as e:
                 print(f"DELETE FAIL chat_id={chat_id} message_id={mid} err={e}", flush=True)
     LAST_CLEANUP_ID[chat_id] = end_id
