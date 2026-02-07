@@ -783,6 +783,10 @@ async def handle_text(update, ctx):
             ctx.user_data["playlist_overwrite_items"] = items
             sent = True
             skip_cleanup = True
+            try:
+                await telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=msg_id)
+            except Exception:
+                pass
         else:
             ok, res = playlist_store.save_playlist_to_disk(PLAYLIST_DIR, txt, items)
             if ok:
