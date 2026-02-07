@@ -2,6 +2,7 @@ import asyncio
 import html
 import os
 import re
+import threading
 import time
 import traceback
 
@@ -39,6 +40,11 @@ TG_DELETE_MIN_INTERVAL = 1.0
 TG_MAX_RETRIES = 3
 TG_DYNAMIC_DELAY = 0.0
 TG_DYNAMIC_UNTIL = 0.0
+PLAYBACK_TASK_LOCK = asyncio.Lock()
+NP_REFRESH_LOCK = threading.Lock()
+NP_REFRESH_FUTURE = None
+NP_REFRESH_LAST_TS = 0.0
+NP_REFRESH_MIN_INTERVAL = 0.5
 
 APP_INSTANCE = None
 MAIN_LOOP = None
@@ -115,14 +121,32 @@ async def telegram_request_delete(call, *args, **kwargs):
         return res
 
 
+def schedule_playback_action(ctx, chat_id, action, *args):
+    async def _run():
+        async with PLAYBACK_TASK_LOCK:
+            try:
+                await asyncio.to_thread(action, *args)
+            except Exception as e:
+                print(f"PLAYBACK ACTION ERROR action={getattr(action, '__name__', action)} err={e}", flush=True)
+
+    asyncio.get_running_loop().create_task(_run())
+
+
 # Refresh now-playing panel from non-async contexts.
 def schedule_now_playing_refresh():
     if APP_INSTANCE is None or MAIN_LOOP is None:
         return
-    asyncio.run_coroutine_threadsafe(
-        update_now_playing_message(APP_INSTANCE, STARTUP_CHAT_ID),
-        MAIN_LOOP,
-    )
+    global NP_REFRESH_FUTURE, NP_REFRESH_LAST_TS
+    now = time.time()
+    with NP_REFRESH_LOCK:
+        if NP_REFRESH_FUTURE is not None and not NP_REFRESH_FUTURE.done():
+            if now - NP_REFRESH_LAST_TS < NP_REFRESH_MIN_INTERVAL:
+                return
+        NP_REFRESH_LAST_TS = now
+        NP_REFRESH_FUTURE = asyncio.run_coroutine_threadsafe(
+            update_now_playing_message(APP_INSTANCE, STARTUP_CHAT_ID),
+            MAIN_LOOP,
+        )
 
 
 # Build the inline keyboard control panel markup.
@@ -375,7 +399,7 @@ def get_now_playing_text():
 # Update or create the now-playing panel message.
 async def update_now_playing_message(ctx, chat_id):
     msg_id = PANEL_MSG_ID.get(chat_id)
-    text = get_now_playing_text()
+    text = await asyncio.to_thread(get_now_playing_text)
     hifi_text = HIFI_STATUS_CACHE
     repeat_text = f"🔁 Repeat: {queue_state.REPEAT_MODE}"
     if not msg_id:
@@ -532,15 +556,24 @@ async def on_button(update, ctx):
     skip_cleanup = False
 
     if cmd == "skip":
-        if queue_state.skip_queue():
-            await send_and_track(ctx, chat_id, "⏭ Next")
+        with queue_state.LOCK:
+            has_queue = len(queue_state.QUEUE) > 0
+        if not has_queue:
+            await send_and_track(ctx, chat_id, "⏹ End of queue.")
             sent = True
         else:
-            await send_and_track(ctx, chat_id, "⏹ End of queue.")
+            schedule_playback_action(ctx, chat_id, queue_state.skip_queue)
+            await send_and_track(ctx, chat_id, "⏭ Next")
             sent = True
 
     elif cmd == "back":
-        if queue_state.back_queue():
+        with queue_state.LOCK:
+            has_queue = len(queue_state.QUEUE) > 0
+        if not has_queue:
+            await send_and_track(ctx, chat_id, "⏹ End of queue.")
+            sent = True
+        else:
+            schedule_playback_action(ctx, chat_id, queue_state.back_queue)
             await send_and_track(ctx, chat_id, "⏮ Back")
             sent = True
 
@@ -549,7 +582,7 @@ async def on_button(update, ctx):
             with queue_state.LOCK:
                 has_queue = len(queue_state.QUEUE) > 0
             if has_queue:
-                queue_state.play_index(0)
+                schedule_playback_action(ctx, chat_id, queue_state.play_index, 0)
                 await send_and_track(ctx, chat_id, "▶ Play")
             else:
                 await send_and_track(ctx, chat_id, "⏹ Queue empty.")
@@ -557,16 +590,16 @@ async def on_button(update, ctx):
         else:
             pid = kodi_api.get_active_playerid()
             if pid is not None:
-                kodi_api.kodi_call("Player.PlayPause", {"playerid": pid})
+                schedule_playback_action(ctx, chat_id, kodi_api.kodi_call, "Player.PlayPause", {"playerid": pid})
                 await send_and_track(ctx, chat_id, "⏯")
                 sent = True
             else:
-                queue_state.play_index(queue_state.DISPLAY_INDEX)
+                schedule_playback_action(ctx, chat_id, queue_state.play_index, queue_state.DISPLAY_INDEX)
                 await send_and_track(ctx, chat_id, "▶ Play")
                 sent = True
 
     elif cmd == "stop":
-        queue_state.hard_stop_and_clear()
+        schedule_playback_action(ctx, chat_id, queue_state.hard_stop_and_clear)
         await send_and_track(ctx, chat_id, "⏹ Stop")
         sent = True
 
