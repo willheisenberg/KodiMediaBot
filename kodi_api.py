@@ -57,6 +57,10 @@ def kodi_call(method: str, params: dict | None = None):
     return requests.post(KODI_URL, auth=AUTH, json=payload, timeout=5).json()
 
 
+async def kodi_call_async(method: str, params: dict | None = None):
+    return await asyncio.to_thread(kodi_call, method, params)
+
+
 def kodi_call_with_props(method, id_key, id_value, properties):
     props = list(properties)
     while props:
@@ -698,10 +702,10 @@ async def kodi_ws_listener():
                             pid = player.get("playerid")
                             item = None
                             if pid is not None:
-                                item = kodi_call(
+                                item = (await kodi_call_async(
                                     "Player.GetItem",
                                     {"playerid": pid, "properties": ["title", "artist", "file", "type", "label"]},
-                                ).get("result", {}).get("item", {})
+                                )).get("result", {}).get("item", {})
                             with qs.LOCK:
                                 if qs.DISPLAY_INDEX is not None and 0 <= qs.DISPLAY_INDEX < len(qs.QUEUE):
                                     qitem = qs.QUEUE[qs.DISPLAY_INDEX]

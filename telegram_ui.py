@@ -283,7 +283,7 @@ async def update_list_message(ctx, chat_id):
 
 
 # Assemble the now-playing display text.
-def get_now_playing_text():
+async def get_now_playing_text():
     name = None
     link = None
     with queue_state.LOCK:
@@ -292,7 +292,8 @@ def get_now_playing_text():
             name = it.get("title") or None
             link = it.get("link")
 
-    players = kodi_api.get_active_players()
+    players = await kodi_api.kodi_call_async("Player.GetActivePlayers")
+    players = (players or {}).get("result", [])
     if not players:
         if kodi_api.WS_PLAYING and name:
             safe_name = html.escape(name, quote=False)
@@ -323,13 +324,13 @@ def get_now_playing_text():
         queue_state.EXTERNAL_PLAYBACK = False
         return "⏸ Nothing playing"
 
-    props = kodi_api.kodi_call(
+    props = (await kodi_api.kodi_call_async(
         "Player.GetProperties",
         {"playerid": pid, "properties": ["time", "totaltime"]}
-    ).get("result", {})
+    )).get("result", {})
 
     if not name:
-        item = kodi_api.kodi_call(
+        item = (await kodi_api.kodi_call_async(
             "Player.GetItem",
             {
                 "playerid": pid,
@@ -348,7 +349,7 @@ def get_now_playing_text():
                     "originaltitle",
                 ],
             }
-        ).get("result", {}).get("item", {})
+        )).get("result", {}).get("item", {})
         kodi_api.maybe_cache_soundcloud_url(item.get("file"))
 
         ws_id = kodi_api.LAST_WS_ITEM.get("id")
@@ -399,7 +400,7 @@ def get_now_playing_text():
 # Update or create the now-playing panel message.
 async def update_now_playing_message(ctx, chat_id):
     msg_id = PANEL_MSG_ID.get(chat_id)
-    text = await asyncio.to_thread(get_now_playing_text)
+    text = await get_now_playing_text()
     hifi_text = HIFI_STATUS_CACHE
     repeat_text = f"🔁 Repeat: {queue_state.REPEAT_MODE}"
     if not msg_id:
