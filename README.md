@@ -49,6 +49,7 @@ chmod 644 /storage/docker/partyqueue/id_ed25519.pub
 docker run -d --name partyqueue --restart unless-stopped --network host \
   -e TG_TOKEN="YOUR_TELEGRAM_BOT_TOKEN" \
   -e KODI_HOST=172.17.0.1 \
+  -e DENON_HOST="DENON_IP" \
   -e KODI_PORT=8080 \
   -e KODI_WS_PORT=9090 \
   -e CEC_HOST=172.17.0.1 \
@@ -64,6 +65,7 @@ docker run -d --name partyqueue --restart unless-stopped --network host \
 Notes:
 - `--network host` is required so the bot can reach Kodi JSON-RPC on the host.
 - `KODI_HOST` is used for Kodi JSON-RPC.
+- `DENON_HOST` is used for AirPlay status detection (`/goform/formNetAudio_StatusXml.xml`) on the Denon receiver.
 - `CEC_HOST` is used for CEC over SSH. If not set, it falls back to `KODI_HOST`.
 - `KODI_USER`/`KODI_PASS` configure Kodi JSON-RPC auth and are required.
 - `KODI_WS_PORT` configures the Kodi websocket port.

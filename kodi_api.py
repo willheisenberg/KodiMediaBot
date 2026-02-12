@@ -20,6 +20,7 @@ CEC_HOST = os.environ.get("CEC_HOST") or os.environ.get("HOST_IP")
 CEC_CMD_VOL_UP = "0x41"
 CEC_CMD_VOL_DOWN = "0x42"
 DEBUG_WS = os.environ.get("DEBUG_WS") in ("1", "true", "True", "yes", "YES")
+DENON_HOST = os.environ.get("DENON_HOST")
 
 YT = re.compile(r"(?:v=|youtu\.be/|shorts/)([A-Za-z0-9_-]{11})")
 PL = re.compile(r"(?:[?&]list=)([A-Za-z0-9_-]+)")
@@ -144,6 +145,22 @@ def run_cec_power(on: bool) -> bool:
         return False
 
 
+def run_airplay_kill() -> bool:
+    cmd = (
+        f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{CEC_HOST} "
+        f"cec-ctl --active-source phys-addr=1.5.0.0 -t0"
+    )
+    try:
+        res = subprocess.run(cmd, shell=True, check=False, capture_output=True, text=True)
+        if res.returncode != 0:
+            print(f"CEC FAIL rc={res.returncode} stderr={res.stderr.strip()}", flush=True)
+            return False
+        return True
+    except Exception as e:
+        print(f"CEC ERROR err={e}", flush=True)
+        return False
+
+
 # Query the audio system power state via CEC.
 def get_hifi_power_status():
     cmd = (
@@ -161,6 +178,30 @@ def get_hifi_power_status():
         return None
     except Exception as e:
         print(f"CEC ERROR err={e}", flush=True)
+        return None
+
+
+def get_airplay_status():
+    if not DENON_HOST:
+        return None
+    url = f"http://{DENON_HOST}/goform/formNetAudio_StatusXml.xml"
+    try:
+        res = requests.get(url, timeout=4)
+        if res.status_code != 200:
+            print(f"AIRPLAY FAIL status={res.status_code} host={DENON_HOST}", flush=True)
+            return None
+        text = res.text or ""
+        m = re.search(r"<szLine>(.*?)</szLine>", text, flags=re.DOTALL | re.IGNORECASE)
+        if not m:
+            return None
+        values = re.findall(r"<value>(.*?)</value>", m.group(1), flags=re.DOTALL | re.IGNORECASE)
+        line1 = values[0].strip() if len(values) >= 1 else ""
+        line2 = values[1].strip() if len(values) >= 2 else ""
+        if line1 == "Now Playing" and line2 == "AirPlay":
+            return "On"
+        return "Off"
+    except Exception as e:
+        print(f"AIRPLAY ERROR host={DENON_HOST} err={e}", flush=True)
         return None
 
 

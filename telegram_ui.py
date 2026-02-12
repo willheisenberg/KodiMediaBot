@@ -32,6 +32,8 @@ PANEL_MSG_ID = {}
 
 HIFI_STATUS_CACHE = "⚪ Hifi: Unknown"
 HIFI_STATUS_TS = 0.0
+AIRPLAY_STATUS_CACHE = "AirPlay: Unknown"
+AIRPLAY_STATUS_TS = 0.0
 
 TG_RATE_LOCK = asyncio.Lock()
 TG_DELETE_RATE_LOCK = asyncio.Lock()
@@ -266,6 +268,9 @@ def control_panel():
             InlineKeyboardButton("🎵 Delete", callback_data="plist:delete"),
             InlineKeyboardButton("📂 Load", callback_data="plist:load"),
         ],
+        [
+            InlineKeyboardButton("☠️ AirPlay Kill", callback_data="airplay:kill"),
+        ],
     ])
 
 
@@ -468,12 +473,13 @@ async def update_now_playing_message(ctx, chat_id):
     msg_id = PANEL_MSG_ID.get(chat_id)
     text = await get_now_playing_text()
     hifi_text = HIFI_STATUS_CACHE
+    airplay_text = AIRPLAY_STATUS_CACHE
     repeat_text = f"🔁 Repeat: {queue_state.REPEAT_MODE}"
     if not msg_id:
         panel_msg = await send_and_track(
             ctx,
             chat_id,
-            f"🎛 Kodi Remote - Current track:\n{text}\n{hifi_text} | {repeat_text}",
+            f"🎛 Kodi Remote - Current track:\n{text}\n{hifi_text} | {airplay_text} | {repeat_text}",
             reply_markup=control_panel(),
             parse_mode="HTML",
         )
@@ -485,7 +491,7 @@ async def update_now_playing_message(ctx, chat_id):
             ctx.bot.edit_message_text,
             chat_id=chat_id,
             message_id=msg_id,
-            text=f"🎛 Kodi Remote - Current track:\n{text}\n{hifi_text} | {repeat_text}",
+            text=f"🎛 Kodi Remote - Current track:\n{text}\n{hifi_text} | {airplay_text} | {repeat_text}",
             parse_mode="HTML",
             reply_markup=control_panel(),
         )
@@ -496,7 +502,7 @@ async def update_now_playing_message(ctx, chat_id):
         panel_msg = await send_and_track(
             ctx,
             chat_id,
-            f"🎛 Kodi Remote - Current track:\n{text}\n{hifi_text} | {repeat_text}",
+            f"🎛 Kodi Remote - Current track:\n{text}\n{hifi_text} | {airplay_text} | {repeat_text}",
             reply_markup=control_panel(),
             parse_mode="HTML",
         )
@@ -518,10 +524,26 @@ async def refresh_hifi_status_cache(force=False):
     HIFI_STATUS_TS = now
 
 
+async def refresh_airplay_status_cache(force=False):
+    global AIRPLAY_STATUS_CACHE, AIRPLAY_STATUS_TS
+    now = time.time()
+    if not force and now - AIRPLAY_STATUS_TS < 15:
+        return
+    status = await asyncio.to_thread(kodi_api.get_airplay_status)
+    if status == "On":
+        AIRPLAY_STATUS_CACHE = "AirPlay: On"
+    elif status == "Off":
+        AIRPLAY_STATUS_CACHE = "AirPlay: Off"
+    else:
+        AIRPLAY_STATUS_CACHE = "AirPlay: Unknown"
+    AIRPLAY_STATUS_TS = now
+
+
 # Background task to refresh list and now-playing messages.
 async def list_refresher(ctx):
     last_np = 0.0
     last_hifi = 0.0
+    last_airplay = 0.0
     while True:
         if STARTUP_CHAT_ID in RESETTING_CHATS:
             await asyncio.sleep(1)
@@ -536,6 +558,10 @@ async def list_refresher(ctx):
             await refresh_hifi_status_cache(force=True)
             await update_now_playing_message(ctx, STARTUP_CHAT_ID)
             last_hifi = now
+        if now - last_airplay >= 60:
+            await refresh_airplay_status_cache(force=True)
+            await update_now_playing_message(ctx, STARTUP_CHAT_ID)
+            last_airplay = now
         await asyncio.sleep(2)
 
 
@@ -628,6 +654,7 @@ async def warn_and_cleanup_chat(ctx, chat_id, user_msg_id, delay=5):
 
 # Handle inline keyboard button callbacks.
 async def on_button(update, ctx):
+    global AIRPLAY_STATUS_CACHE, AIRPLAY_STATUS_TS
     q = update.callback_query
     await q.answer()
     cmd = q.data
@@ -834,6 +861,23 @@ async def on_button(update, ctx):
         await send_and_track(ctx, chat_id, "🔌 Hifi Off" if ok else "⚠ Hifi Off failed")
         await asyncio.sleep(10)
         await refresh_hifi_status_cache(force=True)
+        await update_now_playing_message(ctx, chat_id)
+        sent = True
+    elif cmd == "airplay:kill":
+        ok = await asyncio.to_thread(kodi_api.run_airplay_kill)
+        status = await asyncio.to_thread(kodi_api.get_airplay_status)
+        if status == "On":
+            AIRPLAY_STATUS_CACHE = "AirPlay: On"
+        elif status == "Off":
+            AIRPLAY_STATUS_CACHE = "AirPlay: Off"
+        else:
+            AIRPLAY_STATUS_CACHE = "AirPlay: Unknown"
+        AIRPLAY_STATUS_TS = time.time()
+        status_text = AIRPLAY_STATUS_CACHE
+        if ok:
+            await send_and_track(ctx, chat_id, f"☠️ AirPlay Kill | {status_text}")
+        else:
+            await send_and_track(ctx, chat_id, f"⚠ AirPlay Kill failed | {status_text}")
         await update_now_playing_message(ctx, chat_id)
         sent = True
 
@@ -1211,6 +1255,7 @@ async def reset_panel_command(update, ctx):
             STARTUP_POSTED[chat_id] = True
             await send_info_list_panel(ctx, chat_id)
             await refresh_hifi_status_cache(force=True)
+            await refresh_airplay_status_cache(force=True)
             await update_now_playing_message(ctx, chat_id)
         finally:
             RESETTING_CHATS.discard(chat_id)
@@ -1245,6 +1290,7 @@ def run(token: str):
             await update_list_message(app, STARTUP_CHAT_ID)
             await update_now_playing_message(app, STARTUP_CHAT_ID)
             await refresh_hifi_status_cache(force=True)
+            await refresh_airplay_status_cache(force=True)
             await update_now_playing_message(app, STARTUP_CHAT_ID)
         except Exception as e:
             print(f"STARTUP POST FAIL chat_id={STARTUP_CHAT_ID} err={e}", flush=True)
