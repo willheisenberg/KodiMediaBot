@@ -1,14 +1,15 @@
 import asyncio
 import html
+import json
 import os
 import re
 import threading
 import time
 import traceback
 
-from telegram.ext import Application, MessageHandler, filters, CallbackQueryHandler
+from telegram.ext import Application, MessageHandler, filters, CallbackQueryHandler, CommandHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.error import RetryAfter, TimedOut, NetworkError
+from telegram.error import RetryAfter, TimedOut, NetworkError, BadRequest
 
 import kodi_api
 import playlist_store
@@ -16,6 +17,7 @@ import queue_state
 
 STARTUP_CHAT_ID = -1003641420817
 PLAYLIST_DIR = os.environ.get("PLAYLIST_DIR", "/data/playlists")
+UI_STATE_FILE = os.environ.get("UI_STATE_FILE", "/data/telegram_ui_state.json")
 
 pending = {}
 
@@ -45,9 +47,68 @@ NP_REFRESH_LOCK = threading.Lock()
 NP_REFRESH_FUTURE = None
 NP_REFRESH_LAST_TS = 0.0
 NP_REFRESH_MIN_INTERVAL = 0.5
+RESET_PANEL_LOCK = asyncio.Lock()
+RESETTING_CHATS = set()
 
 APP_INSTANCE = None
 MAIN_LOOP = None
+
+
+def save_ui_state():
+    payload = {"chats": {}}
+    chat_ids = set(LIST_MSG_ID.keys()) | set(PANEL_MSG_ID.keys())
+    for chat_id in chat_ids:
+        payload["chats"][str(chat_id)] = {
+            "list_msg_id": LIST_MSG_ID.get(chat_id),
+            "panel_msg_id": PANEL_MSG_ID.get(chat_id),
+        }
+    try:
+        tmp = f"{UI_STATE_FILE}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=True)
+        os.replace(tmp, UI_STATE_FILE)
+    except Exception as e:
+        print(f"UI STATE SAVE FAIL file={UI_STATE_FILE} err={e}", flush=True)
+
+
+def load_ui_state():
+    try:
+        with open(UI_STATE_FILE, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except FileNotFoundError:
+        return
+    except Exception as e:
+        print(f"UI STATE LOAD FAIL file={UI_STATE_FILE} err={e}", flush=True)
+        return
+    chats = payload.get("chats", {})
+    for chat_id_str, ids in chats.items():
+        try:
+            chat_id = int(chat_id_str)
+        except Exception:
+            continue
+        list_id = ids.get("list_msg_id")
+        panel_id = ids.get("panel_msg_id")
+        if isinstance(list_id, int):
+            LIST_MSG_ID[chat_id] = list_id
+        if isinstance(panel_id, int):
+            PANEL_MSG_ID[chat_id] = panel_id
+    print(f"UI STATE LOADED file={UI_STATE_FILE} chats={len(chats)}", flush=True)
+
+
+def remember_last_seen(chat_id, message_id):
+    prev = LAST_SEEN_ID.get(chat_id)
+    if prev is None or message_id > prev:
+        LAST_SEEN_ID[chat_id] = message_id
+    return LAST_SEEN_ID.get(chat_id)
+
+
+def should_recreate_after_edit_error(err):
+    if not isinstance(err, BadRequest):
+        return False
+    txt = str(err).lower()
+    if "message is not modified" in txt:
+        return False
+    return ("message to edit not found" in txt) or ("message_id_invalid" in txt)
 
 
 # Serialize Telegram API calls to avoid send/edit/delete collisions.
@@ -233,6 +294,7 @@ async def send_info_list_panel(ctx, chat_id):
     LIST_MSG_ID[chat_id] = list_msg.message_id
     panel_msg = await send_and_track(ctx, chat_id, "🎛 Kodi Remote - Current track:", reply_markup=control_panel())
     PANEL_MSG_ID[chat_id] = panel_msg.message_id
+    save_ui_state()
 
 
 # Format a single queue item as a display line.
@@ -259,11 +321,10 @@ def build_list_text():
 async def update_list_message(ctx, chat_id):
     msg_id = LIST_MSG_ID.get(chat_id)
     if not msg_id:
-        list_msg = await send_and_track(ctx, chat_id, build_list_text(), parse_mode="HTML")
-        LIST_MSG_ID[chat_id] = list_msg.message_id
         if PANEL_MSG_ID.get(chat_id):
             list_msg = await send_and_track(ctx, chat_id, build_list_text(), parse_mode="HTML")
             LIST_MSG_ID[chat_id] = list_msg.message_id
+            save_ui_state()
         else:
             await send_info_list_panel(ctx, chat_id)
         return
@@ -276,8 +337,13 @@ async def update_list_message(ctx, chat_id):
             parse_mode="HTML",
             disable_web_page_preview=True
         )
-    except Exception:
-        pass
+    except Exception as e:
+        if not should_recreate_after_edit_error(e):
+            print(f"LIST EDIT FAIL chat_id={chat_id} message_id={msg_id} err={e}", flush=True)
+            return
+        list_msg = await send_and_track(ctx, chat_id, build_list_text(), parse_mode="HTML")
+        LIST_MSG_ID[chat_id] = list_msg.message_id
+        save_ui_state()
     else:
         queue_state.LIST_DIRTY = False
 
@@ -412,6 +478,7 @@ async def update_now_playing_message(ctx, chat_id):
             parse_mode="HTML",
         )
         PANEL_MSG_ID[chat_id] = panel_msg.message_id
+        save_ui_state()
         return
     try:
         await telegram_request(
@@ -422,8 +489,19 @@ async def update_now_playing_message(ctx, chat_id):
             parse_mode="HTML",
             reply_markup=control_panel(),
         )
-    except Exception:
-        pass
+    except Exception as e:
+        if not should_recreate_after_edit_error(e):
+            print(f"PANEL EDIT FAIL chat_id={chat_id} message_id={msg_id} err={e}", flush=True)
+            return
+        panel_msg = await send_and_track(
+            ctx,
+            chat_id,
+            f"🎛 Kodi Remote - Current track:\n{text}\n{hifi_text} | {repeat_text}",
+            reply_markup=control_panel(),
+            parse_mode="HTML",
+        )
+        PANEL_MSG_ID[chat_id] = panel_msg.message_id
+        save_ui_state()
 
 
 # Refresh cached hifi power status with throttling.
@@ -445,6 +523,9 @@ async def list_refresher(ctx):
     last_np = 0.0
     last_hifi = 0.0
     while True:
+        if STARTUP_CHAT_ID in RESETTING_CHATS:
+            await asyncio.sleep(1)
+            continue
         if queue_state.LIST_DIRTY:
             await update_list_message(ctx, STARTUP_CHAT_ID)
         now = time.time()
@@ -470,8 +551,8 @@ async def ensure_startup_panel(ctx, chat_id):
 def record_last_seen(ctx, update):
     msg = update.effective_message
     if msg:
-        LAST_SEEN_ID[update.effective_chat.id] = msg.message_id
-        print(f"SEEN chat_id={update.effective_chat.id} message_id={msg.message_id}", flush=True)
+        seen_id = remember_last_seen(update.effective_chat.id, msg.message_id)
+        print(f"SEEN chat_id={update.effective_chat.id} message_id={msg.message_id} stored={seen_id}", flush=True)
 
 
 # Schedule deletion of recent messages after a delay.
@@ -522,7 +603,9 @@ async def _cleanup_after_delay(ctx, chat_id, start_id, end_id, start_inclusive):
                 await telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=mid)
             except Exception as e:
                 print(f"DELETE FAIL chat_id={chat_id} message_id={mid} err={e}", flush=True)
-    LAST_CLEANUP_ID[chat_id] = end_id
+    prev_cleanup = LAST_CLEANUP_ID.get(chat_id)
+    if prev_cleanup is None or end_id > prev_cleanup:
+        LAST_CLEANUP_ID[chat_id] = end_id
 
 
 # Warn about off-topic chat and remove both messages.
@@ -549,8 +632,8 @@ async def on_button(update, ctx):
     await q.answer()
     cmd = q.data
     if q.message:
-        LAST_SEEN_ID[update.effective_chat.id] = q.message.message_id
-        print(f"SEEN chat_id={update.effective_chat.id} message_id={q.message.message_id}", flush=True)
+        seen_id = remember_last_seen(update.effective_chat.id, q.message.message_id)
+        print(f"SEEN chat_id={update.effective_chat.id} message_id={q.message.message_id} stored={seen_id}", flush=True)
     chat_id = update.effective_chat.id
     prev_id = LAST_BOT_ID.get(chat_id)
     sent = False
@@ -1087,13 +1170,67 @@ async def handle_nontext(update, ctx):
     await warn_and_cleanup_chat(ctx, update.effective_chat.id, msg.message_id)
 
 
+async def reset_panel_command(update, ctx):
+    async with RESET_PANEL_LOCK:
+        record_last_seen(ctx, update)
+        chat_id = update.effective_chat.id
+        msg = update.effective_message
+        RESETTING_CHATS.add(chat_id)
+        try:
+            old_list_id = LIST_MSG_ID.get(chat_id)
+            old_panel_id = PANEL_MSG_ID.get(chat_id)
+
+            await asyncio.to_thread(queue_state.hard_stop_and_clear)
+            queue_state.clear_queue()
+            pending.clear()
+
+            try:
+                for user_id in list(ctx.application.user_data.keys()):
+                    ctx.application.user_data[user_id].clear()
+            except Exception:
+                pass
+
+            for mid in (old_list_id, old_panel_id):
+                if not mid:
+                    continue
+                try:
+                    await telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=mid)
+                except Exception as e:
+                    print(f"DELETE FAIL chat_id={chat_id} message_id={mid} err={e}", flush=True)
+
+            LAST_BOT_ID.pop(chat_id, None)
+            PREV_BOT_ID.pop(chat_id, None)
+            LAST_SEEN_ID.pop(chat_id, None)
+            LAST_CLEANUP_ID.pop(chat_id, None)
+            FIRST_BOT_ID.pop(chat_id, None)
+            STARTUP_POSTED.pop(chat_id, None)
+            LIST_MSG_ID.pop(chat_id, None)
+            PANEL_MSG_ID.pop(chat_id, None)
+            save_ui_state()
+
+            STARTUP_POSTED[chat_id] = True
+            await send_info_list_panel(ctx, chat_id)
+            await refresh_hifi_status_cache(force=True)
+            await update_now_playing_message(ctx, chat_id)
+        finally:
+            RESETTING_CHATS.discard(chat_id)
+
+        if msg:
+            try:
+                await telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=msg.message_id)
+            except Exception:
+                pass
+
+
 # Initialize the bot, handlers, and start polling.
 def run(token: str):
     app = Application.builder().token(token).build()
+    load_ui_state()
 
     queue_state.set_ui_callbacks(schedule_now_playing_refresh)
     queue_state.start_autoplay_thread()
     app.add_handler(CallbackQueryHandler(on_button))
+    app.add_handler(CommandHandler("resetpanel", reset_panel_command))
 
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
     app.add_handler(MessageHandler(filters.ATTACHMENT | filters.Sticker.ALL, handle_nontext))
@@ -1105,8 +1242,10 @@ def run(token: str):
             APP_INSTANCE = app
             MAIN_LOOP = asyncio.get_running_loop()
             STARTUP_POSTED[STARTUP_CHAT_ID] = True
-            await send_info_list_panel(app, STARTUP_CHAT_ID)
+            await update_list_message(app, STARTUP_CHAT_ID)
+            await update_now_playing_message(app, STARTUP_CHAT_ID)
             await refresh_hifi_status_cache(force=True)
+            await update_now_playing_message(app, STARTUP_CHAT_ID)
         except Exception as e:
             print(f"STARTUP POST FAIL chat_id={STARTUP_CHAT_ID} err={e}", flush=True)
         asyncio.get_running_loop().create_task(list_refresher(app))
