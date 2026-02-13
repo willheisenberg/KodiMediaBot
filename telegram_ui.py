@@ -54,6 +54,10 @@ RESETTING_CHATS = set()
 
 APP_INSTANCE = None
 MAIN_LOOP = None
+LIST_RENDER_CACHE = {}
+PANEL_RENDER_CACHE = {}
+LIST_REFRESH_TASK = None
+WS_LISTENER_TASK = None
 
 
 def save_ui_state():
@@ -111,6 +115,20 @@ def should_recreate_after_edit_error(err):
     if "message is not modified" in txt:
         return False
     return ("message to edit not found" in txt) or ("message_id_invalid" in txt)
+
+
+def is_not_modified_error(err):
+    return isinstance(err, BadRequest) and ("message is not modified" in str(err).lower())
+
+
+def resolve_airplay_status_text(status):
+    if status == "On":
+        return "AirPlay: On"
+    if status == "Off":
+        return "AirPlay: Off"
+    if HIFI_STATUS_CACHE == "🔴 Hifi: Standby":
+        return "AirPlay: Off"
+    return "AirPlay: Unknown"
 
 
 # Serialize Telegram API calls to avoid send/edit/delete collisions.
@@ -325,10 +343,15 @@ def build_list_text():
 # Update or create the queue list message.
 async def update_list_message(ctx, chat_id):
     msg_id = LIST_MSG_ID.get(chat_id)
+    text = build_list_text()
+    if LIST_RENDER_CACHE.get(chat_id) == text and msg_id:
+        queue_state.LIST_DIRTY = False
+        return
     if not msg_id:
         if PANEL_MSG_ID.get(chat_id):
-            list_msg = await send_and_track(ctx, chat_id, build_list_text(), parse_mode="HTML")
+            list_msg = await send_and_track(ctx, chat_id, text, parse_mode="HTML")
             LIST_MSG_ID[chat_id] = list_msg.message_id
+            LIST_RENDER_CACHE[chat_id] = text
             save_ui_state()
         else:
             await send_info_list_panel(ctx, chat_id)
@@ -338,18 +361,24 @@ async def update_list_message(ctx, chat_id):
             ctx.bot.edit_message_text,
             chat_id=chat_id,
             message_id=msg_id,
-            text=build_list_text(),
+            text=text,
             parse_mode="HTML",
             disable_web_page_preview=True
         )
     except Exception as e:
+        if is_not_modified_error(e):
+            LIST_RENDER_CACHE[chat_id] = text
+            queue_state.LIST_DIRTY = False
+            return
         if not should_recreate_after_edit_error(e):
             print(f"LIST EDIT FAIL chat_id={chat_id} message_id={msg_id} err={e}", flush=True)
             return
-        list_msg = await send_and_track(ctx, chat_id, build_list_text(), parse_mode="HTML")
+        list_msg = await send_and_track(ctx, chat_id, text, parse_mode="HTML")
         LIST_MSG_ID[chat_id] = list_msg.message_id
+        LIST_RENDER_CACHE[chat_id] = text
         save_ui_state()
     else:
+        LIST_RENDER_CACHE[chat_id] = text
         queue_state.LIST_DIRTY = False
 
 
@@ -475,15 +504,27 @@ async def update_now_playing_message(ctx, chat_id):
     hifi_text = HIFI_STATUS_CACHE
     airplay_text = AIRPLAY_STATUS_CACHE
     repeat_text = f"🔁 Repeat: {queue_state.REPEAT_MODE}"
+    full_text = f"🎛 Kodi Remote - Current track:\n{text}\n{hifi_text} | {airplay_text} | {repeat_text}"
+    panel_markup = control_panel()
+    render_sig = (
+        full_text,
+        tuple(
+            tuple((btn.text, btn.callback_data) for btn in row)
+            for row in panel_markup.inline_keyboard
+        ),
+    )
+    if PANEL_RENDER_CACHE.get(chat_id) == render_sig and msg_id:
+        return
     if not msg_id:
         panel_msg = await send_and_track(
             ctx,
             chat_id,
-            f"🎛 Kodi Remote - Current track:\n{text}\n{hifi_text} | {airplay_text} | {repeat_text}",
-            reply_markup=control_panel(),
+            full_text,
+            reply_markup=panel_markup,
             parse_mode="HTML",
         )
         PANEL_MSG_ID[chat_id] = panel_msg.message_id
+        PANEL_RENDER_CACHE[chat_id] = render_sig
         save_ui_state()
         return
     try:
@@ -491,28 +532,34 @@ async def update_now_playing_message(ctx, chat_id):
             ctx.bot.edit_message_text,
             chat_id=chat_id,
             message_id=msg_id,
-            text=f"🎛 Kodi Remote - Current track:\n{text}\n{hifi_text} | {airplay_text} | {repeat_text}",
+            text=full_text,
             parse_mode="HTML",
-            reply_markup=control_panel(),
+            reply_markup=panel_markup,
         )
     except Exception as e:
+        if is_not_modified_error(e):
+            PANEL_RENDER_CACHE[chat_id] = render_sig
+            return
         if not should_recreate_after_edit_error(e):
             print(f"PANEL EDIT FAIL chat_id={chat_id} message_id={msg_id} err={e}", flush=True)
             return
         panel_msg = await send_and_track(
             ctx,
             chat_id,
-            f"🎛 Kodi Remote - Current track:\n{text}\n{hifi_text} | {airplay_text} | {repeat_text}",
-            reply_markup=control_panel(),
+            full_text,
+            reply_markup=panel_markup,
             parse_mode="HTML",
         )
         PANEL_MSG_ID[chat_id] = panel_msg.message_id
+        PANEL_RENDER_CACHE[chat_id] = render_sig
         save_ui_state()
+    else:
+        PANEL_RENDER_CACHE[chat_id] = render_sig
 
 
 # Refresh cached hifi power status with throttling.
 async def refresh_hifi_status_cache(force=False):
-    global HIFI_STATUS_CACHE, HIFI_STATUS_TS
+    global HIFI_STATUS_CACHE, HIFI_STATUS_TS, AIRPLAY_STATUS_CACHE
     now = time.time()
     if not force and now - HIFI_STATUS_TS < 300:
         return
@@ -521,6 +568,7 @@ async def refresh_hifi_status_cache(force=False):
         HIFI_STATUS_CACHE = "🟢 Hifi: On"
     elif status == "Standby":
         HIFI_STATUS_CACHE = "🔴 Hifi: Standby"
+        AIRPLAY_STATUS_CACHE = "AirPlay: Off"
     HIFI_STATUS_TS = now
 
 
@@ -530,12 +578,7 @@ async def refresh_airplay_status_cache(force=False):
     if not force and now - AIRPLAY_STATUS_TS < 15:
         return
     status = await asyncio.to_thread(kodi_api.get_airplay_status)
-    if status == "On":
-        AIRPLAY_STATUS_CACHE = "AirPlay: On"
-    elif status == "Off":
-        AIRPLAY_STATUS_CACHE = "AirPlay: Off"
-    else:
-        AIRPLAY_STATUS_CACHE = "AirPlay: Unknown"
+    AIRPLAY_STATUS_CACHE = resolve_airplay_status_text(status)
     AIRPLAY_STATUS_TS = now
 
 
@@ -544,25 +587,28 @@ async def list_refresher(ctx):
     last_np = 0.0
     last_hifi = 0.0
     last_airplay = 0.0
-    while True:
-        if STARTUP_CHAT_ID in RESETTING_CHATS:
-            await asyncio.sleep(1)
-            continue
-        if queue_state.LIST_DIRTY:
-            await update_list_message(ctx, STARTUP_CHAT_ID)
-        now = time.time()
-        if now - last_np >= 5:
-            await update_now_playing_message(ctx, STARTUP_CHAT_ID)
-            last_np = now
-        if now - last_hifi >= 300:
-            await refresh_hifi_status_cache(force=True)
-            await update_now_playing_message(ctx, STARTUP_CHAT_ID)
-            last_hifi = now
-        if now - last_airplay >= 60:
-            await refresh_airplay_status_cache(force=True)
-            await update_now_playing_message(ctx, STARTUP_CHAT_ID)
-            last_airplay = now
-        await asyncio.sleep(2)
+    try:
+        while True:
+            if STARTUP_CHAT_ID in RESETTING_CHATS:
+                await asyncio.sleep(1)
+                continue
+            if queue_state.LIST_DIRTY:
+                await update_list_message(ctx, STARTUP_CHAT_ID)
+            now = time.time()
+            if now - last_np >= 5:
+                await update_now_playing_message(ctx, STARTUP_CHAT_ID)
+                last_np = now
+            if now - last_hifi >= 300:
+                await refresh_hifi_status_cache(force=True)
+                await update_now_playing_message(ctx, STARTUP_CHAT_ID)
+                last_hifi = now
+            if now - last_airplay >= 60:
+                await refresh_airplay_status_cache(force=True)
+                await update_now_playing_message(ctx, STARTUP_CHAT_ID)
+                last_airplay = now
+            await asyncio.sleep(2)
+    except asyncio.CancelledError:
+        return
 
 
 # Ensure the startup panel is posted once.
@@ -866,12 +912,7 @@ async def on_button(update, ctx):
     elif cmd == "airplay:kill":
         ok = await asyncio.to_thread(kodi_api.run_airplay_kill)
         status = await asyncio.to_thread(kodi_api.get_airplay_status)
-        if status == "On":
-            AIRPLAY_STATUS_CACHE = "AirPlay: On"
-        elif status == "Off":
-            AIRPLAY_STATUS_CACHE = "AirPlay: Off"
-        else:
-            AIRPLAY_STATUS_CACHE = "AirPlay: Unknown"
+        AIRPLAY_STATUS_CACHE = resolve_airplay_status_text(status)
         AIRPLAY_STATUS_TS = time.time()
         status_text = AIRPLAY_STATUS_CACHE
         if ok:
@@ -1214,6 +1255,14 @@ async def handle_nontext(update, ctx):
     await warn_and_cleanup_chat(ctx, update.effective_chat.id, msg.message_id)
 
 
+async def handle_unknown_command(update, ctx):
+    record_last_seen(ctx, update)
+    msg = update.effective_message
+    if not msg:
+        return
+    await warn_and_cleanup_chat(ctx, update.effective_chat.id, msg.message_id)
+
+
 async def reset_panel_command(update, ctx):
     async with RESET_PANEL_LOCK:
         record_last_seen(ctx, update)
@@ -1250,6 +1299,8 @@ async def reset_panel_command(update, ctx):
             STARTUP_POSTED.pop(chat_id, None)
             LIST_MSG_ID.pop(chat_id, None)
             PANEL_MSG_ID.pop(chat_id, None)
+            LIST_RENDER_CACHE.pop(chat_id, None)
+            PANEL_RENDER_CACHE.pop(chat_id, None)
             save_ui_state()
 
             STARTUP_POSTED[chat_id] = True
@@ -1277,13 +1328,14 @@ def run(token: str):
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(CommandHandler("resetpanel", reset_panel_command))
 
+    app.add_handler(MessageHandler(filters.COMMAND, handle_unknown_command))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
     app.add_handler(MessageHandler(filters.ATTACHMENT | filters.Sticker.ALL, handle_nontext))
     app.add_error_handler(_error_handler)
 
     async def _post_init(app):
         try:
-            global APP_INSTANCE, MAIN_LOOP
+            global APP_INSTANCE, MAIN_LOOP, LIST_REFRESH_TASK, WS_LISTENER_TASK
             APP_INSTANCE = app
             MAIN_LOOP = asyncio.get_running_loop()
             STARTUP_POSTED[STARTUP_CHAT_ID] = True
@@ -1294,9 +1346,29 @@ def run(token: str):
             await update_now_playing_message(app, STARTUP_CHAT_ID)
         except Exception as e:
             print(f"STARTUP POST FAIL chat_id={STARTUP_CHAT_ID} err={e}", flush=True)
-        asyncio.get_running_loop().create_task(list_refresher(app))
-        asyncio.get_running_loop().create_task(kodi_api.kodi_ws_listener())
+        loop = asyncio.get_running_loop()
+        LIST_REFRESH_TASK = loop.create_task(list_refresher(app))
+        WS_LISTENER_TASK = loop.create_task(kodi_api.kodi_ws_listener())
     app.post_init = _post_init
+
+    async def _post_shutdown(app):
+        global LIST_REFRESH_TASK, WS_LISTENER_TASK, APP_INSTANCE, MAIN_LOOP
+        for task in (LIST_REFRESH_TASK, WS_LISTENER_TASK):
+            if task is not None and not task.done():
+                task.cancel()
+        for task in (LIST_REFRESH_TASK, WS_LISTENER_TASK):
+            if task is not None:
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
+        LIST_REFRESH_TASK = None
+        WS_LISTENER_TASK = None
+        APP_INSTANCE = None
+        MAIN_LOOP = None
+    app.post_shutdown = _post_shutdown
 
     app.run_polling()
 
