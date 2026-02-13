@@ -582,6 +582,10 @@ async def refresh_airplay_status_cache(force=False):
     now = time.time()
     if not force and now - AIRPLAY_STATUS_TS < 15:
         return
+    if HIFI_STATUS_CACHE == "🔴 Hifi: Standby":
+        AIRPLAY_STATUS_CACHE = "AirPlay: Off"
+        AIRPLAY_STATUS_TS = now
+        return
     status = await asyncio.to_thread(kodi_api.get_airplay_status)
     AIRPLAY_STATUS_CACHE = resolve_airplay_status_text(status)
     AIRPLAY_STATUS_TS = now
@@ -591,6 +595,10 @@ async def refresh_denon_volume_cache(force=False):
     global DENON_VOLUME_CACHE, DENON_VOLUME_TS
     now = time.time()
     if not force and now - DENON_VOLUME_TS < 60:
+        return
+    if HIFI_STATUS_CACHE == "🔴 Hifi: Standby":
+        DENON_VOLUME_CACHE = "🔊 --"
+        DENON_VOLUME_TS = now
         return
     vol = await asyncio.to_thread(kodi_api.get_denon_mainzone_volume)
     if vol is None:
