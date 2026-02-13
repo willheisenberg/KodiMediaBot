@@ -959,8 +959,8 @@ async def on_button(update, ctx):
         await send_and_track(ctx, chat_id, "🔌 Hifi On" if ok else "⚠ Hifi On failed")
         await asyncio.sleep(10)
         await refresh_hifi_status_cache(force=True)
-        await refresh_denon_volume_cache(force=True)
         await update_now_playing_message(ctx, chat_id)
+        await refresh_denon_volume_cache(force=True)
         sent = True
     elif cmd == "hifi:off":
         ok = await asyncio.to_thread(kodi_api.run_cec_power, False)
