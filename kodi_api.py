@@ -5,6 +5,7 @@ import time
 import subprocess
 import json
 import asyncio
+import socket
 import unicodedata
 from urllib.parse import unquote, quote_plus, urlparse, parse_qs
 
@@ -21,6 +22,7 @@ CEC_CMD_VOL_UP = "0x41"
 CEC_CMD_VOL_DOWN = "0x42"
 DEBUG_WS = os.environ.get("DEBUG_WS") in ("1", "true", "True", "yes", "YES")
 DENON_HOST = os.environ.get("DENON_HOST")
+DENON_VOLUME_STEP_COMMANDS = 2
 
 YT = re.compile(r"(?:v=|youtu\.be/|shorts/)([A-Za-z0-9_-]{11})")
 PL = re.compile(r"(?:[?&]list=)([A-Za-z0-9_-]+)")
@@ -118,6 +120,35 @@ def run_cec_volume(times: int, cmd_hex: str) -> bool:
         return False
 
 
+def run_denon_volume_delta(points: int) -> bool:
+    if not DENON_HOST:
+        return False
+    if points == 0:
+        return True
+    cmd = b"MVUP\r" if points > 0 else b"MVDOWN\r"
+    steps = abs(points) * DENON_VOLUME_STEP_COMMANDS
+    try:
+        with socket.create_connection((DENON_HOST, 23), timeout=2) as sock:
+            sock.settimeout(2)
+            for _ in range(steps):
+                sock.sendall(cmd)
+                time.sleep(0.05)
+        return True
+    except Exception as e:
+        print(f"DENON VOLUME ERROR host={DENON_HOST} points={points} err={e}", flush=True)
+        return False
+
+
+def run_volume_delta(points: int) -> bool:
+    if DENON_HOST:
+        return run_denon_volume_delta(points)
+    if points == 0:
+        return True
+    cmd_hex = CEC_CMD_VOL_UP if points > 0 else CEC_CMD_VOL_DOWN
+    times = abs(points) * 2
+    return run_cec_volume(times, cmd_hex)
+
+
 # Turn the audio system on or off via CEC over SSH.
 def run_cec_power(on: bool) -> bool:
     if on:
@@ -202,6 +233,35 @@ def get_airplay_status():
         return "Off"
     except Exception as e:
         print(f"AIRPLAY ERROR host={DENON_HOST} err={e}", flush=True)
+        return None
+
+
+def get_denon_mainzone_volume():
+    if not DENON_HOST:
+        return None
+    url = f"http://{DENON_HOST}/goform/formMainZone_MainZoneXml.xml"
+    try:
+        res = requests.get(url, timeout=4)
+        if res.status_code != 200:
+            print(f"DENON VOLUME FAIL status={res.status_code} host={DENON_HOST}", flush=True)
+            return None
+        text = res.text or ""
+        m = re.search(
+            r"<MasterVolume>\s*<value>\s*([+-]?\d+(?:\.\d+)?)\s*</value>",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if m:
+            return m.group(1)
+        values = re.findall(r"<value>\s*([+-]?\d+(?:\.\d+)?)\s*</value>", text, flags=re.IGNORECASE)
+        if not values:
+            return None
+        for val in values:
+            if val.startswith("-"):
+                return val
+        return values[0]
+    except Exception as e:
+        print(f"DENON VOLUME ERROR host={DENON_HOST} err={e}", flush=True)
         return None
 
 

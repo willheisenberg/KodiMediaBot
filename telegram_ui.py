@@ -34,6 +34,8 @@ HIFI_STATUS_CACHE = "⚪ Hifi: Unknown"
 HIFI_STATUS_TS = 0.0
 AIRPLAY_STATUS_CACHE = "AirPlay: Unknown"
 AIRPLAY_STATUS_TS = 0.0
+DENON_VOLUME_CACHE = "🔊 --"
+DENON_VOLUME_TS = 0.0
 
 TG_RATE_LOCK = asyncio.Lock()
 TG_DELETE_RATE_LOCK = asyncio.Lock()
@@ -504,7 +506,10 @@ async def update_now_playing_message(ctx, chat_id):
     hifi_text = HIFI_STATUS_CACHE
     airplay_text = AIRPLAY_STATUS_CACHE
     repeat_text = f"🔁 Repeat: {queue_state.REPEAT_MODE}"
-    full_text = f"🎛 Kodi Remote - Current track:\n{text}\n{hifi_text} | {airplay_text} | {repeat_text}"
+    status_parts = [hifi_text, airplay_text, repeat_text]
+    if hifi_text != "🔴 Hifi: Standby":
+        status_parts.append(DENON_VOLUME_CACHE)
+    full_text = f"🎛 Kodi Remote - Current track:\n{text}\n{' | '.join(status_parts)}"
     panel_markup = control_panel()
     render_sig = (
         full_text,
@@ -582,11 +587,33 @@ async def refresh_airplay_status_cache(force=False):
     AIRPLAY_STATUS_TS = now
 
 
+async def refresh_denon_volume_cache(force=False):
+    global DENON_VOLUME_CACHE, DENON_VOLUME_TS
+    now = time.time()
+    if not force and now - DENON_VOLUME_TS < 60:
+        return
+    vol = await asyncio.to_thread(kodi_api.get_denon_mainzone_volume)
+    if vol is None:
+        DENON_VOLUME_CACHE = "🔊 --"
+    else:
+        try:
+            rel = float(vol)
+            abs_vol = max(0.0, min(98.0, rel + 80.0))
+            if abs(abs_vol - round(abs_vol)) < 1e-6:
+                DENON_VOLUME_CACHE = f"🔊 {int(round(abs_vol))}"
+            else:
+                DENON_VOLUME_CACHE = f"🔊 {abs_vol:.1f}"
+        except Exception:
+            DENON_VOLUME_CACHE = f"🔊 {vol}"
+    DENON_VOLUME_TS = now
+
+
 # Background task to refresh list and now-playing messages.
 async def list_refresher(ctx):
     last_np = 0.0
     last_hifi = 0.0
     last_airplay = 0.0
+    last_volume = 0.0
     try:
         while True:
             if STARTUP_CHAT_ID in RESETTING_CHATS:
@@ -606,6 +633,10 @@ async def list_refresher(ctx):
                 await refresh_airplay_status_cache(force=True)
                 await update_now_playing_message(ctx, STARTUP_CHAT_ID)
                 last_airplay = now
+            if now - last_volume >= 60:
+                await refresh_denon_volume_cache(force=True)
+                await update_now_playing_message(ctx, STARTUP_CHAT_ID)
+                last_volume = now
             await asyncio.sleep(2)
     except asyncio.CancelledError:
         return
@@ -880,26 +911,47 @@ async def on_button(update, ctx):
             sent = True
             skip_cleanup = True
     elif cmd == "vol:up5":
-        ok = await asyncio.to_thread(kodi_api.run_cec_volume, 9, kodi_api.CEC_CMD_VOL_UP)
+        before_vol = await asyncio.to_thread(kodi_api.get_denon_mainzone_volume)
+        ok = await asyncio.to_thread(kodi_api.run_volume_delta, 5)
         await send_and_track(ctx, chat_id, "🔊 +5" if ok else "⚠ Volume +5 failed")
+        await asyncio.sleep(0.35)
+        await refresh_denon_volume_cache(force=True)
+        after_vol = await asyncio.to_thread(kodi_api.get_denon_mainzone_volume)
+        await update_now_playing_message(ctx, chat_id)
         sent = True
     elif cmd == "vol:up10":
-        ok = await asyncio.to_thread(kodi_api.run_cec_volume, 18, kodi_api.CEC_CMD_VOL_UP)
+        before_vol = await asyncio.to_thread(kodi_api.get_denon_mainzone_volume)
+        ok = await asyncio.to_thread(kodi_api.run_volume_delta, 10)
         await send_and_track(ctx, chat_id, "🔊 +10" if ok else "⚠ Volume +10 failed")
+        await asyncio.sleep(0.35)
+        await refresh_denon_volume_cache(force=True)
+        after_vol = await asyncio.to_thread(kodi_api.get_denon_mainzone_volume)
+        await update_now_playing_message(ctx, chat_id)
         sent = True
     elif cmd == "vol:down5":
-        ok = await asyncio.to_thread(kodi_api.run_cec_volume, 9, kodi_api.CEC_CMD_VOL_DOWN)
+        before_vol = await asyncio.to_thread(kodi_api.get_denon_mainzone_volume)
+        ok = await asyncio.to_thread(kodi_api.run_volume_delta, -5)
         await send_and_track(ctx, chat_id, "🔉 -5" if ok else "⚠ Volume -5 failed")
+        await asyncio.sleep(0.35)
+        await refresh_denon_volume_cache(force=True)
+        after_vol = await asyncio.to_thread(kodi_api.get_denon_mainzone_volume)
+        await update_now_playing_message(ctx, chat_id)
         sent = True
     elif cmd == "vol:down10":
-        ok = await asyncio.to_thread(kodi_api.run_cec_volume, 18, kodi_api.CEC_CMD_VOL_DOWN)
+        before_vol = await asyncio.to_thread(kodi_api.get_denon_mainzone_volume)
+        ok = await asyncio.to_thread(kodi_api.run_volume_delta, -10)
         await send_and_track(ctx, chat_id, "🔉 -10" if ok else "⚠ Volume -10 failed")
+        await asyncio.sleep(0.35)
+        await refresh_denon_volume_cache(force=True)
+        after_vol = await asyncio.to_thread(kodi_api.get_denon_mainzone_volume)
+        await update_now_playing_message(ctx, chat_id)
         sent = True
     elif cmd == "hifi:on":
         ok = await asyncio.to_thread(kodi_api.run_cec_power, True)
         await send_and_track(ctx, chat_id, "🔌 Hifi On" if ok else "⚠ Hifi On failed")
         await asyncio.sleep(10)
         await refresh_hifi_status_cache(force=True)
+        await refresh_denon_volume_cache(force=True)
         await update_now_playing_message(ctx, chat_id)
         sent = True
     elif cmd == "hifi:off":
@@ -1307,6 +1359,7 @@ async def reset_panel_command(update, ctx):
             await send_info_list_panel(ctx, chat_id)
             await refresh_hifi_status_cache(force=True)
             await refresh_airplay_status_cache(force=True)
+            await refresh_denon_volume_cache(force=True)
             await update_now_playing_message(ctx, chat_id)
         finally:
             RESETTING_CHATS.discard(chat_id)
@@ -1343,6 +1396,7 @@ def run(token: str):
             await update_now_playing_message(app, STARTUP_CHAT_ID)
             await refresh_hifi_status_cache(force=True)
             await refresh_airplay_status_cache(force=True)
+            await refresh_denon_volume_cache(force=True)
             await update_now_playing_message(app, STARTUP_CHAT_ID)
         except Exception as e:
             print(f"STARTUP POST FAIL chat_id={STARTUP_CHAT_ID} err={e}", flush=True)
