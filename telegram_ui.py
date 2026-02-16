@@ -803,7 +803,7 @@ async def on_button(update, ctx):
         if cmd == "seek:percent":
             if ctx.user_data.get("await_seek_percent"):
                 return
-            msg = await send_and_track(ctx, chat_id, "⏱ Percent? (0-100)")
+            msg = await send_and_track(ctx, chat_id, "⏱ Percent? (0-100, q = cancel)")
             ctx.user_data["await_seek_percent"] = True
             ctx.user_data["await_seek_percent_msg_id"] = msg.message_id
             sent = True
@@ -861,7 +861,7 @@ async def on_button(update, ctx):
     elif cmd == "play:ask":
         if ctx.user_data.get("await_play_index"):
             return
-        msg = await send_and_track(ctx, chat_id, "▶ Which number should be played? (e.g. 3)")
+        msg = await send_and_track(ctx, chat_id, "▶ Which number should be played? (e.g. 3, q = cancel)")
         ctx.user_data["await_play_index"] = True
         ctx.user_data["await_play_msg_id"] = msg.message_id
         sent = True
@@ -869,7 +869,7 @@ async def on_button(update, ctx):
     elif cmd == "delete:ask":
         if ctx.user_data.get("await_delete_index"):
             return
-        msg = await send_and_track(ctx, chat_id, "🗑 Which number should be deleted? (e.g. 3)")
+        msg = await send_and_track(ctx, chat_id, "🗑 Which number should be deleted? (e.g. 3, q = cancel)")
         ctx.user_data["await_delete_index"] = True
         ctx.user_data["await_delete_msg_id"] = msg.message_id
         sent = True
@@ -883,7 +883,7 @@ async def on_button(update, ctx):
             await send_and_track(ctx, chat_id, "🗒 Queue is empty.")
             sent = True
         else:
-            msg = await send_and_track(ctx, chat_id, "💾 Playlist name?")
+            msg = await send_and_track(ctx, chat_id, "💾 Playlist name? (q = cancel)")
             ctx.user_data["await_playlist_save_name"] = True
             ctx.user_data["await_playlist_save_msg_id"] = msg.message_id
             sent = True
@@ -897,7 +897,11 @@ async def on_button(update, ctx):
             sent = True
         else:
             lines = [f"{i+1}. {os.path.splitext(f)[0]}" for i, f in enumerate(files)]
-            msg = await send_and_track(ctx, chat_id, "📂 Select a playlist:\n" + "\n".join(lines))
+            msg = await send_and_track(
+                ctx,
+                chat_id,
+                "📂 Select a playlist (q = cancel):\n" + "\n".join(lines),
+            )
             ctx.user_data["await_playlist_load_index"] = True
             ctx.user_data["await_playlist_load_msg_id"] = msg.message_id
             ctx.user_data["playlist_load_files"] = files
@@ -912,7 +916,11 @@ async def on_button(update, ctx):
             sent = True
         else:
             lines = [f"{i+1}. {os.path.splitext(f)[0]}" for i, f in enumerate(files)]
-            msg = await send_and_track(ctx, chat_id, "🗑 Delete which playlist?\n" + "\n".join(lines))
+            msg = await send_and_track(
+                ctx,
+                chat_id,
+                "🗑 Delete which playlist? (q = cancel)\n" + "\n".join(lines),
+            )
             ctx.user_data["await_playlist_delete_index"] = True
             ctx.user_data["await_playlist_delete_msg_id"] = msg.message_id
             ctx.user_data["playlist_delete_files"] = files
@@ -996,15 +1004,28 @@ async def handle_text(update, ctx):
     skip_cleanup = False
     msg_id = update.message.message_id
     txt = update.message.text.strip()
+    txt_lower = txt.lower()
 
     if ctx.user_data.get("await_playlist_save_name"):
         ctx.user_data["await_playlist_save_name"] = False
         prompt_id = ctx.user_data.pop("await_playlist_save_msg_id", None)
+        if txt_lower == "q":
+            await send_and_track(ctx, chat_id, "Cancelled.")
+            sent = True
+            if prompt_id:
+                try:
+                    await telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=prompt_id)
+                except Exception:
+                    pass
+            if sent:
+                schedule_cleanup(ctx, chat_id, prev_id)
+                await update_list_message(ctx, chat_id)
+            return
         with queue_state.LOCK:
             items = list(queue_state.QUEUE)
         path = playlist_store.playlist_path_for_name(PLAYLIST_DIR, txt)
         if os.path.exists(path):
-            msg = await send_and_track(ctx, chat_id, "Playlist already exists. Replace? (y/n)")
+            msg = await send_and_track(ctx, chat_id, "Playlist already exists. Replace? (y/n, q = cancel)")
             ctx.user_data["await_playlist_overwrite_confirm"] = True
             ctx.user_data["await_playlist_overwrite_msg_id"] = msg.message_id
             ctx.user_data["playlist_overwrite_name"] = txt
@@ -1033,7 +1054,6 @@ async def handle_text(update, ctx):
         return
 
     if ctx.user_data.get("await_playlist_overwrite_confirm"):
-        txt_lower = txt.strip().lower()
         if txt_lower in ("y", "yes"):
             ctx.user_data["await_playlist_overwrite_confirm"] = False
             prompt_id = ctx.user_data.pop("await_playlist_overwrite_msg_id", None)
@@ -1070,7 +1090,23 @@ async def handle_text(update, ctx):
                 schedule_cleanup(ctx, chat_id, prev_id)
                 await update_list_message(ctx, chat_id)
             return
-        await send_and_track(ctx, chat_id, "Please answer with y or n.")
+        if txt_lower == "q":
+            ctx.user_data["await_playlist_overwrite_confirm"] = False
+            prompt_id = ctx.user_data.pop("await_playlist_overwrite_msg_id", None)
+            ctx.user_data.pop("playlist_overwrite_name", None)
+            ctx.user_data.pop("playlist_overwrite_items", None)
+            await send_and_track(ctx, chat_id, "Cancelled.")
+            sent = True
+            if prompt_id:
+                try:
+                    await telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=prompt_id)
+                except Exception:
+                    pass
+            if sent:
+                schedule_cleanup(ctx, chat_id, prev_id)
+                await update_list_message(ctx, chat_id)
+            return
+        await send_and_track(ctx, chat_id, "Please answer with y or n (or q to cancel).")
         sent = True
         return
 
@@ -1078,7 +1114,9 @@ async def handle_text(update, ctx):
         ctx.user_data["await_playlist_load_index"] = False
         prompt_id = ctx.user_data.pop("await_playlist_load_msg_id", None)
         files = ctx.user_data.pop("playlist_load_files", [])
-        if txt.isdigit():
+        if txt_lower == "q":
+            await send_and_track(ctx, chat_id, "Cancelled.")
+        elif txt.isdigit():
             i = int(txt) - 1
             if 0 <= i < len(files):
                 ok, items = playlist_store.load_playlist_from_disk(PLAYLIST_DIR, files[i])
@@ -1094,7 +1132,7 @@ async def handle_text(update, ctx):
             else:
                 await send_and_track(ctx, chat_id, "That number does not exist.")
         else:
-            await send_and_track(ctx, chat_id, "Please enter a number only.")
+            await send_and_track(ctx, chat_id, "Please enter a number only (or q to cancel).")
         sent = True
         if prompt_id:
             try:
@@ -1110,7 +1148,9 @@ async def handle_text(update, ctx):
         ctx.user_data["await_playlist_delete_index"] = False
         prompt_id = ctx.user_data.pop("await_playlist_delete_msg_id", None)
         files = ctx.user_data.pop("playlist_delete_files", [])
-        if txt.isdigit():
+        if txt_lower == "q":
+            await send_and_track(ctx, chat_id, "Cancelled.")
+        elif txt.isdigit():
             i = int(txt) - 1
             if 0 <= i < len(files):
                 ok, res = playlist_store.delete_playlist_from_disk(PLAYLIST_DIR, files[i])
@@ -1121,7 +1161,7 @@ async def handle_text(update, ctx):
             else:
                 await send_and_track(ctx, chat_id, "That number does not exist.")
         else:
-            await send_and_track(ctx, chat_id, "Please enter a number only.")
+            await send_and_track(ctx, chat_id, "Please enter a number only (or q to cancel).")
         sent = True
         if prompt_id:
             try:
@@ -1136,7 +1176,9 @@ async def handle_text(update, ctx):
     if ctx.user_data.get("await_play_index"):
         ctx.user_data["await_play_index"] = False
         prompt_id = ctx.user_data.pop("await_play_msg_id", None)
-        if txt.isdigit():
+        if txt_lower == "q":
+            await send_and_track(ctx, chat_id, "Cancelled.")
+        elif txt.isdigit():
             i = int(txt) - 1
             with queue_state.LOCK:
                 in_range = 0 <= i < len(queue_state.QUEUE)
@@ -1148,7 +1190,7 @@ async def handle_text(update, ctx):
                 queue_state.play_index(i)
                 await send_and_track(ctx, chat_id, f"▶ Playing track {txt}.")
         else:
-            await send_and_track(ctx, chat_id, "Please enter a number only.")
+            await send_and_track(ctx, chat_id, "Please enter a number only (or q to cancel).")
         sent = True
         if prompt_id:
             try:
@@ -1163,15 +1205,17 @@ async def handle_text(update, ctx):
         ctx.user_data["await_seek_percent"] = False
         prompt_id = ctx.user_data.pop("await_seek_percent_msg_id", None)
         m = re.match(r"^\s*(\d{1,3})\s*%?\s*$", txt)
-        if m:
+        if txt_lower == "q":
+            await send_and_track(ctx, chat_id, "Cancelled.")
+        elif m:
             val = int(m.group(1))
             if 0 <= val <= 100:
                 ok = queue_state.seek_percent(val)
                 await send_and_track(ctx, chat_id, "⏩ Seeked." if ok else "⚠ Seek failed.")
             else:
-                await send_and_track(ctx, chat_id, "Please enter a percentage from 0 to 100.")
+                await send_and_track(ctx, chat_id, "Please enter a percentage from 0 to 100 (or q to cancel).")
         else:
-            await send_and_track(ctx, chat_id, "Please enter a percentage from 0 to 100.")
+            await send_and_track(ctx, chat_id, "Please enter a percentage from 0 to 100 (or q to cancel).")
         sent = True
         if prompt_id:
             try:
@@ -1185,14 +1229,16 @@ async def handle_text(update, ctx):
     if ctx.user_data.get("await_delete_index"):
         ctx.user_data["await_delete_index"] = False
         prompt_id = ctx.user_data.pop("await_delete_msg_id", None)
-        if txt.isdigit():
+        if txt_lower == "q":
+            await send_and_track(ctx, chat_id, "Cancelled.")
+        elif txt.isdigit():
             ok, msg = queue_state.delete_index(int(txt) - 1)
             if ok:
                 await send_and_track(ctx, chat_id, "🗑 Track deleted.")
             else:
                 await send_and_track(ctx, chat_id, msg)
         else:
-            await send_and_track(ctx, chat_id, "Please enter a number only.")
+            await send_and_track(ctx, chat_id, "Please enter a number only (or q to cancel).")
         sent = True
         if prompt_id:
             try:
@@ -1216,6 +1262,11 @@ async def handle_text(update, ctx):
             count = await queue_state.queue_playlist_async(pending[uid]["list"])
             await send_and_track(ctx, chat_id, f"✔ Playlist with {count} tracks added.")
             pending.pop(uid)
+        elif txt_lower == "q":
+            pending.pop(uid, None)
+            await send_and_track(ctx, chat_id, "Cancelled.")
+        else:
+            await send_and_track(ctx, chat_id, "Please reply with 1, l or q.")
         sent = True
         if sent:
             schedule_cleanup(ctx, chat_id, prev_id)
@@ -1288,7 +1339,7 @@ async def handle_text(update, ctx):
 
     if vid and pl:
         pending[uid] = {"video": vid.group(1), "list": pl.group(1)}
-        await send_and_track(ctx, chat_id, "1 = Track, L = Playlist")
+        await send_and_track(ctx, chat_id, "1 = Track, L = Playlist, q = cancel")
         sent = True
     elif vid:
         await queue_state.queue_video_async(vid.group(1))
