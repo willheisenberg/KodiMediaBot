@@ -30,6 +30,7 @@ RESUME_ATTEMPTS = {}
 RESUME_MAX_ATTEMPTS = 8
 RESUME_MIN_REMAINING_SEC = 10
 RESUME_SEEK_WAIT_SEC = 20
+RESUME_STALE_PROGRESS_SEC = 12
 
 LIST_DIRTY = False
 
@@ -592,6 +593,7 @@ def autoplay_loop():
     while True:
         try:
             now = time.time()
+            playback_state = kodi_api.WS_STATE
 
             if not kodi_api.WS_CONNECTED:
                 time.sleep(0.5)
@@ -605,16 +607,31 @@ def autoplay_loop():
                 time.sleep(0.2)
                 continue
 
-            if kodi_api.WS_STATE == "playing":
+            # Fallback: some streams stop without emitting Player.OnStop.
+            # If progress is stale and Kodi reports no active player, treat it as stopped.
+            if playback_state != "stopped" and DISPLAY_INDEX is not None:
+                freshness_ts = max(LAST_PROGRESS_TS or 0.0, kodi_api.WS_LAST_EVENT_TS or 0.0)
+                stale = freshness_ts > 0 and (now - freshness_ts) >= RESUME_STALE_PROGRESS_SEC
+                if stale:
+                    players = kodi_api.get_active_players()
+                    if not players:
+                        print(
+                            "RESUME INFER stopped without ws-event "
+                            f"state={playback_state} idx={DISPLAY_INDEX} stale_for={now - freshness_ts:.1f}s",
+                            flush=True,
+                        )
+                        playback_state = "stopped"
+
+            if playback_state == "playing":
                 time.sleep(0.5)
                 continue
 
-            if kodi_api.WS_STATE == "paused":
+            if playback_state == "paused":
                 time.sleep(0.5)
                 continue
 
             resume_pending = False
-            if kodi_api.WS_STATE == "stopped" and DISPLAY_INDEX is not None and LAST_PROGRESS_INDEX == DISPLAY_INDEX and LAST_PROGRESS_TIME:
+            if playback_state == "stopped" and DISPLAY_INDEX is not None and LAST_PROGRESS_INDEX == DISPLAY_INDEX and LAST_PROGRESS_TIME:
                 remaining = None
                 if LAST_PROGRESS_TOTAL:
                     cur_sec = kodi_api.kodi_time_seconds(LAST_PROGRESS_TIME)
@@ -630,7 +647,7 @@ def autoplay_loop():
                             flush=True,
                         )
 
-            if kodi_api.WS_STATE == "stopped" and DISPLAY_INDEX is not None:
+            if playback_state == "stopped" and DISPLAY_INDEX is not None:
                 if LAST_PROGRESS_INDEX == DISPLAY_INDEX and LAST_PROGRESS_TIME:
                     remaining = None
                     if LAST_PROGRESS_TOTAL:
@@ -674,7 +691,7 @@ def autoplay_loop():
                 time.sleep(0.3)
                 continue
 
-            if kodi_api.WS_STATE == "stopped":
+            if playback_state == "stopped":
                 if CURRENT_INDEX is not None:
                     if REPEAT_MODE == "one":
                         NEXT_INDEX = CURRENT_INDEX
