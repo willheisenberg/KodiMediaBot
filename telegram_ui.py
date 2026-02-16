@@ -1083,6 +1083,7 @@ async def handle_text(update, ctx):
             if 0 <= i < len(files):
                 ok, items = playlist_store.load_playlist_from_disk(PLAYLIST_DIR, files[i])
                 if ok:
+                    queue_state.hard_stop_and_clear()
                     queue_state.clear_queue()
                     with queue_state.LOCK:
                         queue_state.QUEUE.extend(items)
