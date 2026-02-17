@@ -149,8 +149,36 @@ def run_volume_delta(points: int) -> bool:
     return run_cec_volume(times, cmd_hex)
 
 
+def run_denon_power(on: bool) -> bool:
+    if not DENON_HOST:
+        return False
+    action = "PowerOn" if on else "PowerStandby"
+    url = f"http://{DENON_HOST}/goform/formiPhoneAppPower.xml?1+{action}"
+    try:
+        res = requests.get(url, timeout=4)
+        if res.status_code != 200:
+            print(f"DENON POWER FAIL status={res.status_code} host={DENON_HOST} action={action}", flush=True)
+            return False
+        text = res.text or ""
+        expected = "ON" if on else "OFF"
+        m = re.search(r"<Power>\s*<value>\s*(ON|OFF)\s*</value>\s*</Power>", text, flags=re.IGNORECASE)
+        if not m:
+            print(f"DENON POWER FAIL host={DENON_HOST} action={action} body={text[:120]!r}", flush=True)
+            return False
+        state = m.group(1).upper()
+        if state != expected:
+            print(f"DENON POWER FAIL host={DENON_HOST} expected={expected} got={state}", flush=True)
+            return False
+        return True
+    except Exception as e:
+        print(f"DENON POWER ERROR host={DENON_HOST} action={action} err={e}", flush=True)
+        return False
+
+
 # Turn the audio system on or off via CEC over SSH.
 def run_cec_power(on: bool) -> bool:
+    if DENON_HOST:
+        return run_denon_power(on)
     if on:
         cmd = (
             f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{CEC_HOST} "
@@ -192,8 +220,29 @@ def run_airplay_kill() -> bool:
         return False
 
 
-# Query the audio system power state via CEC.
+# Query the audio system power state (DENON over IP when available, else CEC).
 def get_hifi_power_status():
+    if DENON_HOST:
+        url = f"http://{DENON_HOST}/goform/formMainZone_MainZoneXml.xml"
+        try:
+            res = requests.get(url, timeout=4)
+            if res.status_code != 200:
+                print(f"DENON POWER STATUS FAIL status={res.status_code} host={DENON_HOST}", flush=True)
+                return None
+            text = res.text or ""
+            m = re.search(r"<Power>\s*<value>\s*(ON|OFF|STANDBY)\s*</value>\s*</Power>", text, flags=re.IGNORECASE)
+            if not m:
+                return None
+            state = m.group(1).upper()
+            if state == "ON":
+                return "On"
+            if state in ("OFF", "STANDBY"):
+                return "Standby"
+            return None
+        except Exception as e:
+            print(f"DENON POWER STATUS ERROR host={DENON_HOST} err={e}", flush=True)
+            return None
+
     cmd = (
         f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{CEC_HOST} "
         f"cec-ctl --show-topology | awk '/Audio System/ {{f=1}} f && /Power Status/ {{print $NF; exit}}'"

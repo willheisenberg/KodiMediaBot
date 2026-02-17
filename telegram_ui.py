@@ -965,7 +965,12 @@ async def on_button(update, ctx):
     elif cmd == "hifi:on":
         ok = await asyncio.to_thread(kodi_api.run_cec_power, True)
         await send_and_track(ctx, chat_id, "🔌 Hifi On" if ok else "⚠ Hifi On failed")
-        await asyncio.sleep(10)
+        if kodi_api.DENON_HOST:
+            schedule_cleanup(ctx, chat_id, prev_id)
+            await update_list_message(ctx, chat_id)
+            skip_cleanup = True
+        else:
+            await asyncio.sleep(10)
         await refresh_hifi_status_cache(force=True)
         await update_now_playing_message(ctx, chat_id)
         await refresh_denon_volume_cache(force=True)
@@ -973,7 +978,12 @@ async def on_button(update, ctx):
     elif cmd == "hifi:off":
         ok = await asyncio.to_thread(kodi_api.run_cec_power, False)
         await send_and_track(ctx, chat_id, "🔌 Hifi Off" if ok else "⚠ Hifi Off failed")
-        await asyncio.sleep(10)
+        if kodi_api.DENON_HOST:
+            schedule_cleanup(ctx, chat_id, prev_id)
+            await update_list_message(ctx, chat_id)
+            skip_cleanup = True
+        else:
+            await asyncio.sleep(10)
         await refresh_hifi_status_cache(force=True)
         await update_now_playing_message(ctx, chat_id)
         sent = True
