@@ -66,6 +66,7 @@ Notes:
 - `--network host` is required so the bot can reach Kodi JSON-RPC on the host.
 - `KODI_HOST` is used for Kodi JSON-RPC.
 - `DENON_HOST` is used for AirPlay status detection (`/goform/formNetAudio_StatusXml.xml`), main-zone volume readout (`/goform/formMainZone_MainZoneXml.xml`), and volume up/down via Telnet (`MVUP`/`MVDOWN`) on the Denon receiver.
+- Denon requirement: on the receiver, set `Setup -> Netzwerk -> Netzwerk-Steuerung -> Immer ein`, otherwise LAN control/status may fail in standby.
 - `CEC_HOST` is used for CEC over SSH. If not set, it falls back to `KODI_HOST`.
 - If `DENON_HOST` is set, volume buttons use Denon Telnet control; otherwise volume buttons use CEC over SSH via `CEC_HOST`.
 - `KODI_USER`/`KODI_PASS` configure Kodi JSON-RPC auth and are required.
