@@ -249,6 +249,7 @@ def hard_stop_and_clear():
     EXTERNAL_PLAYBACK = False
     BOT_EXPECTING_WS = 0
     RESUME_ATTEMPTS.clear()
+    schedule_playback_refresh()
 
 
 # Advance to the next queue item and start playback.
