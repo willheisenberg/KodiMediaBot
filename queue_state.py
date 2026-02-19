@@ -35,6 +35,35 @@ RESUME_STALE_PROGRESS_SEC = 12
 LIST_DIRTY = False
 
 _SCHEDULE_NOW_PLAYING_REFRESH = None
+HTTP = requests.Session()
+SC_DISPLAY_RE = re.compile(r"^https?://(www\.)?soundcloud\.com/([^/]+)/([^/?#]+)")
+SC_TRACK_RE = re.compile(r"^https?://(www\.)?soundcloud\.com/[^/]+/[^/?#]+")
+SC_SET_RE = re.compile(r"^https?://(www\.)?soundcloud\.com/[^/]+/sets/[^/?#]+")
+SC_BASE_RE = re.compile(r"^https?://(www\.)?soundcloud\.com/")
+SC_HTML_RE = re.compile(r'https?://soundcloud\.com/[^\s"\'<>]+')
+YT_TITLE_CACHE = {}
+YT_TITLE_CACHE_TTL = 3600.0
+YT_TITLE_CACHE_LOCK = threading.Lock()
+
+
+def get_cached_youtube_title(vid: str):
+    now = time.time()
+    with YT_TITLE_CACHE_LOCK:
+        hit = YT_TITLE_CACHE.get(vid)
+        if not hit:
+            return None
+        title, ts = hit
+        if now - ts > YT_TITLE_CACHE_TTL:
+            YT_TITLE_CACHE.pop(vid, None)
+            return None
+        return title
+
+
+def cache_youtube_title(vid: str, title: str):
+    if not vid or not title:
+        return
+    with YT_TITLE_CACHE_LOCK:
+        YT_TITLE_CACHE[vid] = (title, time.time())
 
 
 def set_ui_callbacks(schedule_now_playing_refresh):
@@ -262,19 +291,25 @@ def make_item(title, url, kind, link=None):
 
 # Fetch a YouTube title and author for display.
 def fetch_youtube_title(vid):
+    cached = get_cached_youtube_title(vid)
+    if cached:
+        return cached
     url = f"https://youtu.be/{vid}"
     try:
         yt = YouTube(url)
         author = yt.author or ""
         title = yt.title or ""
         if author and title:
-            return f"{author} - {title}"
+            out = f"{author} - {title}"
+            cache_youtube_title(vid, out)
+            return out
         if title:
+            cache_youtube_title(vid, title)
             return title
     except Exception:
         pass
     try:
-        oembed = requests.get(
+        oembed = HTTP.get(
             "https://www.youtube.com/oembed",
             params={"url": url, "format": "json"},
             timeout=6,
@@ -284,8 +319,11 @@ def fetch_youtube_title(vid):
             author = data.get("author_name", "")
             title = data.get("title", "")
             if author and title:
-                return f"{author} - {title}"
+                out = f"{author} - {title}"
+                cache_youtube_title(vid, out)
+                return out
             if title:
+                cache_youtube_title(vid, title)
                 return title
     except Exception:
         pass
@@ -305,7 +343,7 @@ def make_youtube(vid, title=None):
 
 # Derive a display title from a SoundCloud URL.
 def soundcloud_display_title(clean_url):
-    m = re.match(r"^https?://(www\.)?soundcloud\.com/([^/]+)/([^/?#]+)", clean_url)
+    m = SC_DISPLAY_RE.match(clean_url)
     if not m:
         return clean_url
     artist = unquote(m.group(2)).replace("-", " ")
@@ -326,11 +364,11 @@ def make_soundcloud(url):
 
 # Validate that a SoundCloud URL is a track link.
 def is_sc_track_url(url):
-    return bool(re.match(r"^https?://(www\.)?soundcloud\.com/[^/]+/[^/?#]+", url)) and "discover/sets" not in url
+    return bool(SC_TRACK_RE.match(url)) and "discover/sets" not in url
 
 
 def is_sc_set_url(url):
-    return bool(re.match(r"^https?://(www\.)?soundcloud\.com/[^/]+/sets/[^/?#]+", url)) and "discover/sets" not in url
+    return bool(SC_SET_RE.match(url)) and "discover/sets" not in url
 
 
 # Resolve a SoundCloud short link to a full track URL.
@@ -339,14 +377,14 @@ def resolve_sc_short(url):
         headers = {
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
         }
-        r = requests.get(url, allow_redirects=True, timeout=8, headers=headers)
+        r = HTTP.get(url, allow_redirects=True, timeout=8, headers=headers)
         print(f"SC_SHORT RESOLVE start={url} final={r.url} history={[h.url for h in r.history]}", flush=True)
         candidates = [h.url for h in r.history] + [r.url]
         for u in candidates:
-            if re.match(r"^https?://(www\.)?soundcloud\.com/", u) and "discover/sets" not in u:
+            if SC_BASE_RE.match(u) and "discover/sets" not in u:
                 print(f"SC_SHORT RESOLVE pick={u}", flush=True)
                 return u
-        m = re.search(r'https?://soundcloud\.com/[^\s"\'<>]+', r.text)
+        m = SC_HTML_RE.search(r.text)
         if m:
             print(f"SC_SHORT RESOLVE html={m.group(0)}", flush=True)
             return m.group(0)
@@ -452,7 +490,12 @@ def queue_item(item):
 # Expand a YouTube playlist into video ids.
 def expand_playlist(pid):
     pl = Playlist(f"https://www.youtube.com/playlist?list={pid}")
-    return [kodi_api.YT.search(v).group(1) for v in pl.video_urls if kodi_api.YT.search(v)]
+    vids = []
+    for v in pl.video_urls:
+        m = kodi_api.YT.search(v)
+        if m:
+            vids.append(m.group(1))
+    return vids
 
 
 # Append a YouTube video to the queue.
@@ -484,8 +527,18 @@ async def queue_playlist_async(pid):
         vids = await asyncio.to_thread(expand_playlist, pid)
     except Exception:
         vids = []
-    for vid in vids:
-        await queue_video_async(vid)
+    sem = asyncio.Semaphore(5)
+
+    async def _fetch_title(vid):
+        async with sem:
+            try:
+                return await asyncio.to_thread(fetch_youtube_title, vid)
+            except Exception:
+                return None
+
+    titles = await asyncio.gather(*(_fetch_title(vid) for vid in vids))
+    for vid, title in zip(vids, titles):
+        queue_video(vid, title=title)
     mark_list_dirty()
     return len(vids)
 

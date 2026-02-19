@@ -7,6 +7,7 @@ import json
 import asyncio
 import socket
 import unicodedata
+import importlib
 from urllib.parse import unquote, quote_plus, urlparse, parse_qs
 
 import requests
@@ -29,6 +30,8 @@ PL = re.compile(r"(?:[?&]list=)([A-Za-z0-9_-]+)")
 SC = re.compile(r"https?://(www\.)?soundcloud\.com/[^/]+/[^/?#]+")
 SC_SET = re.compile(r"https?://(www\.)?soundcloud\.com/[^/]+/sets/[^/?#]+")
 SC_SHORT = re.compile(r"https?://on\.soundcloud\.com/[A-Za-z0-9]+")
+YT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+IMDB_ID_RE = re.compile(r"^tt\d+$")
 
 WS_CONNECTED = False
 WS_PLAYING = False
@@ -50,6 +53,15 @@ SC_CLIENT_ID_CACHE = ""
 SC_CLIENT_ID_TS = 0.0
 SC_PERMALINK_CACHE = {}
 SC_PERMALINK_TTL = 3600.0
+HTTP = requests.Session()
+QUEUE_STATE_MODULE = None
+
+
+def get_queue_state_module():
+    global QUEUE_STATE_MODULE
+    if QUEUE_STATE_MODULE is None:
+        QUEUE_STATE_MODULE = importlib.import_module("queue_state")
+    return QUEUE_STATE_MODULE
 
 
 # Send a JSON-RPC request to Kodi and return the response JSON.
@@ -57,7 +69,7 @@ def kodi_call(method: str, params: dict | None = None):
     payload = {"jsonrpc": "2.0", "method": method, "id": 1}
     if params:
         payload["params"] = params
-    return requests.post(KODI_URL, auth=AUTH, json=payload, timeout=5).json()
+    return HTTP.post(KODI_URL, auth=AUTH, json=payload, timeout=5).json()
 
 
 async def kodi_call_async(method: str, params: dict | None = None):
@@ -155,7 +167,7 @@ def run_denon_power(on: bool) -> bool:
     action = "PowerOn" if on else "PowerStandby"
     url = f"http://{DENON_HOST}/goform/formiPhoneAppPower.xml?1+{action}"
     try:
-        res = requests.get(url, timeout=4)
+        res = HTTP.get(url, timeout=4)
         if res.status_code != 200:
             print(f"DENON POWER FAIL status={res.status_code} host={DENON_HOST} action={action}", flush=True)
             return False
@@ -225,7 +237,7 @@ def get_hifi_power_status():
     if DENON_HOST:
         url = f"http://{DENON_HOST}/goform/formMainZone_MainZoneXml.xml"
         try:
-            res = requests.get(url, timeout=4)
+            res = HTTP.get(url, timeout=4)
             if res.status_code != 200:
                 print(f"DENON POWER STATUS FAIL status={res.status_code} host={DENON_HOST}", flush=True)
                 return None
@@ -266,7 +278,7 @@ def get_airplay_status():
         return None
     url = f"http://{DENON_HOST}/goform/formNetAudio_StatusXml.xml"
     try:
-        res = requests.get(url, timeout=4)
+        res = HTTP.get(url, timeout=4)
         if res.status_code != 200:
             print(f"AIRPLAY FAIL status={res.status_code} host={DENON_HOST}", flush=True)
             return None
@@ -290,7 +302,7 @@ def get_denon_mainzone_volume():
         return None
     url = f"http://{DENON_HOST}/goform/formMainZone_MainZoneXml.xml"
     try:
-        res = requests.get(url, timeout=4)
+        res = HTTP.get(url, timeout=4)
         if res.status_code != 200:
             print(f"DENON VOLUME FAIL status={res.status_code} host={DENON_HOST}", flush=True)
             return None
@@ -366,17 +378,17 @@ def extract_youtube_id(url):
         return ""
     qs = parse_qs(parsed.query)
     vid_param = (qs.get("video_id") or [""])[0]
-    if vid_param and re.match(r"^[A-Za-z0-9_-]{11}$", vid_param):
+    if vid_param and YT_ID_RE.match(vid_param):
         return vid_param
     file_param = (qs.get("file") or [""])[0]
     if file_param:
         base = file_param.split("/")[-1]
         if "." in base:
             base = base.split(".", 1)[0]
-        if re.match(r"^[A-Za-z0-9_-]{11}$", base):
+        if YT_ID_RE.match(base):
             return base
     for part in parsed.path.split("/"):
-        if re.match(r"^[A-Za-z0-9_-]{11}$", part):
+        if YT_ID_RE.match(part):
             return part
     return ""
 
@@ -495,7 +507,7 @@ def fetch_soundcloud_permalink(track_id):
         return ""
     api_url = f"https://api-v2.soundcloud.com/tracks/{track_id}?client_id={client_id}"
     try:
-        resp = requests.get(api_url, timeout=6)
+        resp = HTTP.get(api_url, timeout=6)
         if not resp.ok:
             return ""
         data = resp.json() or {}
@@ -649,10 +661,6 @@ def external_item_display(item):
     yt_id_from_file = extract_youtube_id(file_url) if file_url else ""
     if yt_id_from_file and "/youtube/manifest/" in file_url:
         link = f"https://youtu.be/{yt_id_from_file}"
-    if not link and file_url.startswith("plugin://plugin.video.youtube/"):
-        yt_id = extract_youtube_id(file_url)
-        if yt_id:
-            link = f"https://youtu.be/{yt_id}"
     sc_from_plugin = extract_soundcloud_url(file_url)
     if sc_from_plugin:
         link = sc_from_plugin
@@ -688,9 +696,9 @@ def external_item_display(item):
             link = f"https://youtu.be/{LAST_WS_YT_ID}"
     if link and ("youtu" in link or "soundcloud" in link):
         pass
-    elif imdbnumber and re.match(r"^tt\d+$", imdbnumber):
+    elif imdbnumber and IMDB_ID_RE.match(imdbnumber):
         link = f"https://www.imdb.com/title/{imdbnumber}/"
-    elif imdb_id and re.match(r"^tt\d+$", imdb_id):
+    elif imdb_id and IMDB_ID_RE.match(imdb_id):
         link = f"https://www.imdb.com/title/{imdb_id}/"
     elif itype in ("movie", "episode", "tvshow"):
         q = showtitle or title or label
@@ -825,6 +833,7 @@ async def kodi_ws_listener():
                         if playing_file:
                             LAST_WS_PLAYING_FILE = playing_file
                     if method in ("Player.OnPlay", "Player.OnAVStart"):
+                        qs = get_queue_state_module()
                         now = time.time()
                         WS_PLAYING = True
                         WS_STATE = "playing"
@@ -839,7 +848,6 @@ async def kodi_ws_listener():
                             for k in ("id", "type", "title"):
                                 if k in item_params:
                                     LAST_WS_ITEM[k] = item_params.get(k)
-                        import queue_state as qs
                         if qs.BOT_EXPECTING_WS > 0:
                             qs.BOT_EXPECTING_WS -= 1
                             if DEBUG_WS:
@@ -875,22 +883,22 @@ async def kodi_ws_listener():
                                 qs.schedule_now_playing_refresh()
                         qs.schedule_playback_refresh()
                     elif method == "Player.OnPause":
+                        qs = get_queue_state_module()
                         WS_PLAYING = False
                         WS_STATE = "paused"
                         WS_LAST_EVENT_TS = time.time()
-                        import queue_state as qs
                         qs.schedule_now_playing_refresh()
                     elif method == "Player.OnResume":
+                        qs = get_queue_state_module()
                         WS_PLAYING = True
                         WS_STATE = "playing"
                         WS_LAST_EVENT_TS = time.time()
-                        import queue_state as qs
                         qs.schedule_now_playing_refresh()
                     elif method == "Player.OnStop":
+                        qs = get_queue_state_module()
                         WS_PLAYING = False
                         WS_STATE = "stopped"
                         WS_LAST_EVENT_TS = time.time()
-                        import queue_state as qs
                         qs.schedule_now_playing_refresh()
         except Exception:
             WS_CONNECTED = False

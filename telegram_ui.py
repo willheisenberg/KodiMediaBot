@@ -630,21 +630,24 @@ async def list_refresher(ctx):
             if queue_state.LIST_DIRTY:
                 await update_list_message(ctx, STARTUP_CHAT_ID)
             now = time.time()
+            refresh_np = False
             if now - last_np >= 5:
-                await update_now_playing_message(ctx, STARTUP_CHAT_ID)
+                refresh_np = True
                 last_np = now
             if now - last_hifi >= 300:
                 await refresh_hifi_status_cache(force=True)
-                await update_now_playing_message(ctx, STARTUP_CHAT_ID)
+                refresh_np = True
                 last_hifi = now
             if now - last_airplay >= 60:
                 await refresh_airplay_status_cache(force=True)
-                await update_now_playing_message(ctx, STARTUP_CHAT_ID)
+                refresh_np = True
                 last_airplay = now
             if now - last_volume >= 60:
                 await refresh_denon_volume_cache(force=True)
-                await update_now_playing_message(ctx, STARTUP_CHAT_ID)
+                refresh_np = True
                 last_volume = now
+            if refresh_np:
+                await update_now_playing_message(ctx, STARTUP_CHAT_ID)
             await asyncio.sleep(2)
     except asyncio.CancelledError:
         return
@@ -927,39 +930,31 @@ async def on_button(update, ctx):
             sent = True
             skip_cleanup = True
     elif cmd == "vol:up5":
-        before_vol = await asyncio.to_thread(kodi_api.get_denon_mainzone_volume)
         ok = await asyncio.to_thread(kodi_api.run_volume_delta, 5)
         await send_and_track(ctx, chat_id, "🔊 +5" if ok else "⚠ Volume +5 failed")
         await asyncio.sleep(0.35)
         await refresh_denon_volume_cache(force=True)
-        after_vol = await asyncio.to_thread(kodi_api.get_denon_mainzone_volume)
         await update_now_playing_message(ctx, chat_id)
         sent = True
     elif cmd == "vol:up10":
-        before_vol = await asyncio.to_thread(kodi_api.get_denon_mainzone_volume)
         ok = await asyncio.to_thread(kodi_api.run_volume_delta, 10)
         await send_and_track(ctx, chat_id, "🔊 +10" if ok else "⚠ Volume +10 failed")
         await asyncio.sleep(0.35)
         await refresh_denon_volume_cache(force=True)
-        after_vol = await asyncio.to_thread(kodi_api.get_denon_mainzone_volume)
         await update_now_playing_message(ctx, chat_id)
         sent = True
     elif cmd == "vol:down5":
-        before_vol = await asyncio.to_thread(kodi_api.get_denon_mainzone_volume)
         ok = await asyncio.to_thread(kodi_api.run_volume_delta, -5)
         await send_and_track(ctx, chat_id, "🔉 -5" if ok else "⚠ Volume -5 failed")
         await asyncio.sleep(0.35)
         await refresh_denon_volume_cache(force=True)
-        after_vol = await asyncio.to_thread(kodi_api.get_denon_mainzone_volume)
         await update_now_playing_message(ctx, chat_id)
         sent = True
     elif cmd == "vol:down10":
-        before_vol = await asyncio.to_thread(kodi_api.get_denon_mainzone_volume)
         ok = await asyncio.to_thread(kodi_api.run_volume_delta, -10)
         await send_and_track(ctx, chat_id, "🔉 -10" if ok else "⚠ Volume -10 failed")
         await asyncio.sleep(0.35)
         await refresh_denon_volume_cache(force=True)
-        after_vol = await asyncio.to_thread(kodi_api.get_denon_mainzone_volume)
         await update_now_playing_message(ctx, chat_id)
         sent = True
     elif cmd == "hifi:on":
