@@ -32,6 +32,7 @@ SC_SET = re.compile(r"https?://(www\.)?soundcloud\.com/[^/]+/sets/[^/?#]+")
 SC_SHORT = re.compile(r"https?://on\.soundcloud\.com/[A-Za-z0-9]+")
 YT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 IMDB_ID_RE = re.compile(r"^tt\d+$")
+PLAY_MEDIA_RE = re.compile(r"^\s*PlayMedia\((.*)\)\s*$", flags=re.IGNORECASE)
 
 WS_CONNECTED = False
 WS_PLAYING = False
@@ -86,6 +87,72 @@ def kodi_call_with_props(method, id_key, id_value, properties):
             print(f"LIB FETCH retry method={method} props={props} err={res.get('error')}", flush=True)
         props = props[:-1]
     return kodi_call(method, {id_key: id_value, "properties": []})
+
+
+# Return Kodi favourites that can be opened as playable media.
+def get_playable_favourites():
+    attempts = [
+        {"type": "media", "properties": ["path", "windowparameter"]},
+        {"type": "media"},
+        {"properties": ["path", "windowparameter"]},
+        None,
+    ]
+    raw_favs = []
+    for params in attempts:
+        res = kodi_call("Favourites.GetFavourites", params)
+        if res.get("error"):
+            continue
+        result = res.get("result", {}) or {}
+        raw_favs = result.get("favourites") or []
+        break
+    out = []
+    for fav in raw_favs:
+        target = favourite_media_target(fav)
+        if not target:
+            continue
+        title = fav.get("title") or fav.get("name") or target
+        out.append({"title": title, "target": target})
+    return out
+
+
+def favourite_media_target(fav):
+    if not isinstance(fav, dict):
+        return None
+    path = fav.get("path")
+    if isinstance(path, str) and path:
+        return path
+    wp = fav.get("windowparameter")
+    if isinstance(wp, str) and wp:
+        wp = unquote(wp).strip()
+        if wp.startswith((
+            "plugin://",
+            "http://",
+            "https://",
+            "smb://",
+            "nfs://",
+            "file://",
+            "musicdb://",
+            "videodb://",
+            "special://",
+        )):
+            return wp
+    favourite_cmd = fav.get("favourite")
+    if isinstance(favourite_cmd, str):
+        m = PLAY_MEDIA_RE.match(favourite_cmd)
+        if m:
+            raw = m.group(1).strip()
+            raw = raw.strip("\"'")
+            if raw:
+                return unquote(raw)
+    return None
+
+
+def play_favourite_target(target):
+    if not target:
+        return False
+    stop_player_and_clear_playlists()
+    res = kodi_call("Player.Open", {"item": {"file": target}})
+    return "error" not in res
 
 
 # Return the first active Kodi player, if any.

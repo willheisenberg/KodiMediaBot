@@ -261,6 +261,7 @@ def control_panel():
         ],
         [
             InlineKeyboardButton("⏱ % Seek", callback_data="seek:percent"),
+            InlineKeyboardButton("⭐", callback_data="fav:ask"),
             InlineKeyboardButton("🔁 Repeat", callback_data="repeat"),
         ],
         [
@@ -869,6 +870,25 @@ async def on_button(update, ctx):
         ctx.user_data["await_play_msg_id"] = msg.message_id
         sent = True
         skip_cleanup = True
+    elif cmd == "fav:ask":
+        if ctx.user_data.get("await_favourite_index"):
+            return
+        favourites = await asyncio.to_thread(kodi_api.get_playable_favourites)
+        if not favourites:
+            await send_and_track(ctx, chat_id, "⭐ No playable Kodi favourites found.")
+            sent = True
+        else:
+            lines = [f"{i+1}. {fav['title']}" for i, fav in enumerate(favourites)]
+            msg = await send_and_track(
+                ctx,
+                chat_id,
+                "⭐ Select a Kodi favourite (q = cancel):\n" + "\n".join(lines),
+            )
+            ctx.user_data["await_favourite_index"] = True
+            ctx.user_data["await_favourite_msg_id"] = msg.message_id
+            ctx.user_data["favourites"] = favourites
+            sent = True
+            skip_cleanup = True
     elif cmd == "delete:ask":
         if ctx.user_data.get("await_delete_index"):
             return
@@ -1205,6 +1225,37 @@ async def handle_text(update, ctx):
         if sent:
             schedule_cleanup(ctx, chat_id, prev_id)
             await update_list_message(ctx, chat_id)
+        return
+    if ctx.user_data.get("await_favourite_index"):
+        ctx.user_data["await_favourite_index"] = False
+        prompt_id = ctx.user_data.pop("await_favourite_msg_id", None)
+        favourites = ctx.user_data.pop("favourites", [])
+        if txt_lower == "q":
+            await send_and_track(ctx, chat_id, "Cancelled.")
+        elif txt.isdigit():
+            i = int(txt) - 1
+            if 0 <= i < len(favourites):
+                selected = favourites[i]
+                ok = await asyncio.to_thread(kodi_api.play_favourite_target, selected.get("target"))
+                if ok:
+                    queue_state.clear_bot_playback_state()
+                    await send_and_track(ctx, chat_id, f"⭐ Playing favourite: {selected.get('title')}")
+                else:
+                    await send_and_track(ctx, chat_id, "⚠ Favourite could not be played.")
+            else:
+                await send_and_track(ctx, chat_id, "That number does not exist.")
+        else:
+            await send_and_track(ctx, chat_id, "Please enter a number only (or q to cancel).")
+        sent = True
+        if prompt_id:
+            try:
+                await telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=prompt_id)
+            except Exception:
+                pass
+        if sent:
+            schedule_cleanup(ctx, chat_id, prev_id)
+            await update_list_message(ctx, chat_id)
+            await update_now_playing_message(ctx, chat_id)
         return
     if ctx.user_data.get("await_seek_percent"):
         ctx.user_data["await_seek_percent"] = False
