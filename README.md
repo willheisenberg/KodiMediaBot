@@ -73,6 +73,14 @@ Notes:
 - `KODI_WS_PORT` configures the Kodi websocket port.
 - `DEBUG_WS=1` enables websocket debug logging.
 - `SC_CLIENT_ID` configures the SoundCloud client id.
+- `kodi.m3u` is copied into the image as `/data/kodi.m3u` and is used to map channel names to stream URLs for ICY now-playing title lookup.
+- `RADIO_M3U_PATH` optionally overrides the M3U path (default: `/data/kodi.m3u`).
+- `RADIO_STREAM_MAP` is optional and overrides entries from `kodi.m3u`. Example: `{"Radioactive Sifnos":"https://streamyourdream.org:8050/radioactive"}`.
+- `ICY_TITLE_TTL` (seconds, default `15`) configures how long ICY titles are cached.
+- `ICY_TIMEOUT` (seconds, default `6`) configures the ICY metadata fetch timeout.
+- `RADIO_YT_TTL` (seconds, default `21600`) configures how long resolved YouTube links for radio tracks are cached.
+- `RADIO_YT_FAIL_TTL` (seconds, default `300`) configures how long failed YouTube lookups are cached.
+- `RADIO_YT_TIMEOUT` (seconds, default `8`) configures the timeout for `yt-dlp` YouTube search.
 - Playlists are saved to `/data/playlists` inside the container. Mount a host path to persist them.
 - Use the “Save” and “Load” buttons in the Telegram panel to store or restore the queue.
 

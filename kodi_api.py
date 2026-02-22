@@ -54,6 +54,16 @@ SC_CLIENT_ID_CACHE = ""
 SC_CLIENT_ID_TS = 0.0
 SC_PERMALINK_CACHE = {}
 SC_PERMALINK_TTL = 3600.0
+RADIO_STREAM_MAP_CACHE = None
+RADIO_M3U_MAP_CACHE = None
+ICY_TITLE_CACHE = {}
+ICY_TITLE_TTL = float(os.environ.get("ICY_TITLE_TTL", "15"))
+ICY_TIMEOUT = float(os.environ.get("ICY_TIMEOUT", "6"))
+RADIO_M3U_PATH = os.environ.get("RADIO_M3U_PATH", "/data/kodi.m3u")
+YT_SEARCH_CACHE = {}
+YT_SEARCH_TTL = float(os.environ.get("RADIO_YT_TTL", "21600"))
+YT_SEARCH_FAIL_TTL = float(os.environ.get("RADIO_YT_FAIL_TTL", "300"))
+YT_SEARCH_TIMEOUT = float(os.environ.get("RADIO_YT_TIMEOUT", "8"))
 HTTP = requests.Session()
 QUEUE_STATE_MODULE = None
 
@@ -544,6 +554,214 @@ def extract_soundcloud_track_id(text):
     return ""
 
 
+def normalize_channel_name(name):
+    if not name:
+        return ""
+    return re.sub(r"\s+", " ", name).strip().casefold()
+
+
+def read_radio_stream_map():
+    raw = os.environ.get("RADIO_STREAM_MAP", "")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    for k, v in data.items():
+        if not isinstance(k, str) or not isinstance(v, str):
+            continue
+        nk = normalize_channel_name(k)
+        vv = v.strip()
+        if not nk or not vv.startswith(("http://", "https://")):
+            continue
+        out[nk] = vv
+    return out
+
+
+def read_radio_stream_map_from_m3u(path):
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            lines = [line.strip() for line in f]
+    except Exception:
+        return {}
+    out = {}
+    last_inf = ""
+    for line in lines:
+        if not line:
+            continue
+        if line.startswith("#EXTINF:"):
+            last_inf = line
+            continue
+        if line.startswith("#"):
+            continue
+        url = line
+        if not url.startswith(("http://", "https://")):
+            continue
+        name = ""
+        if "," in last_inf:
+            name = last_inf.rsplit(",", 1)[-1].strip()
+        if not name:
+            continue
+        norm = normalize_channel_name(name)
+        if not norm:
+            continue
+        # Keep first occurrence to stay close to playlist order.
+        out.setdefault(norm, url)
+    return out
+
+
+def get_radio_stream_m3u_map():
+    global RADIO_M3U_MAP_CACHE
+    if RADIO_M3U_MAP_CACHE is None:
+        RADIO_M3U_MAP_CACHE = read_radio_stream_map_from_m3u(RADIO_M3U_PATH)
+    return RADIO_M3U_MAP_CACHE
+
+
+def get_radio_stream_url(channel):
+    global RADIO_STREAM_MAP_CACHE
+    if RADIO_STREAM_MAP_CACHE is None:
+        RADIO_STREAM_MAP_CACHE = read_radio_stream_map()
+    key = normalize_channel_name(channel)
+    if not key:
+        return ""
+    # Env mapping wins, M3U mapping is fallback.
+    hit = RADIO_STREAM_MAP_CACHE.get(key, "")
+    if hit:
+        return hit
+    return get_radio_stream_m3u_map().get(key, "")
+
+
+def get_cached_icy_title(stream_url):
+    if not stream_url:
+        return ""
+    hit = ICY_TITLE_CACHE.get(stream_url)
+    if not hit:
+        return ""
+    title, ts = hit
+    if time.time() - ts > ICY_TITLE_TTL:
+        ICY_TITLE_CACHE.pop(stream_url, None)
+        return ""
+    return title
+
+
+def cache_icy_title(stream_url, title):
+    if not stream_url or not title:
+        return
+    ICY_TITLE_CACHE[stream_url] = (title, time.time())
+
+
+def fetch_icy_title(stream_url):
+    if not stream_url or not stream_url.startswith(("http://", "https://")):
+        return ""
+    cached = get_cached_icy_title(stream_url)
+    if cached:
+        return cached
+    try:
+        headers = {"Icy-MetaData": "1", "User-Agent": "KodiMediaBot/1.0"}
+        with HTTP.get(stream_url, headers=headers, stream=True, timeout=ICY_TIMEOUT, allow_redirects=True) as resp:
+            if not resp.ok:
+                return ""
+            metaint = resp.headers.get("icy-metaint")
+            if not metaint:
+                return ""
+            raw = resp.raw
+            raw.read(int(metaint))
+            block_len = raw.read(1)
+            if not block_len:
+                return ""
+            n = block_len[0] * 16
+            if n <= 0:
+                return ""
+            meta = raw.read(n).decode("utf-8", errors="ignore")
+            m = re.search(r"StreamTitle='([^']*)';", meta)
+            title = (m.group(1).strip() if m else "")
+            if title:
+                cache_icy_title(stream_url, title)
+            return title
+    except Exception:
+        return ""
+
+
+def get_cached_youtube_link(query_key):
+    if not query_key:
+        return None
+    hit = YT_SEARCH_CACHE.get(query_key)
+    if not hit:
+        return None
+    link, ts = hit
+    ttl = YT_SEARCH_TTL if link else YT_SEARCH_FAIL_TTL
+    if time.time() - ts > ttl:
+        YT_SEARCH_CACHE.pop(query_key, None)
+        return None
+    return link
+
+
+def cache_youtube_link(query_key, link):
+    if not query_key:
+        return
+    YT_SEARCH_CACHE[query_key] = (link or "", time.time())
+
+
+def search_youtube_link(query):
+    if not query:
+        return ""
+    query_key = normalize_title(query)
+    cached = get_cached_youtube_link(query_key)
+    if cached is not None:
+        return cached
+    cmd = [
+        "yt-dlp",
+        "--skip-download",
+        "--print",
+        "https://youtu.be/%(id)s",
+        f"ytsearch1:{query}",
+    ]
+    try:
+        res = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=YT_SEARCH_TIMEOUT,
+        )
+        out = (res.stdout or "").strip().splitlines()
+        link = out[0].strip() if out else ""
+        if not link.startswith("https://youtu.be/"):
+            link = ""
+        cache_youtube_link(query_key, link)
+        return link
+    except Exception:
+        cache_youtube_link(query_key, "")
+        return ""
+
+
+def radio_title_to_youtube_link(track_title):
+    if not track_title:
+        return ""
+    if " - " in track_title:
+        query = f"{track_title} official audio"
+    else:
+        query = track_title
+    return search_youtube_link(query)
+
+
+def resolve_radio_title(channel, fallback_title=""):
+    stream_url = get_radio_stream_url(channel)
+    if not stream_url:
+        return "", ""
+    title = fetch_icy_title(stream_url)
+    if not title:
+        return "", stream_url
+    if fallback_title and normalize_title(title) == normalize_title(fallback_title):
+        return "", stream_url
+    yt_link = radio_title_to_youtube_link(title)
+    return title, yt_link or stream_url
+
+
 def get_cached_soundcloud_permalink(track_id):
     if not track_id:
         return ""
@@ -785,6 +1003,12 @@ def external_item_display(item):
         return f"{', '.join(artist)} - {title}", link
     if album and title:
         return f"{album} - {title}", link
+    if itype == "channel" and channel:
+        radio_title, radio_link = resolve_radio_title(channel, fallback_title=channel)
+        if not link and radio_link:
+            link = radio_link
+        if radio_title:
+            return f"{channel} | {radio_title}", link
     if channel:
         return channel, link
     return label or title or None, link
