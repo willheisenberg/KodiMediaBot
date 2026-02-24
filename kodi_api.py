@@ -430,6 +430,27 @@ def normalize_title(s):
     return re.sub(r"\s+", " ", s).strip().casefold()
 
 
+def normalize_radio_track_title(track_title):
+    if not track_title:
+        return ""
+    raw = re.sub(r"\s+", " ", track_title).strip()
+    if not raw:
+        return ""
+
+    parts = [p.strip() for p in raw.split("|") if p.strip()]
+    candidates = parts if parts else [raw]
+    dashed = [p for p in candidates if " - " in p]
+    pick = dashed[0] if dashed else candidates[0]
+
+    if " - " in pick:
+        left, right = pick.split(" - ", 1)
+        left = left.strip()
+        right = right.strip()
+        if left and right:
+            return f"{left} - {right}"
+    return pick
+
+
 # Build a display name from a Kodi player item.
 def kodi_item_name(item):
     if not item:
@@ -742,10 +763,11 @@ def search_youtube_link(query):
 def radio_title_to_youtube_link(track_title):
     if not track_title:
         return ""
-    if " - " in track_title:
-        query = f"{track_title} official audio"
+    clean = normalize_radio_track_title(track_title)
+    if " - " in clean:
+        query = f"{clean} official audio"
     else:
-        query = track_title
+        query = clean or track_title
     return search_youtube_link(query)
 
 
@@ -1008,7 +1030,7 @@ def external_item_display(item):
         if not link and radio_link:
             link = radio_link
         if radio_title:
-            return f"{channel} | {radio_title}", link
+            return f"{channel} || {radio_title}", link
     if channel:
         return channel, link
     return label or title or None, link
