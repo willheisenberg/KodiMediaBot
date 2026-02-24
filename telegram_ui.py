@@ -402,18 +402,18 @@ async def get_now_playing_text():
             safe_name = html.escape(name, quote=False)
             if link:
                 safe_link = html.escape(link, quote=True)
-                return f"▶ <a href=\"{safe_link}\">{safe_name}</a>"
-            return f"▶ {safe_name}"
+                return f"▶ <a href=\"{safe_link}\">{safe_name}</a>", None
+            return f"▶ {safe_name}", None
         if kodi_api.WS_PLAYING and not name:
-            return "▶ Playing..."
+            return "▶ Playing...", None
         queue_state.EXTERNAL_PLAYBACK = False
         if name:
             safe_name = html.escape(name, quote=False)
             if link:
                 safe_link = html.escape(link, quote=True)
-                return f"▶ <a href=\"{safe_link}\">{safe_name}</a>"
-            return f"▶ {safe_name}"
-        return "⏸ Nothing playing"
+                return f"▶ <a href=\"{safe_link}\">{safe_name}</a>", None
+            return f"▶ {safe_name}", None
+        return "⏸ Nothing playing", None
 
     pid = None
     if kodi_api.LAST_WS_PLAYERID is not None:
@@ -425,7 +425,7 @@ async def get_now_playing_text():
         pid = kodi_api.pick_playerid(players)
     if pid is None:
         queue_state.EXTERNAL_PLAYBACK = False
-        return "⏸ Nothing playing"
+        return "⏸ Nothing playing", None
 
     props = (await kodi_api.kodi_call_async(
         "Player.GetProperties",
@@ -494,22 +494,25 @@ async def get_now_playing_text():
     queue_state.LAST_PROGRESS_TOTAL = props.get("totaltime")
     queue_state.LAST_PROGRESS_INDEX = queue_state.DISPLAY_INDEX
     safe_name = html.escape(name, quote=False)
+    progress_text = f"{cur} / {total}"
     if link:
         safe_link = html.escape(link, quote=True)
-        return f"▶ <a href=\"{safe_link}\">{safe_name}</a> | {cur} / {total}"
-    return f"▶ {safe_name} | {cur} / {total}"
+        return f"▶ <a href=\"{safe_link}\">{safe_name}</a>", progress_text
+    return f"▶ {safe_name}", progress_text
 
 
 # Update or create the now-playing panel message.
 async def update_now_playing_message(ctx, chat_id):
     msg_id = PANEL_MSG_ID.get(chat_id)
-    text = await get_now_playing_text()
+    text, progress_text = await get_now_playing_text()
     hifi_text = HIFI_STATUS_CACHE
     airplay_text = AIRPLAY_STATUS_CACHE
     repeat_text = f"🔁 Repeat: {queue_state.REPEAT_MODE}"
     status_parts = [hifi_text, airplay_text, repeat_text]
     if hifi_text != "🔴 Hifi: Standby":
         status_parts.append(DENON_VOLUME_CACHE)
+    if progress_text:
+        status_parts.append(f"⏱ {progress_text}")
     full_text = f"🎛 Kodi Remote - Current track:\n{text}\n{' | '.join(status_parts)}"
     panel_markup = control_panel()
     render_sig = (
