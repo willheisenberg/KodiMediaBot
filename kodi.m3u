@@ -915,7 +915,7 @@ http://zet.cdn.eurozet.pl/ZETROK.mp3
 http://195.150.20.243/RMFFM48
 #EXTINF:-1 tvg-name="Radioactive Sifnos" group-title="Deutschland" radio="true" tvg-logo="https://cdn-radiotime-logos.tunein.com/s102824d.png",Radioactive Sifnos
 https://streamyourdream.org:8050/radioactive
-#EXTINF:-1 tvg-name="Klassik Radio Live" group-title="Deutschland" radio="true" tvg-logo="https://streamurl.link/logos/3127f09b45c3c17572d49b1df3a0e6f5a3ceda089dfaef4b642d5e055140e280.png",Klassik Radio Live
+#EXTINF:-1 tvg-name="Klassik Radio Live" group-title="Deutschland" radio="true" tvg-logo="https://www.radio.de/300/klassikradio.png",Klassik Radio Live
 http://stream.klassikradio.de/live/mp3-192/stream.klassikradio.de/
 #EXTINF:-1 tvg-name="Klassik Radio Movie" group-title="Deutschland" radio="true" tvg-logo="https://static.mytuner.mobi/media/tvos_radios/269/klassik-radio-movie.f36f5abd.png",Klassik Radio Movie
 https://live.streams.klassikradio.de/klassikradio-movie/stream/mp3
@@ -925,15 +925,15 @@ http://chill.friskyradio.com/friskychill_mp3_high
 http://deep.friskyradio.com/friskydeep_aachi
 #EXTINF:-1 tvg-name="Frisky Radio" group-title="International" radio="true" tvg-logo="https://www.phonostar.de/images/auto_created/friskyradio184x184.png",Frisky Radio
 http://stream2.friskyradio.com/frisky_mp3_hi
-#EXTINF:-1 tvg-name="ChillTrax" group-title="Deutschland" radio="true" tvg-logo="https://streamurl.link/logos/c05be2781cf3f3133838bbe47b15d15c636ae8c8f134a156ab195a56da282f2c.png",ChillTrax
+#EXTINF:-1 tvg-name="ChillTrax" group-title="Deutschland" radio="true" tvg-logo="https://www.radio.de/300/chilltrax.png",ChillTrax
 https://streamssl.chilltrax.com/
-#EXTINF:-1 tvg-name="Nirvana Ambient Radio" group-title="Deutschland" radio="true" tvg-logo="https://streamurl.link/logos/3d2c35b4cddf9647b4f95a82482077c80b9bee33c9b872f615b57e5f51f79ec6.png",Nirvana Ambient Radio
+#EXTINF:-1 tvg-name="Nirvana Ambient Radio" group-title="Deutschland" radio="true" tvg-logo="https://cdn.onlineradiobox.com/img/fblogo/1/72731.v3.png",Nirvana Ambient Radio
 http://radio.108.pl:8002/
-#EXTINF:-1 tvg-name="Nirvana Meditation Radio" group-title="Deutschland" radio="true" tvg-logo="https://streamurl.link/logos/3d2c35b4cddf9647b4f95a82482077c80b9bee33c9b872f615b57e5f51f79ec6.png",Nirvana Meditation Radio
+#EXTINF:-1 tvg-name="Nirvana Meditation Radio" group-title="Deutschland" radio="true" tvg-logo="https://cdn.onlineradiobox.com/img/fblogo/8/41428.v4.png",Nirvana Meditation Radio
 http://radio.108.pl:8004/
-#EXTINF:-1 tvg-name="Nirvana Relaxation Radio" group-title="Deutschland" radio="true" tvg-logo="https://streamurl.link/logos/3d2c35b4cddf9647b4f95a82482077c80b9bee33c9b872f615b57e5f51f79ec6.png",Nirvana Relaxation Radio
+#EXTINF:-1 tvg-name="Nirvana Relaxation Radio" group-title="Deutschland" radio="true" tvg-logo="https://cdn.onlineradiobox.com/img/fblogo/2/1542.v2.png",Nirvana Relaxation Radio
 http://sc9106.xpx.pl:9106
-#EXTINF:-1 tvg-name="KEXP-FM" group-title="Deutschland" radio="true" tvg-logo="https://www.boweryboogie.com/content/uploads/2020/03/KEXP-logo.png",KEXP-FM
+#EXTINF:-1 tvg-name="KEXP-FM" group-title="Deutschland" radio="true" tvg-logo="https://www.radio.de/300/kexp.png",KEXP-FM
 http://live-aacplus-64.kexp.org/kexp64.aac
-#EXTINF:-1 tvg-name="FIP" group-title="Deutschland" radio="true" tvg-logo="https://streamurl.link/logos/153a1b6f80ba5e5509f11a9b22f2cb16e9afb611d387fc1d30e027f8b9a876c5.png",FIP
+#EXTINF:-1 tvg-name="FIP" group-title="Deutschland" radio="true" tvg-logo="https://upload.wikimedia.org/wikipedia/commons/thumb/1/16/FIP_logo_2021.svg/3840px-FIP_logo_2021.svg.png",FIP
 http://direct.fipradio.fr/live/fip-midfi.mp3?ID=76zqey582k
