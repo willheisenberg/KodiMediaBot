@@ -575,7 +575,7 @@ async def refresh_hifi_status_cache(force=False):
     status = await asyncio.to_thread(kodi_api.get_hifi_power_status)
     if status == "On":
         HIFI_STATUS_CACHE = "🟢 Hifi: On"
-    elif status == "Standby":
+    elif status == "Standby" or (status is None and bool(kodi_api.DENON_HOST)):
         HIFI_STATUS_CACHE = "🔴 Hifi: Standby"
         AIRPLAY_STATUS_CACHE = "AirPlay: Off"
     HIFI_STATUS_TS = now
@@ -628,31 +628,36 @@ async def list_refresher(ctx):
     last_volume = 0.0
     try:
         while True:
-            if STARTUP_CHAT_ID in RESETTING_CHATS:
-                await asyncio.sleep(1)
-                continue
-            if queue_state.LIST_DIRTY:
-                await update_list_message(ctx, STARTUP_CHAT_ID)
-            now = time.time()
-            refresh_np = False
-            if now - last_np >= 5:
-                refresh_np = True
-                last_np = now
-            if now - last_hifi >= 300:
-                await refresh_hifi_status_cache(force=True)
-                refresh_np = True
-                last_hifi = now
-            if now - last_airplay >= 60:
-                await refresh_airplay_status_cache(force=True)
-                refresh_np = True
-                last_airplay = now
-            if now - last_volume >= 60:
-                await refresh_denon_volume_cache(force=True)
-                refresh_np = True
-                last_volume = now
-            if refresh_np:
-                await update_now_playing_message(ctx, STARTUP_CHAT_ID)
-            await asyncio.sleep(2)
+            try:
+                if STARTUP_CHAT_ID in RESETTING_CHATS:
+                    await asyncio.sleep(1)
+                    continue
+                if queue_state.LIST_DIRTY:
+                    await update_list_message(ctx, STARTUP_CHAT_ID)
+                now = time.time()
+                refresh_np = False
+                if now - last_np >= 5:
+                    refresh_np = True
+                    last_np = now
+                if now - last_hifi >= 300:
+                    await refresh_hifi_status_cache(force=True)
+                    refresh_np = True
+                    last_hifi = now
+                if now - last_airplay >= 60:
+                    await refresh_airplay_status_cache(force=True)
+                    refresh_np = True
+                    last_airplay = now
+                if now - last_volume >= 60:
+                    await refresh_denon_volume_cache(force=True)
+                    refresh_np = True
+                    last_volume = now
+                if refresh_np:
+                    await update_now_playing_message(ctx, STARTUP_CHAT_ID)
+                await asyncio.sleep(2)
+            except Exception:
+                print("LIST REFRESHER LOOP ERROR", flush=True)
+                print(traceback.format_exc(), flush=True)
+                await asyncio.sleep(2)
     except asyncio.CancelledError:
         return
 
