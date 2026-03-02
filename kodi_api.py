@@ -5,7 +5,6 @@ import time
 import subprocess
 import json
 import asyncio
-import socket
 import unicodedata
 import importlib
 from urllib.parse import unquote, quote_plus, urlparse, parse_qs
@@ -214,14 +213,19 @@ def run_denon_volume_delta(points: int) -> bool:
         return False
     if points == 0:
         return True
-    cmd = b"MVUP\r" if points > 0 else b"MVDOWN\r"
+    cmd = "MVUP" if points > 0 else "MVDOWN"
     steps = abs(points) * DENON_VOLUME_STEP_COMMANDS
+    url = f"http://{DENON_HOST}/goform/formiPhoneAppDirect.xml?{cmd}"
     try:
-        with socket.create_connection((DENON_HOST, 23), timeout=2) as sock:
-            sock.settimeout(2)
-            for _ in range(steps):
-                sock.sendall(cmd)
-                time.sleep(0.05)
+        for _ in range(steps):
+            res = HTTP.get(url, timeout=4)
+            if res.status_code != 200:
+                print(
+                    f"DENON VOLUME FAIL status={res.status_code} host={DENON_HOST} points={points} cmd={cmd}",
+                    flush=True,
+                )
+                return False
+            time.sleep(0.05)
         return True
     except Exception as e:
         print(f"DENON VOLUME ERROR host={DENON_HOST} points={points} err={e}", flush=True)
