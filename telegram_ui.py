@@ -786,24 +786,25 @@ async def on_button(update, ctx):
             sent = True
 
     elif cmd == "playpause":
-        if queue_state.DISPLAY_INDEX is None:
-            with queue_state.LOCK:
-                has_queue = len(queue_state.QUEUE) > 0
-            if has_queue:
-                schedule_playback_action(ctx, chat_id, queue_state.play_index, 0)
-                await send_and_track(ctx, chat_id, "▶ Play")
-            else:
-                await send_and_track(ctx, chat_id, "⏹ Queue empty.")
+        pid = kodi_api.get_active_playerid()
+        if pid is not None:
+            schedule_playback_action(ctx, chat_id, kodi_api.kodi_call, "Player.PlayPause", {"playerid": pid})
+            await send_and_track(ctx, chat_id, "⏯")
             sent = True
         else:
-            pid = kodi_api.get_active_playerid()
-            if pid is not None:
-                schedule_playback_action(ctx, chat_id, kodi_api.kodi_call, "Player.PlayPause", {"playerid": pid})
-                await send_and_track(ctx, chat_id, "⏯")
+            with queue_state.LOCK:
+                display_index = queue_state.DISPLAY_INDEX
+                has_queue = len(queue_state.QUEUE) > 0
+            if display_index is not None:
+                schedule_playback_action(ctx, chat_id, queue_state.play_index, display_index)
+                await send_and_track(ctx, chat_id, "▶ Play")
+                sent = True
+            elif has_queue:
+                schedule_playback_action(ctx, chat_id, queue_state.play_index, 0)
+                await send_and_track(ctx, chat_id, "▶ Play")
                 sent = True
             else:
-                schedule_playback_action(ctx, chat_id, queue_state.play_index, queue_state.DISPLAY_INDEX)
-                await send_and_track(ctx, chat_id, "▶ Play")
+                await send_and_track(ctx, chat_id, "⏹ Queue empty.")
                 sent = True
 
     elif cmd == "stop":
