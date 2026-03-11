@@ -455,6 +455,40 @@ def normalize_radio_track_title(track_title):
     return pick
 
 
+def normalize_match_text(text):
+    if not text:
+        return ""
+    norm = unicodedata.normalize("NFKD", text)
+    norm = norm.encode("ascii", "ignore").decode().casefold()
+    norm = re.sub(r"\[[^\]]*\]|\([^)]*\)|\{[^}]*\}", " ", norm)
+    norm = re.sub(r"\b(ft|feat)\.?\b", " feat ", norm)
+    norm = re.sub(
+        r"\b(official|audio|video|lyrics?|lyric|visualizer|remaster(?:ed)?|hd|4k|hq|topic|vevo)\b",
+        " ",
+        norm,
+    )
+    norm = re.sub(r"[^a-z0-9]+", " ", norm)
+    return re.sub(r"\s+", " ", norm).strip()
+
+
+def youtube_result_matches_radio_track(track_title, result_title):
+    clean_track = normalize_radio_track_title(track_title)
+    track_norm = normalize_match_text(clean_track)
+    result_norm = normalize_match_text(result_title)
+    if not track_norm or not result_norm:
+        return False
+    if track_norm in result_norm or result_norm in track_norm:
+        return True
+    if " - " not in clean_track:
+        return False
+    artist, title = clean_track.split(" - ", 1)
+    artist_norm = normalize_match_text(artist)
+    title_norm = normalize_match_text(title)
+    if not artist_norm or not title_norm:
+        return False
+    return artist_norm in result_norm and title_norm in result_norm
+
+
 # Build a display name from a Kodi player item.
 def kodi_item_name(item):
     if not item:
@@ -731,7 +765,7 @@ def cache_youtube_link(query_key, link):
     YT_SEARCH_CACHE[query_key] = (link or "", time.time())
 
 
-def search_youtube_link(query):
+def search_youtube_link(query, expected_title=""):
     if not query:
         return ""
     query_key = normalize_title(query)
@@ -742,7 +776,7 @@ def search_youtube_link(query):
         "yt-dlp",
         "--skip-download",
         "--print",
-        "https://youtu.be/%(id)s",
+        "%(id)s\t%(title)s",
         f"ytsearch1:{query}",
     ]
     try:
@@ -754,9 +788,16 @@ def search_youtube_link(query):
             timeout=YT_SEARCH_TIMEOUT,
         )
         out = (res.stdout or "").strip().splitlines()
-        link = out[0].strip() if out else ""
-        if not link.startswith("https://youtu.be/"):
-            link = ""
+        link = ""
+        if out:
+            first = out[0].strip()
+            vid, sep, result_title = first.partition("\t")
+            vid = vid.strip()
+            result_title = result_title.strip()
+            if YT_ID_RE.match(vid):
+                candidate = f"https://youtu.be/{vid}"
+                if not expected_title or youtube_result_matches_radio_track(expected_title, result_title):
+                    link = candidate
         cache_youtube_link(query_key, link)
         return link
     except Exception:
@@ -772,7 +813,7 @@ def radio_title_to_youtube_link(track_title):
         query = f"{clean} official audio"
     else:
         query = clean or track_title
-    return search_youtube_link(query)
+    return search_youtube_link(query, expected_title=clean or track_title)
 
 
 def resolve_radio_title(channel, fallback_title=""):
