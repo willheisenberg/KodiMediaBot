@@ -63,6 +63,10 @@ YT_SEARCH_CACHE = {}
 YT_SEARCH_TTL = float(os.environ.get("RADIO_YT_TTL", "21600"))
 YT_SEARCH_FAIL_TTL = float(os.environ.get("RADIO_YT_FAIL_TTL", "300"))
 YT_SEARCH_TIMEOUT = float(os.environ.get("RADIO_YT_TIMEOUT", "8"))
+SC_SEARCH_CACHE = {}
+SC_SEARCH_TTL = float(os.environ.get("RADIO_SC_TTL", "21600"))
+SC_SEARCH_FAIL_TTL = float(os.environ.get("RADIO_SC_FAIL_TTL", "300"))
+SC_SEARCH_TIMEOUT = float(os.environ.get("RADIO_SC_TIMEOUT", "8"))
 HTTP = requests.Session()
 QUEUE_STATE_MODULE = None
 
@@ -489,6 +493,26 @@ def youtube_result_matches_radio_track(track_title, result_title):
     return artist_norm in result_norm and title_norm in result_norm
 
 
+def soundcloud_result_matches_radio_track(track_title, result_title, result_artist=""):
+    clean_track = normalize_radio_track_title(track_title)
+    track_norm = normalize_match_text(clean_track)
+    title_norm = normalize_match_text(result_title)
+    artist_norm = normalize_match_text(result_artist)
+    combined_norm = " ".join(part for part in (artist_norm, title_norm) if part).strip()
+    if not track_norm or not combined_norm:
+        return False
+    if track_norm in combined_norm:
+        return True
+    if " - " not in clean_track:
+        return track_norm in title_norm
+    expected_artist, expected_title = clean_track.split(" - ", 1)
+    expected_artist_norm = normalize_match_text(expected_artist)
+    expected_title_norm = normalize_match_text(expected_title)
+    if not expected_artist_norm or not expected_title_norm:
+        return False
+    return expected_artist_norm in combined_norm and expected_title_norm in combined_norm
+
+
 # Build a display name from a Kodi player item.
 def kodi_item_name(item):
     if not item:
@@ -765,6 +789,26 @@ def cache_youtube_link(query_key, link):
     YT_SEARCH_CACHE[query_key] = (link or "", time.time())
 
 
+def get_cached_soundcloud_link(query_key):
+    if not query_key:
+        return None
+    hit = SC_SEARCH_CACHE.get(query_key)
+    if not hit:
+        return None
+    link, ts = hit
+    ttl = SC_SEARCH_TTL if link else SC_SEARCH_FAIL_TTL
+    if time.time() - ts > ttl:
+        SC_SEARCH_CACHE.pop(query_key, None)
+        return None
+    return link
+
+
+def cache_soundcloud_link(query_key, link):
+    if not query_key:
+        return
+    SC_SEARCH_CACHE[query_key] = (link or "", time.time())
+
+
 def search_youtube_link(query, expected_title=""):
     if not query:
         return ""
@@ -805,6 +849,50 @@ def search_youtube_link(query, expected_title=""):
         return ""
 
 
+def search_soundcloud_link(query, expected_title=""):
+    if not query:
+        return ""
+    query_key = normalize_title(query)
+    cached = get_cached_soundcloud_link(query_key)
+    if cached is not None:
+        return cached
+    cmd = [
+        "yt-dlp",
+        "--skip-download",
+        "--print",
+        "%(webpage_url)s\t%(uploader)s\t%(title)s",
+        f"scsearch1:{query}",
+    ]
+    try:
+        res = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=SC_SEARCH_TIMEOUT,
+        )
+        out = (res.stdout or "").strip().splitlines()
+        link = ""
+        if out:
+            first = out[0].strip()
+            page_url, sep, rest = first.partition("\t")
+            page_url = re.sub(r"\?.*$", "", page_url.strip())
+            uploader = ""
+            result_title = ""
+            if sep:
+                uploader, sep2, result_title = rest.partition("\t")
+                uploader = uploader.strip()
+                result_title = result_title.strip()
+            if SC.match(page_url):
+                if not expected_title or soundcloud_result_matches_radio_track(expected_title, result_title, uploader):
+                    link = page_url
+        cache_soundcloud_link(query_key, link)
+        return link
+    except Exception:
+        cache_soundcloud_link(query_key, "")
+        return ""
+
+
 def radio_title_to_youtube_link(track_title):
     if not track_title:
         return ""
@@ -814,6 +902,14 @@ def radio_title_to_youtube_link(track_title):
     else:
         query = clean or track_title
     return search_youtube_link(query, expected_title=clean or track_title)
+
+
+def radio_title_to_soundcloud_link(track_title):
+    if not track_title:
+        return ""
+    clean = normalize_radio_track_title(track_title)
+    query = clean or track_title
+    return search_soundcloud_link(query, expected_title=clean or track_title)
 
 
 def resolve_radio_title(channel, fallback_title=""):
@@ -826,7 +922,10 @@ def resolve_radio_title(channel, fallback_title=""):
     if fallback_title and normalize_title(title) == normalize_title(fallback_title):
         return "", stream_url
     yt_link = radio_title_to_youtube_link(title)
-    return title, yt_link or stream_url
+    if yt_link:
+        return title, yt_link
+    sc_link = radio_title_to_soundcloud_link(title)
+    return title, sc_link or stream_url
 
 
 def get_cached_soundcloud_permalink(track_id):
