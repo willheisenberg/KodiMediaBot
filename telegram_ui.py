@@ -262,6 +262,7 @@ def control_panel():
         [
             InlineKeyboardButton("⏱ % Seek", callback_data="seek:percent"),
             InlineKeyboardButton("⭐", callback_data="fav:ask"),
+            InlineKeyboardButton("🎬", callback_data="media:ask"),
             InlineKeyboardButton("🔁 Repeat", callback_data="repeat"),
         ],
         [
@@ -341,6 +342,85 @@ def build_list_text():
             return "Queue empty."
         lines = [format_item_line(i, it) for i, it in enumerate(queue_state.QUEUE)]
         return "🎵 Playlist:\n\n" + "\n".join(lines)
+
+
+async def delete_message_if_present(ctx, chat_id, message_id):
+    if not message_id:
+        return
+    if isinstance(message_id, (list, tuple, set)):
+        for mid in message_id:
+            await delete_message_if_present(ctx, chat_id, mid)
+        return
+    try:
+        await telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=message_id)
+    except Exception:
+        pass
+
+
+def format_link_line(i, title, link):
+    safe_title = html.escape(title, quote=False)
+    if not link:
+        return f"{i}. {safe_title}"
+    safe_link = html.escape(link, quote=True)
+    return f"{i}. <a href=\"{safe_link}\">{safe_title}</a>"
+
+
+def chunk_selection_text(header, lines, max_len=3800):
+    chunks = []
+    current = header
+    for line in lines:
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > max_len and current:
+            chunks.append(current)
+            current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+async def send_chunked_selection(ctx, chat_id, header, lines):
+    message_ids = []
+    for chunk in chunk_selection_text(header, lines):
+        msg = await send_and_track(ctx, chat_id, chunk, parse_mode="HTML")
+        message_ids.append(msg.message_id)
+    return message_ids
+
+
+def movie_list_lines(movies):
+    lines = []
+    for i, movie in enumerate(movies, start=1):
+        title = movie.get("title") or "Unknown"
+        year = movie.get("year")
+        if year:
+            title = f"{title} ({year})"
+        lines.append(format_link_line(i, title, kodi_api.build_imdb_link(movie)))
+    return lines
+
+
+def show_list_lines(shows):
+    lines = []
+    for i, show in enumerate(shows, start=1):
+        title = show.get("title") or "Unknown"
+        year = show.get("year")
+        if year:
+            title = f"{title} ({year})"
+        lines.append(format_link_line(i, title, kodi_api.build_imdb_link(show)))
+    return lines
+
+
+def episode_list_lines(episodes):
+    lines = []
+    for i, episode in enumerate(episodes, start=1):
+        season = episode.get("season")
+        number = episode.get("episode")
+        prefix = ""
+        if isinstance(season, int) and isinstance(number, int):
+            prefix = f"S{season:02d}E{number:02d} "
+        title = f"{prefix}{episode.get('title') or 'Unknown'}".strip()
+        lines.append(format_link_line(i, title, kodi_api.build_imdb_link(episode)))
+    return lines
 
 
 # Update or create the queue list message.
@@ -898,6 +978,18 @@ async def on_button(update, ctx):
             ctx.user_data["favourites"] = favourites
             sent = True
             skip_cleanup = True
+    elif cmd == "media:ask":
+        if ctx.user_data.get("await_media_type"):
+            return
+        msg = await send_and_track(
+            ctx,
+            chat_id,
+            "🎬 Medienbrowser\n1. Filme\n2. Serien\nq = cancel",
+        )
+        ctx.user_data["await_media_type"] = True
+        ctx.user_data["await_media_type_msg_id"] = msg.message_id
+        sent = True
+        skip_cleanup = True
     elif cmd == "delete:ask":
         if ctx.user_data.get("await_delete_index"):
             return
@@ -1039,6 +1131,176 @@ async def handle_text(update, ctx):
     msg_id = update.message.message_id
     txt = update.message.text.strip()
     txt_lower = txt.lower()
+
+    if ctx.user_data.get("await_media_type"):
+        ctx.user_data["await_media_type"] = False
+        prompt_id = ctx.user_data.pop("await_media_type_msg_id", None)
+        await delete_message_if_present(ctx, chat_id, msg_id)
+        if txt_lower == "q":
+            await send_and_track(ctx, chat_id, "Cancelled.")
+            sent = True
+        elif txt == "1":
+            movies = await asyncio.to_thread(kodi_api.list_movies)
+            if not movies:
+                await send_and_track(ctx, chat_id, "🎬 No movies found in Kodi.")
+                sent = True
+            else:
+                msg_ids = await send_chunked_selection(
+                    ctx,
+                    chat_id,
+                    "🎬 Filme wählen (q = cancel):",
+                    movie_list_lines(movies),
+                )
+                ctx.user_data["await_movie_index"] = True
+                ctx.user_data["await_movie_msg_id"] = msg_ids
+                ctx.user_data["media_movies"] = movies
+                sent = True
+                skip_cleanup = True
+        elif txt == "2":
+            shows = await asyncio.to_thread(kodi_api.list_tvshows)
+            if not shows:
+                await send_and_track(ctx, chat_id, "📺 No series found in Kodi.")
+                sent = True
+            else:
+                msg_ids = await send_chunked_selection(
+                    ctx,
+                    chat_id,
+                    "📺 Serie wählen (q = cancel):",
+                    show_list_lines(shows),
+                )
+                ctx.user_data["await_show_index"] = True
+                ctx.user_data["await_show_msg_id"] = msg_ids
+                ctx.user_data["media_shows"] = shows
+                sent = True
+                skip_cleanup = True
+        else:
+            await send_and_track(ctx, chat_id, "Please enter 1 or 2 (or q to cancel).")
+            sent = True
+            skip_cleanup = True
+        await delete_message_if_present(ctx, chat_id, prompt_id)
+        if sent and not skip_cleanup:
+            schedule_cleanup(ctx, chat_id, prev_id)
+            await update_list_message(ctx, chat_id)
+        return
+
+    if ctx.user_data.get("await_movie_index"):
+        ctx.user_data["await_movie_index"] = False
+        prompt_id = ctx.user_data.pop("await_movie_msg_id", None)
+        movies = ctx.user_data.pop("media_movies", [])
+        await delete_message_if_present(ctx, chat_id, msg_id)
+        if txt_lower == "q":
+            await send_and_track(ctx, chat_id, "Cancelled.")
+        elif txt.isdigit():
+            i = int(txt) - 1
+            if 0 <= i < len(movies):
+                movie = movies[i]
+                ok = await asyncio.to_thread(kodi_api.play_movie, movie.get("movieid"))
+                if ok:
+                    queue_state.clear_bot_playback_state()
+                    await send_and_track(ctx, chat_id, f"🎬 Playing: {movie.get('title')}")
+                else:
+                    await send_and_track(ctx, chat_id, "⚠ Movie could not be played.")
+            else:
+                await send_and_track(ctx, chat_id, "That number does not exist.")
+        else:
+            await send_and_track(ctx, chat_id, "Please enter a number only (or q to cancel).")
+        sent = True
+        await delete_message_if_present(ctx, chat_id, prompt_id)
+        if sent:
+            schedule_cleanup(ctx, chat_id, prev_id)
+            await update_list_message(ctx, chat_id)
+            await update_now_playing_message(ctx, chat_id)
+        return
+
+    if ctx.user_data.get("await_show_index"):
+        ctx.user_data["await_show_index"] = False
+        prompt_id = ctx.user_data.pop("await_show_msg_id", None)
+        shows = ctx.user_data.pop("media_shows", [])
+        await delete_message_if_present(ctx, chat_id, msg_id)
+        if txt_lower == "q":
+            await send_and_track(ctx, chat_id, "Cancelled.")
+            sent = True
+        elif txt.isdigit():
+            i = int(txt) - 1
+            if 0 <= i < len(shows):
+                show = shows[i]
+                episodes = await asyncio.to_thread(
+                    kodi_api.list_tvshow_episodes,
+                    show.get("tvshowid"),
+                    show.get("title") or "",
+                )
+                if not episodes:
+                    await send_and_track(ctx, chat_id, "📺 No episodes found for this series.")
+                    sent = True
+                else:
+                    lines = episode_list_lines(episodes)
+                    lines.append(f"{len(episodes) + 1}. Play all episodes")
+                    msg_ids = await send_chunked_selection(
+                        ctx,
+                        chat_id,
+                        f"📺 {html.escape(show.get('title') or 'Serie', quote=False)}\n",
+                        lines,
+                    )
+                    ctx.user_data["await_episode_index"] = True
+                    ctx.user_data["await_episode_msg_id"] = msg_ids
+                    ctx.user_data["media_show"] = show
+                    ctx.user_data["media_episodes"] = episodes
+                    sent = True
+                    skip_cleanup = True
+            else:
+                await send_and_track(ctx, chat_id, "That number does not exist.")
+                sent = True
+                skip_cleanup = True
+        else:
+            await send_and_track(ctx, chat_id, "Please enter a number only (or q to cancel).")
+            sent = True
+            skip_cleanup = True
+        await delete_message_if_present(ctx, chat_id, prompt_id)
+        if sent and not skip_cleanup:
+            schedule_cleanup(ctx, chat_id, prev_id)
+            await update_list_message(ctx, chat_id)
+            await update_now_playing_message(ctx, chat_id)
+        return
+
+    if ctx.user_data.get("await_episode_index"):
+        ctx.user_data["await_episode_index"] = False
+        prompt_id = ctx.user_data.pop("await_episode_msg_id", None)
+        show = ctx.user_data.pop("media_show", {})
+        episodes = ctx.user_data.pop("media_episodes", [])
+        await delete_message_if_present(ctx, chat_id, msg_id)
+        if txt_lower == "q":
+            await send_and_track(ctx, chat_id, "Cancelled.")
+        elif txt.isdigit():
+            i = int(txt) - 1
+            if 0 <= i < len(episodes):
+                episode = episodes[i]
+                ok = await asyncio.to_thread(kodi_api.play_episode, episode.get("episodeid"))
+                if ok:
+                    queue_state.clear_bot_playback_state()
+                    await send_and_track(ctx, chat_id, f"📺 Playing: {episode.get('title')}")
+                else:
+                    await send_and_track(ctx, chat_id, "⚠ Episode could not be played.")
+            elif i == len(episodes):
+                ok = await asyncio.to_thread(
+                    kodi_api.play_all_episodes,
+                    [episode.get("episodeid") for episode in episodes],
+                )
+                if ok:
+                    queue_state.clear_bot_playback_state()
+                    await send_and_track(ctx, chat_id, f"📺 Playing all episodes: {show.get('title')}")
+                else:
+                    await send_and_track(ctx, chat_id, "⚠ Episodes could not be played.")
+            else:
+                await send_and_track(ctx, chat_id, "That number does not exist.")
+        else:
+            await send_and_track(ctx, chat_id, "Please enter a number only (or q to cancel).")
+        sent = True
+        await delete_message_if_present(ctx, chat_id, prompt_id)
+        if sent:
+            schedule_cleanup(ctx, chat_id, prev_id)
+            await update_list_message(ctx, chat_id)
+            await update_now_playing_message(ctx, chat_id)
+        return
 
     if ctx.user_data.get("await_playlist_save_name"):
         ctx.user_data["await_playlist_save_name"] = False

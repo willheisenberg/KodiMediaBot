@@ -1243,6 +1243,110 @@ def fetch_library_item(item_type, item_id):
     return {}
 
 
+def build_imdb_link(item):
+    if not isinstance(item, dict):
+        return ""
+    imdbnumber = item.get("imdbnumber") or ""
+    if IMDB_ID_RE.match(imdbnumber):
+        return f"https://www.imdb.com/title/{imdbnumber}/"
+    uniqueid = item.get("uniqueid") or {}
+    if isinstance(uniqueid, dict):
+        imdb_id = uniqueid.get("imdb") or ""
+        if IMDB_ID_RE.match(imdb_id):
+            return f"https://www.imdb.com/title/{imdb_id}/"
+    title = item.get("title") or item.get("showtitle") or ""
+    if title:
+        return f"https://www.imdb.com/find?q={quote_plus(title)}"
+    return ""
+
+
+def list_movies():
+    res = kodi_call(
+        "VideoLibrary.GetMovies",
+        {"properties": ["title", "year", "originaltitle", "uniqueid", "imdbnumber"], "sort": {"method": "title"}},
+    )
+    movies = (res.get("result", {}) or {}).get("movies", []) or []
+    return movies
+
+
+def list_tvshows():
+    res = kodi_call(
+        "VideoLibrary.GetTVShows",
+        {"properties": ["title", "year", "uniqueid", "imdbnumber"], "sort": {"method": "title"}},
+    )
+    shows = (res.get("result", {}) or {}).get("tvshows", []) or []
+    return shows
+
+
+def list_tvshow_episodes(tvshowid, showtitle=""):
+    attempts = []
+    if tvshowid is not None:
+        attempts.extend([
+            {
+                "tvshowid": tvshowid,
+                "properties": ["title", "showtitle", "season", "episode", "uniqueid", "imdbnumber"],
+                "sort": {"method": "episode"},
+            },
+            {
+                "tvshowid": tvshowid,
+                "properties": ["title", "showtitle", "season", "episode", "uniqueid", "imdbnumber"],
+            },
+            {
+                "tvshowid": tvshowid,
+                "properties": ["title", "showtitle", "season", "episode"],
+            },
+        ])
+    if showtitle:
+        attempts.extend([
+            {
+                "properties": ["title", "showtitle", "season", "episode", "uniqueid", "imdbnumber"],
+                "sort": {"method": "episode"},
+            },
+            {
+                "properties": ["title", "showtitle", "season", "episode"],
+            },
+        ])
+
+    want = normalize_title(showtitle)
+    for params in attempts:
+        res = kodi_call("VideoLibrary.GetEpisodes", params)
+        episodes = (res.get("result", {}) or {}).get("episodes", []) or []
+        if want and "tvshowid" not in params:
+            episodes = [ep for ep in episodes if normalize_title(ep.get("showtitle") or "") == want]
+        if episodes:
+            return episodes
+    return []
+
+
+def play_movie(movieid):
+    if movieid is None:
+        return False
+    stop_player_and_clear_playlists()
+    res = kodi_call("Player.Open", {"item": {"movieid": movieid}})
+    return "error" not in res
+
+
+def play_episode(episodeid):
+    if episodeid is None:
+        return False
+    stop_player_and_clear_playlists()
+    res = kodi_call("Player.Open", {"item": {"episodeid": episodeid}})
+    return "error" not in res
+
+
+def play_all_episodes(episode_ids):
+    ids = [eid for eid in episode_ids if eid is not None]
+    if not ids:
+        return False
+    stop_player_and_clear_playlists()
+    for eid in ids:
+        res = kodi_call("Playlist.Add", {"playlistid": 1, "item": {"episodeid": eid}})
+        if "error" in res:
+            return False
+    res = kodi_call("Player.Open", {"item": {"playlistid": 1, "position": 0}})
+    return "error" not in res
+
+
 # Stop all active Kodi players.
 def stop_all_players():
     for p in get_active_players():
