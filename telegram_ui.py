@@ -60,6 +60,9 @@ LIST_RENDER_CACHE = {}
 PANEL_RENDER_CACHE = {}
 LIST_REFRESH_TASK = None
 WS_LISTENER_TASK = None
+PROMPT_TIMEOUT_SECONDS = 120
+PROMPT_TIMEOUT_TASKS = {}
+PENDING_TIMEOUT_TASKS = {}
 
 
 def save_ui_state():
@@ -355,6 +358,78 @@ async def delete_message_if_present(ctx, chat_id, message_id):
         await telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=message_id)
     except Exception:
         pass
+
+
+def _prompt_timeout_key(chat_id, user_id, state_key):
+    return (chat_id, user_id, state_key)
+
+
+def cancel_prompt_timeout(chat_id, user_id, state_key):
+    task = PROMPT_TIMEOUT_TASKS.pop(_prompt_timeout_key(chat_id, user_id, state_key), None)
+    if task is not None and not task.done():
+        task.cancel()
+
+
+async def _expire_prompt_timeout(ctx, chat_id, user_id, state_key, msg_key, extra_keys, expected_message_id):
+    try:
+        await asyncio.sleep(PROMPT_TIMEOUT_SECONDS)
+        user_data = ctx.application.user_data.get(user_id)
+        if not user_data or not user_data.get(state_key):
+            return
+        if user_data.get(msg_key) != expected_message_id:
+            return
+        user_data.pop(state_key, None)
+        prompt_id = user_data.pop(msg_key, None)
+        for key in extra_keys or ():
+            user_data.pop(key, None)
+        await delete_message_if_present(ctx, chat_id, prompt_id)
+    except asyncio.CancelledError:
+        return
+    finally:
+        PROMPT_TIMEOUT_TASKS.pop(_prompt_timeout_key(chat_id, user_id, state_key), None)
+
+
+def activate_prompt(ctx, chat_id, user_id, state_key, msg_key, message_id, extra_keys=None):
+    ctx.user_data[state_key] = True
+    ctx.user_data[msg_key] = message_id
+    cancel_prompt_timeout(chat_id, user_id, state_key)
+    task = ctx.application.create_task(
+        _expire_prompt_timeout(ctx, chat_id, user_id, state_key, msg_key, extra_keys or (), message_id)
+    )
+    PROMPT_TIMEOUT_TASKS[_prompt_timeout_key(chat_id, user_id, state_key)] = task
+
+
+def cancel_pending_timeout(user_id):
+    task = PENDING_TIMEOUT_TASKS.pop(user_id, None)
+    if task is not None and not task.done():
+        task.cancel()
+
+
+async def _expire_pending_timeout(ctx, chat_id, user_id, expected_prompt_id):
+    try:
+        await asyncio.sleep(PROMPT_TIMEOUT_SECONDS)
+        entry = pending.get(user_id)
+        if not entry or entry.get("prompt_id") != expected_prompt_id:
+            return
+        pending.pop(user_id, None)
+        await delete_message_if_present(ctx, chat_id, expected_prompt_id)
+    except asyncio.CancelledError:
+        return
+    finally:
+        PENDING_TIMEOUT_TASKS.pop(user_id, None)
+
+
+def activate_pending_choice(ctx, chat_id, user_id, prompt_id, video_id, list_id):
+    pending[user_id] = {
+        "video": video_id,
+        "list": list_id,
+        "chat_id": chat_id,
+        "prompt_id": prompt_id,
+    }
+    cancel_pending_timeout(user_id)
+    PENDING_TIMEOUT_TASKS[user_id] = ctx.application.create_task(
+        _expire_pending_timeout(ctx, chat_id, user_id, prompt_id)
+    )
 
 
 def format_link_line(i, title, link):
@@ -846,6 +921,7 @@ async def on_button(update, ctx):
         seen_id = remember_last_seen(update.effective_chat.id, q.message.message_id)
         print(f"SEEN chat_id={update.effective_chat.id} message_id={q.message.message_id} stored={seen_id}", flush=True)
     chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
     prev_id = LAST_BOT_ID.get(chat_id)
     sent = False
     skip_cleanup = False
@@ -904,8 +980,7 @@ async def on_button(update, ctx):
             if ctx.user_data.get("await_seek_percent"):
                 return
             msg = await send_and_track(ctx, chat_id, "⏱ Percent? (0-100, q = cancel)")
-            ctx.user_data["await_seek_percent"] = True
-            ctx.user_data["await_seek_percent_msg_id"] = msg.message_id
+            activate_prompt(ctx, chat_id, user_id, "await_seek_percent", "await_seek_percent_msg_id", msg.message_id)
             sent = True
             skip_cleanup = True
         else:
@@ -962,8 +1037,7 @@ async def on_button(update, ctx):
         if ctx.user_data.get("await_play_index"):
             return
         msg = await send_and_track(ctx, chat_id, "▶ Which number should be played? (e.g. 3, q = cancel)")
-        ctx.user_data["await_play_index"] = True
-        ctx.user_data["await_play_msg_id"] = msg.message_id
+        activate_prompt(ctx, chat_id, user_id, "await_play_index", "await_play_msg_id", msg.message_id)
         sent = True
         skip_cleanup = True
     elif cmd == "fav:ask":
@@ -980,9 +1054,16 @@ async def on_button(update, ctx):
                 chat_id,
                 "⭐ Select a Kodi favourite (q = cancel):\n" + "\n".join(lines),
             )
-            ctx.user_data["await_favourite_index"] = True
-            ctx.user_data["await_favourite_msg_id"] = msg.message_id
             ctx.user_data["favourites"] = favourites
+            activate_prompt(
+                ctx,
+                chat_id,
+                user_id,
+                "await_favourite_index",
+                "await_favourite_msg_id",
+                msg.message_id,
+                extra_keys=("favourites",),
+            )
             sent = True
             skip_cleanup = True
     elif cmd == "media:ask":
@@ -993,16 +1074,14 @@ async def on_button(update, ctx):
             chat_id,
             "🎬 Medienbrowser\n1. Filme\n2. Serien\nq = cancel",
         )
-        ctx.user_data["await_media_type"] = True
-        ctx.user_data["await_media_type_msg_id"] = msg.message_id
+        activate_prompt(ctx, chat_id, user_id, "await_media_type", "await_media_type_msg_id", msg.message_id)
         sent = True
         skip_cleanup = True
     elif cmd == "delete:ask":
         if ctx.user_data.get("await_delete_index"):
             return
         msg = await send_and_track(ctx, chat_id, "🗑 Which number should be deleted? (e.g. 3, q = cancel)")
-        ctx.user_data["await_delete_index"] = True
-        ctx.user_data["await_delete_msg_id"] = msg.message_id
+        activate_prompt(ctx, chat_id, user_id, "await_delete_index", "await_delete_msg_id", msg.message_id)
         sent = True
         skip_cleanup = True
     elif cmd == "plist:save":
@@ -1015,8 +1094,7 @@ async def on_button(update, ctx):
             sent = True
         else:
             msg = await send_and_track(ctx, chat_id, "💾 Playlist name? (q = cancel)")
-            ctx.user_data["await_playlist_save_name"] = True
-            ctx.user_data["await_playlist_save_msg_id"] = msg.message_id
+            activate_prompt(ctx, chat_id, user_id, "await_playlist_save_name", "await_playlist_save_msg_id", msg.message_id)
             sent = True
             skip_cleanup = True
     elif cmd == "plist:load":
@@ -1033,9 +1111,16 @@ async def on_button(update, ctx):
                 chat_id,
                 "📂 Select a playlist (q = cancel):\n" + "\n".join(lines),
             )
-            ctx.user_data["await_playlist_load_index"] = True
-            ctx.user_data["await_playlist_load_msg_id"] = msg.message_id
             ctx.user_data["playlist_load_files"] = files
+            activate_prompt(
+                ctx,
+                chat_id,
+                user_id,
+                "await_playlist_load_index",
+                "await_playlist_load_msg_id",
+                msg.message_id,
+                extra_keys=("playlist_load_files",),
+            )
             sent = True
             skip_cleanup = True
     elif cmd == "plist:delete":
@@ -1052,9 +1137,16 @@ async def on_button(update, ctx):
                 chat_id,
                 "🗑 Delete which playlist? (q = cancel)\n" + "\n".join(lines),
             )
-            ctx.user_data["await_playlist_delete_index"] = True
-            ctx.user_data["await_playlist_delete_msg_id"] = msg.message_id
             ctx.user_data["playlist_delete_files"] = files
+            activate_prompt(
+                ctx,
+                chat_id,
+                user_id,
+                "await_playlist_delete_index",
+                "await_playlist_delete_msg_id",
+                msg.message_id,
+                extra_keys=("playlist_delete_files",),
+            )
             sent = True
             skip_cleanup = True
     elif cmd == "vol:up5":
@@ -1132,6 +1224,7 @@ async def on_button(update, ctx):
 async def handle_text(update, ctx):
     record_last_seen(ctx, update)
     chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
     prev_id = LAST_BOT_ID.get(chat_id)
     sent = False
     skip_cleanup = False
@@ -1140,6 +1233,7 @@ async def handle_text(update, ctx):
     txt_lower = txt.lower()
 
     if ctx.user_data.get("await_media_type"):
+        cancel_prompt_timeout(chat_id, user_id, "await_media_type")
         ctx.user_data["await_media_type"] = False
         prompt_id = ctx.user_data.pop("await_media_type_msg_id", None)
         await delete_message_if_present(ctx, chat_id, msg_id)
@@ -1159,9 +1253,16 @@ async def handle_text(update, ctx):
                     movie_list_lines(movies),
                     footer="q = cancel",
                 )
-                ctx.user_data["await_movie_index"] = True
-                ctx.user_data["await_movie_msg_id"] = msg_ids
                 ctx.user_data["media_movies"] = movies
+                activate_prompt(
+                    ctx,
+                    chat_id,
+                    user_id,
+                    "await_movie_index",
+                    "await_movie_msg_id",
+                    msg_ids,
+                    extra_keys=("media_movies",),
+                )
                 sent = True
                 skip_cleanup = True
         elif txt == "2":
@@ -1177,9 +1278,16 @@ async def handle_text(update, ctx):
                     show_list_lines(shows),
                     footer="q = cancel",
                 )
-                ctx.user_data["await_show_index"] = True
-                ctx.user_data["await_show_msg_id"] = msg_ids
                 ctx.user_data["media_shows"] = shows
+                activate_prompt(
+                    ctx,
+                    chat_id,
+                    user_id,
+                    "await_show_index",
+                    "await_show_msg_id",
+                    msg_ids,
+                    extra_keys=("media_shows",),
+                )
                 sent = True
                 skip_cleanup = True
         else:
@@ -1193,6 +1301,7 @@ async def handle_text(update, ctx):
         return
 
     if ctx.user_data.get("await_movie_index"):
+        cancel_prompt_timeout(chat_id, user_id, "await_movie_index")
         ctx.user_data["await_movie_index"] = False
         prompt_id = ctx.user_data.pop("await_movie_msg_id", None)
         movies = ctx.user_data.pop("media_movies", [])
@@ -1222,6 +1331,7 @@ async def handle_text(update, ctx):
         return
 
     if ctx.user_data.get("await_show_index"):
+        cancel_prompt_timeout(chat_id, user_id, "await_show_index")
         ctx.user_data["await_show_index"] = False
         prompt_id = ctx.user_data.pop("await_show_msg_id", None)
         shows = ctx.user_data.pop("media_shows", [])
@@ -1250,10 +1360,17 @@ async def handle_text(update, ctx):
                         f"📺 {html.escape(show.get('title') or 'Serie', quote=False)}\n",
                         lines,
                     )
-                    ctx.user_data["await_episode_index"] = True
-                    ctx.user_data["await_episode_msg_id"] = msg_ids
                     ctx.user_data["media_show"] = show
                     ctx.user_data["media_episodes"] = episodes
+                    activate_prompt(
+                        ctx,
+                        chat_id,
+                        user_id,
+                        "await_episode_index",
+                        "await_episode_msg_id",
+                        msg_ids,
+                        extra_keys=("media_show", "media_episodes"),
+                    )
                     sent = True
                     skip_cleanup = True
             else:
@@ -1272,6 +1389,7 @@ async def handle_text(update, ctx):
         return
 
     if ctx.user_data.get("await_episode_index"):
+        cancel_prompt_timeout(chat_id, user_id, "await_episode_index")
         ctx.user_data["await_episode_index"] = False
         prompt_id = ctx.user_data.pop("await_episode_msg_id", None)
         show = ctx.user_data.pop("media_show", {})
@@ -1312,6 +1430,7 @@ async def handle_text(update, ctx):
         return
 
     if ctx.user_data.get("await_playlist_save_name"):
+        cancel_prompt_timeout(chat_id, user_id, "await_playlist_save_name")
         ctx.user_data["await_playlist_save_name"] = False
         prompt_id = ctx.user_data.pop("await_playlist_save_msg_id", None)
         if txt_lower == "q":
@@ -1331,10 +1450,17 @@ async def handle_text(update, ctx):
         path = playlist_store.playlist_path_for_name(PLAYLIST_DIR, txt)
         if os.path.exists(path):
             msg = await send_and_track(ctx, chat_id, "Playlist already exists. Replace? (y/n, q = cancel)")
-            ctx.user_data["await_playlist_overwrite_confirm"] = True
-            ctx.user_data["await_playlist_overwrite_msg_id"] = msg.message_id
             ctx.user_data["playlist_overwrite_name"] = txt
             ctx.user_data["playlist_overwrite_items"] = items
+            activate_prompt(
+                ctx,
+                chat_id,
+                user_id,
+                "await_playlist_overwrite_confirm",
+                "await_playlist_overwrite_msg_id",
+                msg.message_id,
+                extra_keys=("playlist_overwrite_name", "playlist_overwrite_items"),
+            )
             sent = True
             skip_cleanup = True
             try:
@@ -1359,6 +1485,7 @@ async def handle_text(update, ctx):
         return
 
     if ctx.user_data.get("await_playlist_overwrite_confirm"):
+        cancel_prompt_timeout(chat_id, user_id, "await_playlist_overwrite_confirm")
         if txt_lower in ("y", "yes"):
             ctx.user_data["await_playlist_overwrite_confirm"] = False
             prompt_id = ctx.user_data.pop("await_playlist_overwrite_msg_id", None)
@@ -1411,11 +1538,23 @@ async def handle_text(update, ctx):
                 schedule_cleanup(ctx, chat_id, prev_id)
                 await update_list_message(ctx, chat_id)
             return
+        prompt_id = ctx.user_data.get("await_playlist_overwrite_msg_id")
+        if prompt_id:
+            activate_prompt(
+                ctx,
+                chat_id,
+                user_id,
+                "await_playlist_overwrite_confirm",
+                "await_playlist_overwrite_msg_id",
+                prompt_id,
+                extra_keys=("playlist_overwrite_name", "playlist_overwrite_items"),
+            )
         await send_and_track(ctx, chat_id, "Please answer with y or n (or q to cancel).")
         sent = True
         return
 
     if ctx.user_data.get("await_playlist_load_index"):
+        cancel_prompt_timeout(chat_id, user_id, "await_playlist_load_index")
         ctx.user_data["await_playlist_load_index"] = False
         prompt_id = ctx.user_data.pop("await_playlist_load_msg_id", None)
         files = ctx.user_data.pop("playlist_load_files", [])
@@ -1450,6 +1589,7 @@ async def handle_text(update, ctx):
         return
 
     if ctx.user_data.get("await_playlist_delete_index"):
+        cancel_prompt_timeout(chat_id, user_id, "await_playlist_delete_index")
         ctx.user_data["await_playlist_delete_index"] = False
         prompt_id = ctx.user_data.pop("await_playlist_delete_msg_id", None)
         files = ctx.user_data.pop("playlist_delete_files", [])
@@ -1479,6 +1619,7 @@ async def handle_text(update, ctx):
         return
 
     if ctx.user_data.get("await_play_index"):
+        cancel_prompt_timeout(chat_id, user_id, "await_play_index")
         ctx.user_data["await_play_index"] = False
         prompt_id = ctx.user_data.pop("await_play_msg_id", None)
         if txt_lower == "q":
@@ -1507,6 +1648,7 @@ async def handle_text(update, ctx):
             await update_list_message(ctx, chat_id)
         return
     if ctx.user_data.get("await_favourite_index"):
+        cancel_prompt_timeout(chat_id, user_id, "await_favourite_index")
         ctx.user_data["await_favourite_index"] = False
         prompt_id = ctx.user_data.pop("await_favourite_msg_id", None)
         favourites = ctx.user_data.pop("favourites", [])
@@ -1538,6 +1680,7 @@ async def handle_text(update, ctx):
             await update_now_playing_message(ctx, chat_id)
         return
     if ctx.user_data.get("await_seek_percent"):
+        cancel_prompt_timeout(chat_id, user_id, "await_seek_percent")
         ctx.user_data["await_seek_percent"] = False
         prompt_id = ctx.user_data.pop("await_seek_percent_msg_id", None)
         m = re.match(r"^\s*(\d{1,3})\s*%?\s*$", txt)
@@ -1563,6 +1706,7 @@ async def handle_text(update, ctx):
             await update_list_message(ctx, chat_id)
         return
     if ctx.user_data.get("await_delete_index"):
+        cancel_prompt_timeout(chat_id, user_id, "await_delete_index")
         ctx.user_data["await_delete_index"] = False
         prompt_id = ctx.user_data.pop("await_delete_msg_id", None)
         if txt_lower == "q":
@@ -1590,6 +1734,7 @@ async def handle_text(update, ctx):
     txt = update.message.text.strip()
 
     if uid in pending:
+        cancel_pending_timeout(uid)
         if txt.lower() == "1":
             await queue_state.queue_video_async(pending[uid]["video"])
             await send_and_track(ctx, chat_id, "✔ Track added to the queue.")
@@ -1674,8 +1819,8 @@ async def handle_text(update, ctx):
     pl = kodi_api.PL.search(txt)
 
     if vid and pl:
-        pending[uid] = {"video": vid.group(1), "list": pl.group(1)}
-        await send_and_track(ctx, chat_id, "1 = Track, L = Playlist, q = cancel")
+        msg = await send_and_track(ctx, chat_id, "1 = Track, L = Playlist, q = cancel")
+        activate_pending_choice(ctx, chat_id, uid, msg.message_id, vid.group(1), pl.group(1))
         sent = True
     elif vid:
         await queue_state.queue_video_async(vid.group(1))
@@ -1724,6 +1869,14 @@ async def reset_panel_command(update, ctx):
             await asyncio.to_thread(queue_state.hard_stop_and_clear)
             queue_state.clear_queue()
             pending.clear()
+            for task in list(PROMPT_TIMEOUT_TASKS.values()):
+                if task is not None and not task.done():
+                    task.cancel()
+            PROMPT_TIMEOUT_TASKS.clear()
+            for task in list(PENDING_TIMEOUT_TASKS.values()):
+                if task is not None and not task.done():
+                    task.cancel()
+            PENDING_TIMEOUT_TASKS.clear()
 
             try:
                 for user_id in list(ctx.application.user_data.keys()):
@@ -1803,6 +1956,12 @@ def run(token: str):
 
     async def _post_shutdown(app):
         global LIST_REFRESH_TASK, WS_LISTENER_TASK, APP_INSTANCE, MAIN_LOOP
+        for task in list(PROMPT_TIMEOUT_TASKS.values()):
+            if task is not None and not task.done():
+                task.cancel()
+        for task in list(PENDING_TIMEOUT_TASKS.values()):
+            if task is not None and not task.done():
+                task.cancel()
         for task in (LIST_REFRESH_TASK, WS_LISTENER_TASK):
             if task is not None and not task.done():
                 task.cancel()
@@ -1816,6 +1975,8 @@ def run(token: str):
                     pass
         LIST_REFRESH_TASK = None
         WS_LISTENER_TASK = None
+        PROMPT_TIMEOUT_TASKS.clear()
+        PENDING_TIMEOUT_TASKS.clear()
         APP_INSTANCE = None
         MAIN_LOOP = None
     app.post_shutdown = _post_shutdown
