@@ -1246,14 +1246,31 @@ def fetch_library_item(item_type, item_id):
 def build_imdb_link(item):
     if not isinstance(item, dict):
         return ""
-    imdbnumber = item.get("imdbnumber") or ""
-    if IMDB_ID_RE.match(imdbnumber):
-        return f"https://www.imdb.com/title/{imdbnumber}/"
-    uniqueid = item.get("uniqueid") or {}
-    if isinstance(uniqueid, dict):
-        imdb_id = uniqueid.get("imdb") or ""
-        if IMDB_ID_RE.match(imdb_id):
-            return f"https://www.imdb.com/title/{imdb_id}/"
+
+    def _item_imdb_link(obj):
+        imdbnumber = obj.get("imdbnumber") or ""
+        if IMDB_ID_RE.match(imdbnumber):
+            return f"https://www.imdb.com/title/{imdbnumber}/"
+        uniqueid = obj.get("uniqueid") or {}
+        if isinstance(uniqueid, dict):
+            imdb_id = uniqueid.get("imdb") or ""
+            if IMDB_ID_RE.match(imdb_id):
+                return f"https://www.imdb.com/title/{imdb_id}/"
+        return ""
+
+    link = _item_imdb_link(item)
+    if link:
+        return link
+
+    # Kodi episode list items do not always include external IDs even when
+    # the full episode details do, so fetch them lazily by episodeid.
+    episodeid = item.get("episodeid")
+    if episodeid is not None:
+        details = fetch_library_item("episode", episodeid)
+        link = _item_imdb_link(details)
+        if link:
+            return link
+
     title = item.get("title") or item.get("showtitle") or ""
     if title:
         return f"https://www.imdb.com/find?q={quote_plus(title)}"
