@@ -365,7 +365,7 @@ def format_link_line(i, title, link):
     return f"{i}. <a href=\"{safe_link}\">{safe_title}</a>"
 
 
-def chunk_selection_text(header, lines, max_len=3800):
+def chunk_selection_text(header, lines, footer=None, max_len=3800):
     chunks = []
     current = header
     for line in lines:
@@ -375,14 +375,21 @@ def chunk_selection_text(header, lines, max_len=3800):
             current = line
         else:
             current = candidate
+    if footer:
+        footer_text = f"\n{footer}" if current else footer
+        if current and len(current) + len(footer_text) > max_len:
+            chunks.append(current)
+            current = footer
+        else:
+            current = f"{current}{footer_text}" if current else footer
     if current:
         chunks.append(current)
     return chunks
 
 
-async def send_chunked_selection(ctx, chat_id, header, lines):
+async def send_chunked_selection(ctx, chat_id, header, lines, footer=None):
     message_ids = []
-    for chunk in chunk_selection_text(header, lines):
+    for chunk in chunk_selection_text(header, lines, footer=footer):
         msg = await send_and_track(ctx, chat_id, chunk, parse_mode="HTML")
         message_ids.append(msg.message_id)
     return message_ids
@@ -1148,8 +1155,9 @@ async def handle_text(update, ctx):
                 msg_ids = await send_chunked_selection(
                     ctx,
                     chat_id,
-                    "🎬 Filme wählen (q = cancel):",
+                    "🎬 Filme wählen:",
                     movie_list_lines(movies),
+                    footer="q = cancel",
                 )
                 ctx.user_data["await_movie_index"] = True
                 ctx.user_data["await_movie_msg_id"] = msg_ids
@@ -1165,8 +1173,9 @@ async def handle_text(update, ctx):
                 msg_ids = await send_chunked_selection(
                     ctx,
                     chat_id,
-                    "📺 Serie wählen (q = cancel):",
+                    "📺 Serie wählen:",
                     show_list_lines(shows),
+                    footer="q = cancel",
                 )
                 ctx.user_data["await_show_index"] = True
                 ctx.user_data["await_show_msg_id"] = msg_ids
