@@ -200,19 +200,28 @@ def play_item(item: dict, resume_time=None):
     kodi_api.stop_all_players()
     kodi_api.kodi_clear_all_playlists()
     kind = item.get("kind", "video")
+    resolver = item.get("resolver")
     BOT_EXPECTING_WS = 2
     print(
         f"PLAY_ITEM start kind={item.get('kind')} title={item.get('title')} url={item.get('url')}",
         flush=True,
     )
 
-    if kind == "audio":
+    if kind == "audio" and resolver == "soundcloud":
         playlistid = 0
         kodi_api.maybe_cache_soundcloud_url(item.get("url"))
         kodi_add_to_playlist(item["url"], playlistid)
         res = kodi_api.kodi_call("Player.Open", {"item": {"playlistid": playlistid, "position": 0}})
         print(f"PLAY_ITEM open audio res={res}", flush=True)
         schedule_audio_resolve_and_open(playlistid, resume_time=resume_time)
+    elif kind == "audio":
+        playlistid = 0
+        kodi_add_to_playlist(item["url"], playlistid)
+        res = kodi_api.kodi_call("Player.Open", {"item": {"playlistid": playlistid, "position": 0}})
+        print(f"PLAY_ITEM open direct audio res={res}", flush=True)
+        schedule_playback_refresh()
+        if resume_time is not None:
+            seek_when_player_ready(resume_time, context="audio")
     else:
         playlistid = 1
         kodi_add_to_playlist(item["url"], playlistid)
@@ -286,8 +295,8 @@ def skip_queue():
 
 
 # Create a queue item dict.
-def make_item(title, url, kind, link=None):
-    return {"title": title, "url": url, "kind": kind, "link": link}
+def make_item(title, url, kind, link=None, resolver=None):
+    return {"title": title, "url": url, "kind": kind, "link": link, "resolver": resolver}
 
 
 # Fetch a YouTube title and author for display.
@@ -359,7 +368,8 @@ def make_soundcloud(url):
         soundcloud_display_title(clean),
         f"plugin://plugin.audio.soundcloud/play/?url={clean}",
         "audio",
-        link=clean
+        link=clean,
+        resolver="soundcloud",
     )
 
 

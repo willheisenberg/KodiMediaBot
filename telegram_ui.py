@@ -14,6 +14,7 @@ from telegram.error import RetryAfter, TimedOut, NetworkError, BadRequest
 import kodi_api
 import playlist_store
 import queue_state
+import telegram_media
 
 STARTUP_CHAT_ID = -1003641420817
 PLAYLIST_DIR = os.environ.get("PLAYLIST_DIR", "/data/playlists")
@@ -1845,7 +1846,34 @@ async def handle_nontext(update, ctx):
     msg = update.effective_message
     if not msg:
         return
-    await warn_and_cleanup_chat(ctx, update.effective_chat.id, msg.message_id)
+    chat_id = update.effective_chat.id
+
+    try:
+        item = await telegram_media.download_media_item(ctx.bot, msg)
+    except Exception as e:
+        print(f"MEDIA DOWNLOAD FAIL chat_id={chat_id} message_id={msg.message_id} err={e}", flush=True)
+        await send_and_track(ctx, chat_id, "⚠ Upload could not be processed.")
+        schedule_cleanup(ctx, chat_id, LAST_BOT_ID.get(chat_id))
+        return
+    if item is None:
+        await warn_and_cleanup_chat(ctx, chat_id, msg.message_id)
+        return
+
+    try:
+        await asyncio.to_thread(queue_state.clear_bot_playback_state)
+        await asyncio.to_thread(queue_state.play_item, item)
+    except Exception as e:
+        print(f"MEDIA PLAY FAIL chat_id={chat_id} message_id={msg.message_id} err={e}", flush=True)
+        telegram_media.cleanup_temp_media(item.get("url"))
+        await send_and_track(ctx, chat_id, "⚠ Upload could not be played.")
+        schedule_cleanup(ctx, chat_id, LAST_BOT_ID.get(chat_id))
+        return
+
+    try:
+        await telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=msg.message_id)
+    except Exception:
+        pass
+    await update_now_playing_message(ctx, chat_id)
 
 
 async def handle_unknown_command(update, ctx):
@@ -1922,6 +1950,7 @@ async def reset_panel_command(update, ctx):
 
 # Initialize the bot, handlers, and start polling.
 def run(token: str):
+    telegram_media.start_media_server()
     app = Application.builder().token(token).build()
     load_ui_state()
 

@@ -18,6 +18,7 @@ COPY telegram_ui.py /telegram_ui.py
 COPY queue_state.py /queue_state.py
 COPY kodi_api.py /kodi_api.py
 COPY playlist_store.py /playlist_store.py
+COPY telegram_media.py /telegram_media.py
 COPY ./kodi.m3u /data/kodi.m3u
 
 CMD ["python", "/main.py"]

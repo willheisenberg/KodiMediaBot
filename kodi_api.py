@@ -11,6 +11,7 @@ from urllib.parse import unquote, quote_plus, urlparse, parse_qs
 
 import requests
 import websockets
+import telegram_media
 
 KODI_HOST = os.environ["KODI_HOST"]
 KODI_PORT = os.environ["KODI_PORT"]
@@ -1105,6 +1106,9 @@ def external_item_display(item):
     channel = item.get("channel") or ""
 
     link = None
+    temp_title = telegram_media.get_temp_media_title(file_url)
+    if temp_title:
+        return temp_title, file_url
     if not link and file_url.startswith("plugin://plugin.video.youtube/"):
         yt_id = extract_youtube_id(file_url)
         if yt_id:
@@ -1419,8 +1423,19 @@ async def kodi_ws_listener():
                         data = msg.get("params", {}).get("data", {}) or {}
                         player_params = data.get("player", {}) or {}
                         item_params = data.get("item", {}) or {}
+                        item = None
                         if "playerid" in player_params:
                             LAST_WS_PLAYERID = player_params.get("playerid")
+                            item = (await kodi_call_async(
+                                "Player.GetItem",
+                                {
+                                    "playerid": LAST_WS_PLAYERID,
+                                    "properties": ["title", "artist", "file", "type", "label"],
+                                },
+                            )).get("result", {}).get("item", {})
+                            playing_file = (item or {}).get("file") or ""
+                            if playing_file:
+                                LAST_WS_PLAYING_FILE = playing_file
                         if any(k in item_params for k in ("id", "type", "title")):
                             LAST_WS_ITEM.clear()
                             for k in ("id", "type", "title"):
@@ -1436,8 +1451,7 @@ async def kodi_ws_listener():
                         else:
                             player = data.get("player", {}) or {}
                             pid = player.get("playerid")
-                            item = None
-                            if pid is not None:
+                            if item is None and pid is not None:
                                 item = (await kodi_call_async(
                                     "Player.GetItem",
                                     {"playerid": pid, "properties": ["title", "artist", "file", "type", "label"]},
@@ -1477,6 +1491,8 @@ async def kodi_ws_listener():
                         WS_PLAYING = False
                         WS_STATE = "stopped"
                         WS_LAST_EVENT_TS = time.time()
+                        telegram_media.cleanup_temp_media(LAST_WS_PLAYING_FILE)
+                        LAST_WS_PLAYING_FILE = ""
                         qs.schedule_now_playing_refresh()
         except Exception:
             WS_CONNECTED = False

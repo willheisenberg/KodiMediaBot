@@ -8,6 +8,7 @@ This bot controls Kodi and a CEC device (HiFi/TV) via Telegram.
 - `queue_state.py`: queue + playback state.
 - `kodi_api.py`: Kodi JSON-RPC + WS helpers.
 - `playlist_store.py`: save/load playlist JSON.
+- `telegram_media.py`: Telegram uploads temporaer speichern, direkt an Kodi ausliefern und wieder loeschen.
 - `Dockerfile`: builds the image.
 
 ## Build
@@ -57,9 +58,42 @@ docker run -d --name partyqueue --restart unless-stopped --network host \
   -e KODI_USER="USER" \
   -e KODI_PASS="Password" \
   -e SC_CLIENT_ID="YOUR_CLIENT_ID" \
+  -e MEDIA_BASE_URL="YOUR_HOST_IP:8765" \
   -v /storage/docker/partyqueue:/root/.ssh:ro \
   -v /storage/docker/partyqueue/playlists:/data/playlists \
+  -v /storage/docker/partyqueue/uploads:/data/uploads \
   partyqueue
+```
+
+## Docker Compose
+```bash
+services:
+  kodi-media-bot:
+    build: .
+    container_name: kodi-media-bot
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      TG_TOKEN: "YOUR_TELEGRAM_BOT_TOKEN"
+      KODI_HOST: "172.17.0.1"
+      KODI_PORT: "8080"
+      KODI_WS_PORT: "9090"
+      KODI_USER: "USER"
+      KODI_PASS: "Password"
+      CEC_HOST: "172.17.0.1"
+      DENON_HOST: "DENON_IP"
+      DEBUG_WS: "1"
+      SC_CLIENT_ID: "YOUR_CLIENT_ID"
+      MEDIA_BASE_URL: "YOUR_HOST_IP:8765"
+    volumes:
+      - /storage/docker/partyqueue:/root/.ssh:ro
+      - /storage/docker/partyqueue/playlists:/data/playlists
+      - /storage/docker/partyqueue/uploads:/data/uploads
+```
+
+Starten:
+```bash
+docker compose up -d --build
 ```
 
 Notes:
@@ -73,6 +107,11 @@ Notes:
 - `KODI_WS_PORT` configures the Kodi websocket port.
 - `DEBUG_WS=1` enables websocket debug logging.
 - `SC_CLIENT_ID` configures the SoundCloud client id.
+- `UPLOAD_DIR` sets the local upload directory (default `/data/uploads`).
+- `MEDIA_SERVER_HOST` configures the bind address of the built-in upload server (default `0.0.0.0`).
+- `MEDIA_SERVER_PORT` configures the port of the built-in upload server (default `8765`).
+- `MEDIA_BASE_URL` should point to the bot host from Kodi's point of view, for example `http://192.168.1.20:8765`.
+- `MEDIA_SERVER_PUBLIC_HOST` is an optional fallback when `MEDIA_BASE_URL` is not set.
 - `kodi.m3u` is copied into the image as `/data/kodi.m3u` and is used to map channel names to stream URLs for ICY now-playing title lookup.
 - `RADIO_M3U_PATH` optionally overrides the M3U path (default: `/data/kodi.m3u`).
 - `RADIO_STREAM_MAP` is optional and overrides entries from `kodi.m3u`. Example: `{"Radioactive Sifnos":"https://streamyourdream.org:8050/radioactive"}`.
@@ -82,7 +121,15 @@ Notes:
 - `RADIO_YT_FAIL_TTL` (seconds, default `300`) configures how long failed YouTube lookups are cached.
 - `RADIO_YT_TIMEOUT` (seconds, default `8`) configures the timeout for `yt-dlp` YouTube search.
 - Playlists are saved to `/data/playlists` inside the container. Mount a host path to persist them.
+- Telegram uploads are stored temporarily in `/data/uploads` inside the container, deleted again after playback stops, and old leftovers are cleaned up on bot startup.
 - Use the “Save” and “Load” buttons in the Telegram panel to store or restore the queue.
+
+### `KODI_HOST` vs `MEDIA_BASE_URL`
+- `KODI_HOST=172.17.0.1` is used by the bot to reach Kodi JSON-RPC.
+- `MEDIA_BASE_URL` is used by Kodi to reach the bot's temporary upload server.
+- These values can be the same host, but they have different directions.
+- If Kodi can reach the bot under `http://172.17.0.1:8765`, then `MEDIA_BASE_URL=http://172.17.0.1:8765` is fine.
+- If Kodi cannot reach that address, use the real LAN IP of the Docker host instead, for example `http://192.168.178.10:8765`.
 
 ## Troubleshooting
 - `ssh: not found`: install `openssh-client` in the image.
