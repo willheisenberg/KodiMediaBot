@@ -70,6 +70,8 @@ SC_SEARCH_FAIL_TTL = float(os.environ.get("RADIO_SC_FAIL_TTL", "300"))
 SC_SEARCH_TIMEOUT = float(os.environ.get("RADIO_SC_TIMEOUT", "8"))
 HTTP = requests.Session()
 QUEUE_STATE_MODULE = None
+LAST_KODI_ERROR_LOG_TS = 0.0
+KODI_ERROR_LOG_INTERVAL = 10.0
 
 
 def get_queue_state_module():
@@ -81,10 +83,28 @@ def get_queue_state_module():
 
 # Send a JSON-RPC request to Kodi and return the response JSON.
 def kodi_call(method: str, params: dict | None = None):
+    global LAST_KODI_ERROR_LOG_TS
     payload = {"jsonrpc": "2.0", "method": method, "id": 1}
     if params:
         payload["params"] = params
-    return HTTP.post(KODI_URL, auth=AUTH, json=payload, timeout=5).json()
+    try:
+        resp = HTTP.post(KODI_URL, auth=AUTH, json=payload, timeout=5)
+        return resp.json()
+    except (requests.RequestException, ValueError) as e:
+        now = time.time()
+        if now - LAST_KODI_ERROR_LOG_TS >= KODI_ERROR_LOG_INTERVAL:
+            LAST_KODI_ERROR_LOG_TS = now
+            print(
+                f"KODI CALL FAIL method={method} host={KODI_HOST} port={KODI_PORT} err={e}",
+                flush=True,
+            )
+        return {
+            "error": {
+                "message": str(e),
+                "type": e.__class__.__name__,
+                "method": method,
+            }
+        }
 
 
 async def kodi_call_async(method: str, params: dict | None = None):

@@ -2,6 +2,10 @@
 
 This bot controls Kodi and a CEC device (HiFi/TV) via Telegram.
 
+Besides YouTube and SoundCloud queue links, the bot can also play Telegram
+voice/video uploads and selected social-media video URLs directly once.
+Those temporary media files are deleted again after playback stops.
+
 ## Files
 - `main.py`: entrypoint.
 - `telegram_ui.py`: Telegram UI handlers.
@@ -58,7 +62,7 @@ docker run -d --name partyqueue --restart unless-stopped --network host \
   -e KODI_USER="USER" \
   -e KODI_PASS="Password" \
   -e SC_CLIENT_ID="YOUR_CLIENT_ID" \
-  -e MEDIA_BASE_URL="YOUR_HOST_IP:8765" \
+  -e MEDIA_BASE_URL="http://YOUR_HOST_IP:8765" \
   -v /storage/docker/partyqueue:/root/.ssh:ro \
   -v /storage/docker/partyqueue/playlists:/data/playlists \
   -v /storage/docker/partyqueue/uploads:/data/uploads \
@@ -84,7 +88,7 @@ services:
       DENON_HOST: "DENON_IP"
       DEBUG_WS: "1"
       SC_CLIENT_ID: "YOUR_CLIENT_ID"
-      MEDIA_BASE_URL: "YOUR_HOST_IP:8765"
+      MEDIA_BASE_URL: "http://YOUR_HOST_IP:8765"
     volumes:
       - /storage/docker/partyqueue:/root/.ssh:ro
       - /storage/docker/partyqueue/playlists:/data/playlists
@@ -112,6 +116,7 @@ Notes:
 - `MEDIA_SERVER_PORT` configures the port of the built-in upload server (default `8765`).
 - `MEDIA_BASE_URL` should point to the bot host from Kodi's point of view, for example `http://192.168.1.20:8765`.
 - `MEDIA_SERVER_PUBLIC_HOST` is an optional fallback when `MEDIA_BASE_URL` is not set.
+- The image includes `ffmpeg` so Telegram MP4 uploads can be remuxed with `+faststart` before playback.
 - `kodi.m3u` is copied into the image as `/data/kodi.m3u` and is used to map channel names to stream URLs for ICY now-playing title lookup.
 - `RADIO_M3U_PATH` optionally overrides the M3U path (default: `/data/kodi.m3u`).
 - `RADIO_STREAM_MAP` is optional and overrides entries from `kodi.m3u`. Example: `{"Radioactive Sifnos":"https://streamyourdream.org:8050/radioactive"}`.
@@ -122,6 +127,7 @@ Notes:
 - `RADIO_YT_TIMEOUT` (seconds, default `8`) configures the timeout for `yt-dlp` YouTube search.
 - Playlists are saved to `/data/playlists` inside the container. Mount a host path to persist them.
 - Telegram uploads are stored temporarily in `/data/uploads` inside the container, deleted again after playback stops, and old leftovers are cleaned up on bot startup.
+- Social-media video links from supported domains like TikTok, Instagram, Facebook and X/Twitter are downloaded once with `yt-dlp`, played directly, and then deleted again.
 - Use the “Save” and “Load” buttons in the Telegram panel to store or restore the queue.
 
 ### `KODI_HOST` vs `MEDIA_BASE_URL`

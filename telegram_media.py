@@ -2,11 +2,15 @@ import mimetypes
 import os
 import posixpath
 import re
+import subprocess
 import threading
 import time
+from asyncio import to_thread
 from datetime import datetime
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import quote, urlparse
+
+from yt_dlp import YoutubeDL
 
 
 UPLOAD_DIR = os.environ.get("UPLOAD_DIR", "/data/uploads")
@@ -14,6 +18,14 @@ MEDIA_SERVER_HOST = os.environ.get("MEDIA_SERVER_HOST", "0.0.0.0")
 MEDIA_SERVER_PORT = int(os.environ.get("MEDIA_SERVER_PORT", "8765"))
 MEDIA_SERVER_SCHEME = os.environ.get("MEDIA_SERVER_SCHEME", "http")
 MEDIA_BASE_URL = (os.environ.get("MEDIA_BASE_URL") or "").rstrip("/")
+SOCIAL_VIDEO_DOMAINS = (
+    "tiktok.com",
+    "instagram.com",
+    "facebook.com",
+    "fb.watch",
+    "x.com",
+    "twitter.com",
+)
 
 _SERVER_LOCK = threading.Lock()
 _SERVER_STARTED = False
@@ -71,6 +83,98 @@ def build_storage_name(prefix: str, file_name: str | None, mime_type: str | None
     ext = choose_extension(file_name, mime_type, fallback_ext)
     ts = int(time.time() * 1000)
     return f"{stem}_{ts}{ext}"
+
+
+def register_temp_media(path: str, title: str):
+    file_name = os.path.basename(path)
+    media_url = build_media_url(file_name)
+    with _TEMP_MEDIA_LOCK:
+        _TEMP_MEDIA[normalize_media_url(media_url)] = {
+            "path": path,
+            "title": title,
+        }
+    return {
+        "title": title,
+        "url": media_url,
+        "kind": "video",
+        "link": media_url,
+    }
+
+
+def extract_first_url(text: str):
+    if not text:
+        return None
+    m = re.search(r"https?://\S+", text)
+    if not m:
+        return None
+    return m.group(0).rstrip("),.!?]}>\"'")
+
+
+def is_supported_social_video_url(url: str):
+    try:
+        host = (urlparse(url).netloc or "").lower()
+    except Exception:
+        return False
+    host = host.split(":")[0]
+    if host.startswith("www."):
+        host = host[4:]
+    return any(host == domain or host.endswith(f".{domain}") for domain in SOCIAL_VIDEO_DOMAINS)
+
+
+def maybe_faststart_mp4(path: str, kind: str):
+    if kind != "video":
+        return path
+    if not path.lower().endswith(".mp4"):
+        return path
+    faststart_path = f"{path}.faststart.mp4"
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        path,
+        "-c",
+        "copy",
+        "-movflags",
+        "+faststart",
+        faststart_path,
+    ]
+    try:
+        res = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except FileNotFoundError:
+        print("FASTSTART skipped: ffmpeg not found", flush=True)
+        return path
+    except Exception as e:
+        print(f"FASTSTART skipped path={path} err={e}", flush=True)
+        return path
+
+    if res.returncode != 0 or not os.path.exists(faststart_path):
+        print(
+            f"FASTSTART failed path={path} rc={res.returncode} stderr={(res.stderr or '').strip()}",
+            flush=True,
+        )
+        try:
+            if os.path.exists(faststart_path):
+                os.remove(faststart_path)
+        except Exception:
+            pass
+        return path
+
+    try:
+        os.replace(faststart_path, path)
+        print(f"FASTSTART ok path={path}", flush=True)
+    except Exception as e:
+        print(f"FASTSTART replace failed path={path} err={e}", flush=True)
+        try:
+            os.remove(faststart_path)
+        except Exception:
+            pass
+    return path
 
 
 def classify_message(msg):
@@ -148,18 +252,50 @@ async def download_media_item(bot, msg):
     target_path = os.path.join(UPLOAD_DIR, media["storage_name"])
     tg_file = await bot.get_file(media["file_id"])
     await tg_file.download_to_drive(custom_path=target_path)
-    media_url = build_media_url(media["storage_name"])
-    with _TEMP_MEDIA_LOCK:
-        _TEMP_MEDIA[normalize_media_url(media_url)] = {
-            "path": target_path,
-            "title": media["title"],
-        }
-    return {
-        "title": media["title"],
-        "url": media_url,
-        "kind": media["kind"],
-        "link": media_url,
+    target_path = await to_thread(maybe_faststart_mp4, target_path, media["kind"])
+    item = register_temp_media(target_path, media["title"])
+    item["kind"] = media["kind"]
+    return item
+
+
+def _download_social_video(url: str):
+    ensure_upload_dir()
+    temp_name = build_storage_name("social_video", None, "video/mp4", ".mp4")
+    temp_path = os.path.join(UPLOAD_DIR, temp_name)
+    base_path, _ = os.path.splitext(temp_path)
+    ydl_opts = {
+        "quiet": True,
+        "noplaylist": True,
+        "format": "mp4/bv*+ba/b",
+        "merge_output_format": "mp4",
+        "outtmpl": f"{base_path}.%(ext)s",
+        "restrictfilenames": True,
     }
+    with YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        downloaded = ydl.prepare_filename(info)
+    final_path = downloaded
+    requested = info.get("requested_downloads") or []
+    if requested:
+        candidate = requested[0].get("filepath")
+        if candidate:
+            final_path = candidate
+    if not os.path.exists(final_path):
+        mp4_candidate = f"{base_path}.mp4"
+        if os.path.exists(mp4_candidate):
+            final_path = mp4_candidate
+    if not os.path.exists(final_path):
+        raise FileNotFoundError(f"Downloaded file not found for url={url}")
+    title = info.get("title") or url
+    final_path = maybe_faststart_mp4(final_path, "video")
+    return register_temp_media(final_path, title)
+
+
+async def download_social_video_item(text: str):
+    url = extract_first_url(text)
+    if not url or not is_supported_social_video_url(url):
+        return None
+    return await to_thread(_download_social_video, url)
 
 
 def get_temp_media_title(url: str):
@@ -231,11 +367,105 @@ class _MediaRequestHandler(SimpleHTTPRequestHandler):
             return base_dir
         return full_path
 
-    def do_GET(self):
+    def _parse_range_header(self, size: int):
+        raw = self.headers.get("Range") or ""
+        if not raw:
+            return None
+        if not raw.startswith("bytes=") or "," in raw:
+            return "invalid"
+        spec = raw[6:].strip()
+        start_txt, sep, end_txt = spec.partition("-")
+        if not sep:
+            return "invalid"
+        if start_txt == "":
+            try:
+                length = int(end_txt)
+            except Exception:
+                return "invalid"
+            if length <= 0:
+                return "invalid"
+            start = max(size - length, 0)
+            end = size - 1
+            return start, end
+        try:
+            start = int(start_txt)
+        except Exception:
+            return "invalid"
+        if start < 0 or start >= size:
+            return "invalid"
+        if end_txt == "":
+            end = size - 1
+        else:
+            try:
+                end = int(end_txt)
+            except Exception:
+                return "invalid"
+            if end < start:
+                return "invalid"
+            end = min(end, size - 1)
+        return start, end
+
+    def _send_media_file(self, send_body: bool):
         if not self.path.startswith("/media/"):
             self.send_error(404)
             return
-        super().do_GET()
+        path = self.translate_path(self.path)
+        if not os.path.exists(path):
+            self.send_error(404)
+            return
+        if not os.path.isfile(path):
+            self.send_error(403)
+            return
+
+        size = os.path.getsize(path)
+        range_info = self._parse_range_header(size)
+        if range_info == "invalid":
+            self.send_response(416)
+            self.send_header("Content-Range", f"bytes */{size}")
+            self.send_header("Accept-Ranges", "bytes")
+            self.end_headers()
+            return
+
+        start = 0
+        end = size - 1
+        status = 200
+        if range_info is not None:
+            start, end = range_info
+            status = 206
+
+        content_type = self.guess_type(path)
+        content_length = max(end - start + 1, 0)
+
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(content_length))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Cache-Control", "no-cache")
+        if status == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.end_headers()
+
+        if not send_body:
+            return
+
+        try:
+            with open(path, "rb") as f:
+                f.seek(start)
+                remaining = content_length
+                while remaining > 0:
+                    chunk = f.read(min(64 * 1024, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
+    def do_HEAD(self):
+        self._send_media_file(send_body=False)
+
+    def do_GET(self):
+        self._send_media_file(send_body=True)
 
     def log_message(self, format, *args):
         return

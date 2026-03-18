@@ -1,8 +1,6 @@
 FROM python:3.12-alpine
 
-RUN apk add --no-cache nano openssh-client
-
-RUN apk add --no-cache nano
+RUN apk add --no-cache ffmpeg nano openssh-client
 
 RUN python -m pip install --upgrade pip
 

@@ -1832,6 +1832,31 @@ async def handle_text(update, ctx):
         await send_and_track(ctx, chat_id, f"✔ Playlist with {count} tracks added.")
         sent = True
 
+    if not sent:
+        try:
+            item = await telegram_media.download_social_video_item(txt)
+        except Exception as e:
+            print(f"SOCIAL VIDEO DOWNLOAD FAIL chat_id={chat_id} message_id={msg_id} err={e}", flush=True)
+            await send_and_track(ctx, chat_id, "⚠ Video link could not be downloaded.")
+            schedule_cleanup(ctx, chat_id, prev_id)
+            return
+        if item is not None:
+            try:
+                await asyncio.to_thread(queue_state.clear_bot_playback_state)
+                await asyncio.to_thread(queue_state.play_item, item)
+            except Exception as e:
+                print(f"SOCIAL VIDEO PLAY FAIL chat_id={chat_id} message_id={msg_id} err={e}", flush=True)
+                telegram_media.cleanup_temp_media(item.get("url"))
+                await send_and_track(ctx, chat_id, "⚠ Video link could not be played.")
+                schedule_cleanup(ctx, chat_id, prev_id)
+                return
+            try:
+                await telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=msg_id)
+            except Exception:
+                pass
+            await update_now_playing_message(ctx, chat_id)
+            return
+
     if sent:
         schedule_cleanup(ctx, chat_id, prev_id)
         await update_list_message(ctx, chat_id)
