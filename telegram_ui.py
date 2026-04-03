@@ -1100,7 +1100,7 @@ async def on_button(update, ctx):
         msg = await send_and_track(
             ctx,
             chat_id,
-            "🎬 Medienbrowser\n1. Filme\n2. Serien\nq = cancel",
+            "🎬 Media browser\n1. Movies\n2. Series\nq = cancel",
         )
         activate_prompt(ctx, chat_id, user_id, "await_media_type", "await_media_type_msg_id", msg.message_id)
         sent = True
@@ -1303,7 +1303,7 @@ async def handle_text(update, ctx):
                 msg_ids = await send_chunked_selection(
                     ctx,
                     chat_id,
-                    "🎬 Filme wählen:",
+                    "🎬 Select movie:",
                     movie_list_lines(movies),
                     footer="q = cancel",
                 )
@@ -1328,7 +1328,7 @@ async def handle_text(update, ctx):
                 msg_ids = await send_chunked_selection(
                     ctx,
                     chat_id,
-                    "📺 Serie wählen:",
+                    "📺 Select series:",
                     show_list_lines(shows),
                     footer="q = cancel",
                 )
@@ -1835,7 +1835,7 @@ async def handle_text(update, ctx):
             if not in_range:
                 await send_and_track(ctx, chat_id, "That number does not exist.")
             elif queue_state.is_requested_track_already_playing(i):
-                await send_and_track(ctx, chat_id, "▶ Dieser Track läuft bereits.")
+                await send_and_track(ctx, chat_id, "▶ This track is already playing.")
             else:
                 queue_state.play_index(i)
                 await send_and_track(ctx, chat_id, f"▶ Playing track {txt}.")
