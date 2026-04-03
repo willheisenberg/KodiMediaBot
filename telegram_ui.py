@@ -274,19 +274,15 @@ def control_panel():
         ],
         [
             InlineKeyboardButton("🗑 №", callback_data="delete:ask"),
+            InlineKeyboardButton("🗑 First", callback_data="delete:first"),
+            InlineKeyboardButton("🗑 Last", callback_data="delete:last"),
             InlineKeyboardButton("🗑 All", callback_data="deleteall"),
         ],
         [
-            InlineKeyboardButton("🗑 First", callback_data="delete:first"),
-            InlineKeyboardButton("🗑 Last", callback_data="delete:last"),
-        ],
-        [
-            InlineKeyboardButton("🔊 +5", callback_data="vol:up5"),
-            InlineKeyboardButton("🔊 +10", callback_data="vol:up10"),
-        ],
-        [
             InlineKeyboardButton("🔉 -5", callback_data="vol:down5"),
+            InlineKeyboardButton("🔊 +5", callback_data="vol:up5"),
             InlineKeyboardButton("🔉 -10", callback_data="vol:down10"),
+            InlineKeyboardButton("🔊 +10", callback_data="vol:up10"),
         ],
         [
             InlineKeyboardButton("🔌 Hifi On", callback_data="hifi:on"),
