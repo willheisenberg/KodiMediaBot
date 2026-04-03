@@ -265,9 +265,12 @@ def control_panel():
         ],
         [
             InlineKeyboardButton("⏱ % Seek", callback_data="seek:percent"),
+            InlineKeyboardButton("🔁 Repeat", callback_data="repeat"),
+        ],
+        [
             InlineKeyboardButton("⭐", callback_data="fav:ask"),
             InlineKeyboardButton("🎬", callback_data="media:ask"),
-            InlineKeyboardButton("🔁 Repeat", callback_data="repeat"),
+            InlineKeyboardButton("🗣", callback_data="av:ask"),
         ],
         [
             InlineKeyboardButton("🗑 №", callback_data="delete:ask"),
@@ -504,6 +507,34 @@ def episode_list_lines(episodes):
         title = f"{prefix}{episode.get('title') or 'Unknown'}".strip()
         lines.append(format_link_line(i, title, kodi_api.build_imdb_link(episode)))
     return lines
+
+
+def av_stream_label(stream):
+    if not isinstance(stream, dict):
+        return "Unknown"
+    parts = []
+    language = stream.get("language")
+    name = stream.get("name")
+    if language:
+        parts.append(str(language))
+    if name and str(name) not in parts:
+        parts.append(str(name))
+    if stream.get("isdefault"):
+        parts.append("Default")
+    if not parts:
+        index = stream.get("index")
+        if index is not None:
+            return f"Track {index}"
+        return "Unknown"
+    return " | ".join(parts)
+
+
+def current_subtitle_label(av_state):
+    if not av_state.get("subtitleenabled"):
+        return "Off"
+    current = av_state.get("currentsubtitle") or {}
+    label = av_stream_label(current)
+    return label if label else "Ein"
 
 
 # Update or create the queue list message.
@@ -1078,6 +1109,32 @@ async def on_button(update, ctx):
         activate_prompt(ctx, chat_id, user_id, "await_media_type", "await_media_type_msg_id", msg.message_id)
         sent = True
         skip_cleanup = True
+    elif cmd == "av:ask":
+        if ctx.user_data.get("await_av_action"):
+            return
+        av_state = await asyncio.to_thread(kodi_api.get_av_settings)
+        if av_state.get("playerid") is None:
+            await send_and_track(ctx, chat_id, "⚠ Nothing is currently playing.")
+            sent = True
+        elif av_state.get("error"):
+            await send_and_track(ctx, chat_id, "⚠ Audio/subtitle information could not be loaded.")
+            sent = True
+        else:
+            current_audio = av_stream_label(av_state.get("currentaudiostream") or {})
+            current_sub = current_subtitle_label(av_state)
+            msg = await send_and_track(
+                ctx,
+                chat_id,
+                "🗣 Audio / Subtitles\n"
+                "1. Change audio\n"
+                "2. Change subtitles\n"
+                f"Current audio: {current_audio}\n"
+                f"Current subtitles: {current_sub}\n"
+                "q = cancel",
+            )
+            activate_prompt(ctx, chat_id, user_id, "await_av_action", "await_av_action_msg_id", msg.message_id)
+            sent = True
+            skip_cleanup = True
     elif cmd == "delete:ask":
         if ctx.user_data.get("await_delete_index"):
             return
@@ -1301,6 +1358,93 @@ async def handle_text(update, ctx):
             await update_list_message(ctx, chat_id)
         return
 
+    if ctx.user_data.get("await_av_action"):
+        cancel_prompt_timeout(chat_id, user_id, "await_av_action")
+        ctx.user_data["await_av_action"] = False
+        prompt_id = ctx.user_data.pop("await_av_action_msg_id", None)
+        await delete_message_if_present(ctx, chat_id, msg_id)
+        if txt_lower == "q":
+            await send_and_track(ctx, chat_id, "Cancelled.")
+            sent = True
+        elif txt == "1":
+            av_state = await asyncio.to_thread(kodi_api.get_av_settings)
+            audio_streams = av_state.get("audiostreams") or []
+            if av_state.get("playerid") is None:
+                await send_and_track(ctx, chat_id, "⚠ Nothing is currently playing.")
+                sent = True
+            elif av_state.get("error"):
+                await send_and_track(ctx, chat_id, "⚠ Audio streams could not be loaded.")
+                sent = True
+            elif not audio_streams:
+                await send_and_track(ctx, chat_id, "⚠ No audio streams available.")
+                sent = True
+            else:
+                lines = []
+                current_index = (av_state.get("currentaudiostream") or {}).get("index")
+                for i, stream in enumerate(audio_streams, start=1):
+                    marker = " [active]" if stream.get("index") == current_index else ""
+                    lines.append(f"{i}. {av_stream_label(stream)}{marker}")
+                msg = await send_and_track(
+                    ctx,
+                    chat_id,
+                    "🗣 Select audio:\n" + "\n".join(lines) + "\nq = cancel",
+                )
+                ctx.user_data["audio_streams"] = audio_streams
+                activate_prompt(
+                    ctx,
+                    chat_id,
+                    user_id,
+                    "await_audio_index",
+                    "await_audio_msg_id",
+                    msg.message_id,
+                    extra_keys=("audio_streams",),
+                )
+                sent = True
+                skip_cleanup = True
+        elif txt == "2":
+            av_state = await asyncio.to_thread(kodi_api.get_av_settings)
+            subtitles = av_state.get("subtitles") or []
+            if av_state.get("playerid") is None:
+                await send_and_track(ctx, chat_id, "⚠ Nothing is currently playing.")
+                sent = True
+            elif av_state.get("error"):
+                await send_and_track(ctx, chat_id, "⚠ Subtitle streams could not be loaded.")
+                sent = True
+            else:
+                lines = ["1. Off"]
+                current_index = (av_state.get("currentsubtitle") or {}).get("index")
+                for i, stream in enumerate(subtitles, start=2):
+                    active = av_state.get("subtitleenabled") and stream.get("index") == current_index
+                    marker = " [active]" if active else ""
+                    lines.append(f"{i}. {av_stream_label(stream)}{marker}")
+                msg = await send_and_track(
+                    ctx,
+                    chat_id,
+                    "💬 Select subtitles:\n" + "\n".join(lines) + "\nq = cancel",
+                )
+                ctx.user_data["subtitle_streams"] = subtitles
+                activate_prompt(
+                    ctx,
+                    chat_id,
+                    user_id,
+                    "await_subtitle_index",
+                    "await_subtitle_msg_id",
+                    msg.message_id,
+                    extra_keys=("subtitle_streams",),
+                )
+                sent = True
+                skip_cleanup = True
+        else:
+            await send_and_track(ctx, chat_id, "Please enter 1 or 2 (or q to cancel).")
+            sent = True
+            skip_cleanup = True
+        await delete_message_if_present(ctx, chat_id, prompt_id)
+        if sent and not skip_cleanup:
+            schedule_cleanup(ctx, chat_id, prev_id)
+            await update_list_message(ctx, chat_id)
+            await update_now_playing_message(ctx, chat_id)
+        return
+
     if ctx.user_data.get("await_movie_index"):
         cancel_prompt_timeout(chat_id, user_id, "await_movie_index")
         ctx.user_data["await_movie_index"] = False
@@ -1319,6 +1463,69 @@ async def handle_text(update, ctx):
                     await send_and_track(ctx, chat_id, f"🎬 Playing: {movie.get('title')}")
                 else:
                     await send_and_track(ctx, chat_id, "⚠ Movie could not be played.")
+            else:
+                await send_and_track(ctx, chat_id, "That number does not exist.")
+        else:
+            await send_and_track(ctx, chat_id, "Please enter a number only (or q to cancel).")
+        sent = True
+        await delete_message_if_present(ctx, chat_id, prompt_id)
+        if sent:
+            schedule_cleanup(ctx, chat_id, prev_id)
+            await update_list_message(ctx, chat_id)
+            await update_now_playing_message(ctx, chat_id)
+        return
+
+    if ctx.user_data.get("await_audio_index"):
+        cancel_prompt_timeout(chat_id, user_id, "await_audio_index")
+        ctx.user_data["await_audio_index"] = False
+        prompt_id = ctx.user_data.pop("await_audio_msg_id", None)
+        audio_streams = ctx.user_data.pop("audio_streams", [])
+        await delete_message_if_present(ctx, chat_id, msg_id)
+        if txt_lower == "q":
+            await send_and_track(ctx, chat_id, "Cancelled.")
+        elif txt.isdigit():
+            i = int(txt) - 1
+            if 0 <= i < len(audio_streams):
+                ok = await asyncio.to_thread(kodi_api.set_audio_stream, audio_streams[i].get("index"))
+                if ok:
+                    await send_and_track(ctx, chat_id, f"🗣 Audio set: {av_stream_label(audio_streams[i])}")
+                else:
+                    await send_and_track(ctx, chat_id, "⚠ Audio could not be changed.")
+            else:
+                await send_and_track(ctx, chat_id, "That number does not exist.")
+        else:
+            await send_and_track(ctx, chat_id, "Please enter a number only (or q to cancel).")
+        sent = True
+        await delete_message_if_present(ctx, chat_id, prompt_id)
+        if sent:
+            schedule_cleanup(ctx, chat_id, prev_id)
+            await update_list_message(ctx, chat_id)
+            await update_now_playing_message(ctx, chat_id)
+        return
+
+    if ctx.user_data.get("await_subtitle_index"):
+        cancel_prompt_timeout(chat_id, user_id, "await_subtitle_index")
+        ctx.user_data["await_subtitle_index"] = False
+        prompt_id = ctx.user_data.pop("await_subtitle_msg_id", None)
+        subtitles = ctx.user_data.pop("subtitle_streams", [])
+        await delete_message_if_present(ctx, chat_id, msg_id)
+        if txt_lower == "q":
+            await send_and_track(ctx, chat_id, "Cancelled.")
+        elif txt.isdigit():
+            i = int(txt) - 1
+            if i == 0:
+                ok = await asyncio.to_thread(kodi_api.disable_subtitles)
+                if ok:
+                    await send_and_track(ctx, chat_id, "💬 Subtitles off.")
+                else:
+                    await send_and_track(ctx, chat_id, "⚠ Subtitles could not be disabled.")
+            elif 0 < i <= len(subtitles):
+                selected = subtitles[i - 1]
+                ok = await asyncio.to_thread(kodi_api.set_subtitle_stream, selected.get("index"))
+                if ok:
+                    await send_and_track(ctx, chat_id, f"💬 Subtitles set: {av_stream_label(selected)}")
+                else:
+                    await send_and_track(ctx, chat_id, "⚠ Subtitles could not be changed.")
             else:
                 await send_and_track(ctx, chat_id, "That number does not exist.")
         else:

@@ -206,6 +206,66 @@ def get_active_players():
     return kodi_call("Player.GetActivePlayers").get("result", [])
 
 
+def get_av_settings():
+    playerid = get_active_playerid()
+    if playerid is None:
+        return {"playerid": None, "error": "nothing_playing"}
+    res = kodi_call(
+        "Player.GetProperties",
+        {
+            "playerid": playerid,
+            "properties": [
+                "audiostreams",
+                "currentaudiostream",
+                "subtitles",
+                "currentsubtitle",
+                "subtitleenabled",
+            ],
+        },
+    )
+    if res.get("error"):
+        return {"playerid": playerid, "error": res.get("error")}
+    result = (res.get("result", {}) or {})
+    return {
+        "playerid": playerid,
+        "audiostreams": result.get("audiostreams") or [],
+        "currentaudiostream": result.get("currentaudiostream") or {},
+        "subtitles": result.get("subtitles") or [],
+        "currentsubtitle": result.get("currentsubtitle") or {},
+        "subtitleenabled": bool(result.get("subtitleenabled")),
+    }
+
+
+def set_audio_stream(stream_index):
+    playerid = get_active_playerid()
+    if playerid is None or stream_index is None:
+        return False
+    res = kodi_call("Player.SetAudioStream", {"playerid": playerid, "stream": stream_index})
+    return "error" not in res
+
+
+def set_subtitle_stream(subtitle_index):
+    playerid = get_active_playerid()
+    if playerid is None or subtitle_index is None:
+        return False
+    res = kodi_call(
+        "Player.SetSubtitle",
+        {"playerid": playerid, "subtitle": subtitle_index, "enable": True},
+    )
+    return "error" not in res
+
+
+def disable_subtitles():
+    playerid = get_active_playerid()
+    if playerid is None:
+        return False
+    res = kodi_call(
+        "Player.SetSubtitle",
+        {"playerid": playerid, "subtitle": "off", "enable": False},
+    )
+    return "error" not in res
+
+
 def pick_playerid(players):
     if not players:
         return None
