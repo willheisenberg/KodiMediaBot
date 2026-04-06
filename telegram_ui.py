@@ -268,11 +268,6 @@ def control_panel():
             InlineKeyboardButton("🔁 Repeat", callback_data="repeat"),
         ],
         [
-            InlineKeyboardButton("⭐", callback_data="fav:ask"),
-            InlineKeyboardButton("🎬", callback_data="media:ask"),
-            InlineKeyboardButton("🗣", callback_data="av:ask"),
-        ],
-        [
             InlineKeyboardButton("🗑 №", callback_data="delete:ask"),
             InlineKeyboardButton("🗑 First", callback_data="delete:first"),
             InlineKeyboardButton("🗑 Last", callback_data="delete:last"),
@@ -285,13 +280,18 @@ def control_panel():
             InlineKeyboardButton("🔊 +10", callback_data="vol:up10"),
         ],
         [
-            InlineKeyboardButton("🔌 Hifi On", callback_data="hifi:on"),
-            InlineKeyboardButton("🔌 Hifi Off", callback_data="hifi:off"),
+            InlineKeyboardButton("⭐", callback_data="fav:ask"),
+            InlineKeyboardButton("🎬", callback_data="media:ask"),
+            InlineKeyboardButton("🗣", callback_data="av:ask"),
         ],
         [
             InlineKeyboardButton("💾 Save", callback_data="plist:save"),
             InlineKeyboardButton("🎵 Delete", callback_data="plist:delete"),
             InlineKeyboardButton("📂 Load", callback_data="plist:load"),
+        ],
+        [
+            InlineKeyboardButton("🔌 Hifi On", callback_data="hifi:on"),
+            InlineKeyboardButton("🔌 Hifi Off", callback_data="hifi:off"),
         ],
         [
             InlineKeyboardButton("☠️ AirPlay Kill", callback_data="airplay:kill"),
