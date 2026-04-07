@@ -63,6 +63,7 @@ docker run -d --name partyqueue --restart unless-stopped --network host \
   -e KODI_PASS="Password" \
   -e SC_CLIENT_ID="YOUR_CLIENT_ID" \
   -e MEDIA_BASE_URL="http://YOUR_HOST_IP:8765" \
+  -e TELEGRAM_LOCAL_MODE="0" \
   -v /storage/docker/partyqueue:/root/.ssh:ro \
   -v /storage/docker/partyqueue/playlists:/data/playlists \
   -v /storage/docker/partyqueue/uploads:/data/uploads \
@@ -89,6 +90,7 @@ services:
       DEBUG_WS: "1"
       SC_CLIENT_ID: "YOUR_CLIENT_ID"
       MEDIA_BASE_URL: "http://YOUR_HOST_IP:8765"
+      TELEGRAM_LOCAL_MODE: "0"
     volumes:
       - /storage/docker/partyqueue:/root/.ssh:ro
       - /storage/docker/partyqueue/playlists:/data/playlists
@@ -99,6 +101,27 @@ Starten:
 ```bash
 docker compose up -d --build
 ```
+
+## Docker Compose with local `telegram-bot-api`
+If you want Telegram uploads larger than 20 MB, run the bot against a local Bot API server.
+
+You need your Telegram `api_id` and `api_hash` from `https://my.telegram.org`.
+
+Start with:
+```bash
+cp .env.local-bot-api.example .env
+# edit .env
+docker compose -f docker-compose.local-bot-api.yml up -d --build
+```
+
+The local Bot API server stores downloaded Telegram files under `/var/lib/telegram-bot-api`. The compose file mounts that same volume into `kodi-media-bot` as read-only, otherwise media downloads fail with `Not Found` even for small files.
+
+Important when switching an existing bot from the Telegram cloud Bot API to a local Bot API server:
+```bash
+curl -s "https://api.telegram.org/bot${TG_TOKEN}/logOut"
+```
+
+Without this one-time `logOut`, Telegram may keep the bot attached to the cloud Bot API and the local server will not behave correctly.
 
 Notes:
 - `--network host` is required so the bot can reach Kodi JSON-RPC on the host.
@@ -116,6 +139,11 @@ Notes:
 - `MEDIA_SERVER_PORT` configures the port of the built-in upload server (default `8765`).
 - `MEDIA_BASE_URL` should point to the bot host from Kodi's point of view, for example `http://192.168.1.20:8765`.
 - `MEDIA_SERVER_PUBLIC_HOST` is an optional fallback when `MEDIA_BASE_URL` is not set.
+- `TELEGRAM_LOCAL_MODE=1` enables support for a local `telegram-bot-api` server, which is required if the bot should download Telegram uploads larger than 20 MB.
+- `TELEGRAM_BASE_URL` optionally overrides the Telegram API endpoint, for example `http://127.0.0.1:8081/bot`.
+- `TELEGRAM_BASE_FILE_URL` optionally overrides the Telegram file endpoint, for example `http://127.0.0.1:8081/file/bot`.
+- `TELEGRAM_DOWNLOAD_SIZE_LIMIT_MB` changes the pre-check limit for cloud Bot API downloads (default `20`). Leave this unchanged unless you know your Telegram endpoint supports more.
+- `TELEGRAM_READ_TIMEOUT` and `TELEGRAM_GET_FILE_READ_TIMEOUT` default to `300` seconds in the local Bot API setup so large Telegram files have enough time to be prepared and returned.
 - The image includes `ffmpeg` so Telegram MP4 uploads can be remuxed with `+faststart` before playback.
 - `kodi.m3u` is copied into the image as `/data/kodi.m3u` and is used to map channel names to stream URLs for ICY now-playing title lookup.
 - `RADIO_M3U_PATH` optionally overrides the M3U path (default: `/data/kodi.m3u`).
@@ -141,3 +169,4 @@ Notes:
 - `ssh: not found`: install `openssh-client` in the image.
 - `Host key verification failed`: the bot uses SSH options to skip host key checks.
 - `Permission denied`: key not mounted or permissions too open; re-check SSH setup.
+- `MEDIA DOWNLOAD FAIL ... File is too big`: this is the Telegram Bot API download limit. Normal cloud Bot API downloads stop at 20 MB. For large uploads, run a local `telegram-bot-api` server and set `TELEGRAM_LOCAL_MODE=1`, `TELEGRAM_BASE_URL`, and `TELEGRAM_BASE_FILE_URL`.

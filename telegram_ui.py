@@ -2080,7 +2080,8 @@ async def handle_nontext(update, ctx):
         item = await telegram_media.download_media_item(ctx.bot, msg)
     except Exception as e:
         print(f"MEDIA DOWNLOAD FAIL chat_id={chat_id} message_id={msg.message_id} err={e}", flush=True)
-        await send_and_track(ctx, chat_id, "⚠ Upload could not be processed.")
+        user_msg = getattr(e, "user_message", "⚠ Upload could not be processed.")
+        await send_and_track(ctx, chat_id, user_msg)
         schedule_cleanup(ctx, chat_id, LAST_BOT_ID.get(chat_id))
         return
     if item is None:
@@ -2179,7 +2180,40 @@ async def reset_panel_command(update, ctx):
 # Initialize the bot, handlers, and start polling.
 def run(token: str):
     telegram_media.start_media_server()
-    app = Application.builder().token(token).build()
+    builder = Application.builder().token(token)
+    telegram_base_url = (os.environ.get("TELEGRAM_BASE_URL") or "").strip()
+    telegram_base_file_url = (os.environ.get("TELEGRAM_BASE_FILE_URL") or "").strip()
+    telegram_local_mode = (os.environ.get("TELEGRAM_LOCAL_MODE") or "").strip().lower() in ("1", "true", "yes", "on")
+    telegram_read_timeout = float(os.environ.get("TELEGRAM_READ_TIMEOUT", "300"))
+    telegram_write_timeout = float(os.environ.get("TELEGRAM_WRITE_TIMEOUT", "30"))
+    telegram_connect_timeout = float(os.environ.get("TELEGRAM_CONNECT_TIMEOUT", "30"))
+    telegram_pool_timeout = float(os.environ.get("TELEGRAM_POOL_TIMEOUT", "30"))
+
+    if telegram_base_url and hasattr(builder, "base_url"):
+        builder = builder.base_url(telegram_base_url)
+    if telegram_base_file_url and hasattr(builder, "base_file_url"):
+        builder = builder.base_file_url(telegram_base_file_url)
+    if telegram_local_mode and hasattr(builder, "local_mode"):
+        builder = builder.local_mode(True)
+    if hasattr(builder, "read_timeout"):
+        builder = builder.read_timeout(telegram_read_timeout)
+    if hasattr(builder, "write_timeout"):
+        builder = builder.write_timeout(telegram_write_timeout)
+    if hasattr(builder, "connect_timeout"):
+        builder = builder.connect_timeout(telegram_connect_timeout)
+    if hasattr(builder, "pool_timeout"):
+        builder = builder.pool_timeout(telegram_pool_timeout)
+
+    print(
+        "TELEGRAM API config "
+        f"local_mode={telegram_local_mode} "
+        f"base_url={telegram_base_url or 'default'} "
+        f"base_file_url={telegram_base_file_url or 'default'} "
+        f"read_timeout={telegram_read_timeout}",
+        flush=True,
+    )
+
+    app = builder.build()
     load_ui_state()
 
     queue_state.set_ui_callbacks(schedule_now_playing_refresh)

@@ -2,6 +2,7 @@ import mimetypes
 import os
 import posixpath
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -18,6 +19,12 @@ MEDIA_SERVER_HOST = os.environ.get("MEDIA_SERVER_HOST", "0.0.0.0")
 MEDIA_SERVER_PORT = int(os.environ.get("MEDIA_SERVER_PORT", "8765"))
 MEDIA_SERVER_SCHEME = os.environ.get("MEDIA_SERVER_SCHEME", "http")
 MEDIA_BASE_URL = (os.environ.get("MEDIA_BASE_URL") or "").rstrip("/")
+TELEGRAM_LOCAL_MODE = (os.environ.get("TELEGRAM_LOCAL_MODE") or "").strip().lower() in ("1", "true", "yes", "on")
+TELEGRAM_DOWNLOAD_SIZE_LIMIT = int(os.environ.get("TELEGRAM_DOWNLOAD_SIZE_LIMIT_MB", "20")) * 1024 * 1024
+TELEGRAM_GET_FILE_READ_TIMEOUT = float(os.environ.get("TELEGRAM_GET_FILE_READ_TIMEOUT", "300"))
+TELEGRAM_GET_FILE_WRITE_TIMEOUT = float(os.environ.get("TELEGRAM_GET_FILE_WRITE_TIMEOUT", "30"))
+TELEGRAM_GET_FILE_CONNECT_TIMEOUT = float(os.environ.get("TELEGRAM_GET_FILE_CONNECT_TIMEOUT", "30"))
+TELEGRAM_GET_FILE_POOL_TIMEOUT = float(os.environ.get("TELEGRAM_GET_FILE_POOL_TIMEOUT", "30"))
 SOCIAL_VIDEO_DOMAINS = (
     "tiktok.com",
     "instagram.com",
@@ -31,6 +38,13 @@ _SERVER_LOCK = threading.Lock()
 _SERVER_STARTED = False
 _TEMP_MEDIA_LOCK = threading.Lock()
 _TEMP_MEDIA = {}
+
+
+class MediaDownloadError(Exception):
+    def __init__(self, user_message: str, detail: str | None = None):
+        super().__init__(detail or user_message)
+        self.user_message = user_message
+        self.detail = detail or user_message
 
 
 def ensure_upload_dir():
@@ -65,6 +79,19 @@ def sanitize_stem(name: str):
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", (name or "").strip())
     safe = safe.strip("._-")
     return safe or "upload"
+
+
+def format_bytes(size: int | None):
+    if size is None:
+        return "unknown size"
+    units = ("B", "KB", "MB", "GB", "TB")
+    value = float(size)
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(value)} {unit}"
+            return f"{value:.1f} {unit}"
+        value /= 1024
 
 
 def choose_extension(file_name: str | None, mime_type: str | None, fallback: str):
@@ -185,6 +212,7 @@ def classify_message(msg):
         title = caption or f"Voice message {dt}"
         return {
             "file_id": msg.voice.file_id,
+            "file_size": getattr(msg.voice, "file_size", None),
             "kind": "audio",
             "title": title,
             "storage_name": build_storage_name("voice", None, msg.voice.mime_type, ".ogg"),
@@ -195,6 +223,7 @@ def classify_message(msg):
         prefix = msg.audio.file_name or title
         return {
             "file_id": msg.audio.file_id,
+            "file_size": getattr(msg.audio, "file_size", None),
             "kind": "audio",
             "title": title,
             "storage_name": build_storage_name(prefix, msg.audio.file_name, msg.audio.mime_type, ".mp3"),
@@ -205,6 +234,7 @@ def classify_message(msg):
         prefix = msg.video.file_name or title
         return {
             "file_id": msg.video.file_id,
+            "file_size": getattr(msg.video, "file_size", None),
             "kind": "video",
             "title": title,
             "storage_name": build_storage_name(prefix, msg.video.file_name, msg.video.mime_type, ".mp4"),
@@ -215,6 +245,7 @@ def classify_message(msg):
         title = caption or f"Video note {dt}"
         return {
             "file_id": msg.video_note.file_id,
+            "file_size": getattr(msg.video_note, "file_size", None),
             "kind": "video",
             "title": title,
             "storage_name": build_storage_name("video_note", None, "video/mp4", ".mp4"),
@@ -236,6 +267,7 @@ def classify_message(msg):
         prefix = msg.document.file_name or title
         return {
             "file_id": msg.document.file_id,
+            "file_size": getattr(msg.document, "file_size", None),
             "kind": kind,
             "title": title,
             "storage_name": build_storage_name(prefix, msg.document.file_name, mime_type, fallback_ext),
@@ -248,10 +280,53 @@ async def download_media_item(bot, msg):
     media = classify_message(msg)
     if not media:
         return None
+    file_size = media.get("file_size")
+    if not TELEGRAM_LOCAL_MODE and file_size and file_size > TELEGRAM_DOWNLOAD_SIZE_LIMIT:
+        raise MediaDownloadError(
+            (
+                f"⚠ Upload is {format_bytes(file_size)}. "
+                "The standard Telegram Bot API can only download files up to 20 MB. "
+                "For larger uploads, run a local telegram-bot-api server and set "
+                "`TELEGRAM_LOCAL_MODE=1` plus `TELEGRAM_BASE_URL`/`TELEGRAM_BASE_FILE_URL`."
+            ),
+            detail=(
+                f"telegram download limit exceeded size={file_size} "
+                f"limit={TELEGRAM_DOWNLOAD_SIZE_LIMIT} local_mode={TELEGRAM_LOCAL_MODE}"
+            ),
+        )
     ensure_upload_dir()
     target_path = os.path.join(UPLOAD_DIR, media["storage_name"])
-    tg_file = await bot.get_file(media["file_id"])
-    await tg_file.download_to_drive(custom_path=target_path)
+    try:
+        tg_file = await bot.get_file(
+            media["file_id"],
+            read_timeout=TELEGRAM_GET_FILE_READ_TIMEOUT,
+            write_timeout=TELEGRAM_GET_FILE_WRITE_TIMEOUT,
+            connect_timeout=TELEGRAM_GET_FILE_CONNECT_TIMEOUT,
+            pool_timeout=TELEGRAM_GET_FILE_POOL_TIMEOUT,
+        )
+        file_path = getattr(tg_file, "file_path", None)
+        if TELEGRAM_LOCAL_MODE and file_path and os.path.isabs(file_path):
+            if not os.path.exists(file_path):
+                raise MediaDownloadError(
+                    "⚠ Upload could not be processed. The local Telegram Bot API file store is not mounted in the bot container.",
+                    detail=f"local telegram file missing path={file_path}",
+                )
+            await to_thread(shutil.copyfile, file_path, target_path)
+        else:
+            await tg_file.download_to_drive(custom_path=target_path)
+    except Exception as e:
+        err_txt = str(e).lower()
+        if "file is too big" in err_txt:
+            raise MediaDownloadError(
+                (
+                    f"⚠ Upload is {format_bytes(file_size)}. "
+                    "Telegram rejected the download because the bot is using the standard Bot API. "
+                    "For larger uploads, run a local telegram-bot-api server and set "
+                    "`TELEGRAM_LOCAL_MODE=1` plus `TELEGRAM_BASE_URL`/`TELEGRAM_BASE_FILE_URL`."
+                ),
+                detail=f"telegram get_file failed size={file_size} err={e}",
+            ) from e
+        raise
     target_path = await to_thread(maybe_faststart_mp4, target_path, media["kind"])
     item = register_temp_media(target_path, media["title"])
     item["kind"] = media["kind"]

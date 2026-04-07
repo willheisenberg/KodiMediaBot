@@ -1,0 +1,44 @@
+services:
+  telegram-bot-api:
+    image: aiogram/telegram-bot-api:latest
+    container_name: telegram-bot-api
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      TELEGRAM_API_ID: "${TELEGRAM_API_ID}"
+      TELEGRAM_API_HASH: "${TELEGRAM_API_HASH}"
+      TELEGRAM_LOCAL: "1"
+      TELEGRAM_HTTP_PORT: "8081"
+    volumes:
+      - telegram-bot-api-data:/var/lib/telegram-bot-api
+
+  kodi-media-bot:
+    build: .
+    container_name: kodi-media-bot
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - telegram-bot-api
+    environment:
+      TG_TOKEN: "${TG_TOKEN}"
+      KODI_HOST: "${KODI_HOST}"
+      KODI_PORT: "${KODI_PORT:-8080}"
+      KODI_WS_PORT: "${KODI_WS_PORT:-9090}"
+      KODI_USER: "${KODI_USER}"
+      KODI_PASS: "${KODI_PASS}"
+      CEC_HOST: "${CEC_HOST}"
+      DENON_HOST: "${DENON_HOST}"
+      DEBUG_WS: "${DEBUG_WS:-1}"
+      SC_CLIENT_ID: "${SC_CLIENT_ID}"
+      MEDIA_BASE_URL: "${MEDIA_BASE_URL}"
+      TELEGRAM_LOCAL_MODE: "1"
+      TELEGRAM_BASE_URL: "http://127.0.0.1:8081/bot"
+      TELEGRAM_BASE_FILE_URL: "http://127.0.0.1:8081/file/bot"
+    volumes:
+      - /storage/docker/partyqueue:/root/.ssh:ro
+      - /storage/docker/partyqueue/playlists:/data/playlists
+      - /storage/docker/partyqueue/uploads:/data/uploads
+      - telegram-bot-api-data:/var/lib/telegram-bot-api:ro
+
+volumes:
+  telegram-bot-api-data:
