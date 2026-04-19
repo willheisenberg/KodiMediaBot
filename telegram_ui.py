@@ -399,6 +399,29 @@ def activate_prompt(ctx, chat_id, user_id, state_key, msg_key, message_id, extra
     PROMPT_TIMEOUT_TASKS[_prompt_timeout_key(chat_id, user_id, state_key)] = task
 
 
+def media_prompt_active(user_data):
+    return any(
+        user_data.get(key)
+        for key in (
+            "await_media_type",
+            "await_movie_index",
+            "await_show_index",
+            "await_episode_index",
+        )
+    )
+
+
+def av_prompt_active(user_data):
+    return any(
+        user_data.get(key)
+        for key in (
+            "await_av_action",
+            "await_audio_index",
+            "await_subtitle_index",
+        )
+    )
+
+
 def cancel_pending_timeout(user_id):
     task = PENDING_TIMEOUT_TASKS.pop(user_id, None)
     if task is not None and not task.done():
@@ -1095,7 +1118,7 @@ async def on_button(update, ctx):
             sent = True
             skip_cleanup = True
     elif cmd == "media:ask":
-        if ctx.user_data.get("await_media_type"):
+        if media_prompt_active(ctx.user_data):
             return
         msg = await send_and_track(
             ctx,
@@ -1106,7 +1129,7 @@ async def on_button(update, ctx):
         sent = True
         skip_cleanup = True
     elif cmd == "av:ask":
-        if ctx.user_data.get("await_av_action"):
+        if av_prompt_active(ctx.user_data):
             return
         av_state = await asyncio.to_thread(kodi_api.get_av_settings)
         if av_state.get("playerid") is None:
