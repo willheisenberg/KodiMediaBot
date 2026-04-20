@@ -189,6 +189,25 @@ def play_favourite_target(target):
     return "error" not in res
 
 
+def play_picture(file_path):
+    if not file_path:
+        return False
+    stop_player_and_clear_playlists()
+    res = kodi_call("Player.Open", {"item": {"file": file_path}})
+    return "error" not in res
+
+
+def play_picture_slideshow(directory_path):
+    if not directory_path:
+        return False
+    stop_player_and_clear_playlists()
+    res = kodi_call(
+        "Player.Open",
+        {"item": {"directory": directory_path, "media": "pictures", "recursive": False}},
+    )
+    return "error" not in res
+
+
 # Return the first active Kodi player, if any.
 def get_active_player():
     players = get_active_players()
@@ -204,6 +223,28 @@ def get_active_playerid():
 # Fetch the list of active Kodi players.
 def get_active_players():
     return kodi_call("Player.GetActivePlayers").get("result", [])
+
+
+def is_picture_player_active():
+    return any(p.get("type") == "picture" for p in get_active_players())
+
+
+def wait_for_picture_player_active(timeout_s=2.0, interval_s=0.1):
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if is_picture_player_active():
+            return True
+        time.sleep(interval_s)
+    return is_picture_player_active()
+
+
+async def cleanup_image_session_after_stop_delay(stopped_file, delay_s=2.0):
+    await asyncio.sleep(delay_s)
+    if not telegram_media.is_active_image_session_media(stopped_file):
+        return
+    picture_active = await asyncio.to_thread(is_picture_player_active)
+    if not picture_active:
+        await asyncio.to_thread(telegram_media.cleanup_temp_media, stopped_file)
 
 
 def get_av_settings():
@@ -1571,7 +1612,13 @@ async def kodi_ws_listener():
                         WS_PLAYING = False
                         WS_STATE = "stopped"
                         WS_LAST_EVENT_TS = time.time()
-                        telegram_media.cleanup_temp_media(LAST_WS_PLAYING_FILE)
+                        data = msg.get("params", {}).get("data", {}) or {}
+                        item_params = data.get("item", {}) or {}
+                        stopped_file = item_params.get("file") or LAST_WS_PLAYING_FILE
+                        if telegram_media.is_active_image_session_media(stopped_file):
+                            asyncio.create_task(cleanup_image_session_after_stop_delay(stopped_file))
+                        else:
+                            telegram_media.cleanup_temp_media(stopped_file)
                         LAST_WS_PLAYING_FILE = ""
                         qs.schedule_now_playing_refresh()
         except Exception:

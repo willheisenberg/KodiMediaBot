@@ -15,6 +15,7 @@ from yt_dlp import YoutubeDL
 
 
 UPLOAD_DIR = os.environ.get("UPLOAD_DIR", "/data/uploads")
+KODI_UPLOAD_DIR = "/storage/docker/partyqueue/uploads"
 MEDIA_SERVER_HOST = os.environ.get("MEDIA_SERVER_HOST", "0.0.0.0")
 MEDIA_SERVER_PORT = int(os.environ.get("MEDIA_SERVER_PORT", "8765"))
 MEDIA_SERVER_SCHEME = os.environ.get("MEDIA_SERVER_SCHEME", "http")
@@ -38,6 +39,9 @@ _SERVER_LOCK = threading.Lock()
 _SERVER_STARTED = False
 _TEMP_MEDIA_LOCK = threading.Lock()
 _TEMP_MEDIA = {}
+_TEMP_MEDIA_ENTRIES = {}
+_IMAGE_SESSION_LOCK = threading.Lock()
+_IMAGE_SESSION = None
 
 
 class MediaDownloadError(Exception):
@@ -49,6 +53,18 @@ class MediaDownloadError(Exception):
 
 def ensure_upload_dir():
     os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+
+def resolve_kodi_media_path(local_path: str):
+    abs_local = os.path.abspath(local_path)
+    abs_upload = os.path.abspath(UPLOAD_DIR)
+    try:
+        rel = os.path.relpath(abs_local, abs_upload)
+    except Exception:
+        return local_path
+    if rel.startswith(".."):
+        return local_path
+    return os.path.normpath(os.path.join(KODI_UPLOAD_DIR, rel))
 
 
 def resolve_media_base_url():
@@ -115,17 +131,142 @@ def build_storage_name(prefix: str, file_name: str | None, mime_type: str | None
 def register_temp_media(path: str, title: str):
     file_name = os.path.basename(path)
     media_url = build_media_url(file_name)
-    with _TEMP_MEDIA_LOCK:
-        _TEMP_MEDIA[normalize_media_url(media_url)] = {
-            "path": path,
-            "title": title,
-        }
+    register_temp_entry(
+        keys=(normalize_media_url(media_url), path),
+        title=title,
+        kind="video",
+        cleanup_paths=(path,),
+    )
     return {
         "title": title,
         "url": media_url,
         "kind": "video",
         "link": media_url,
     }
+
+
+def register_temp_entry(keys, title: str, kind: str, cleanup_paths=(), cleanup_dirs=()):
+    entry = {
+        "title": title,
+        "kind": kind,
+        "keys": set(),
+        "cleanup_paths": tuple(cleanup_paths or ()),
+        "cleanup_dirs": tuple(cleanup_dirs or ()),
+    }
+    entry_id = id(entry)
+    with _TEMP_MEDIA_LOCK:
+        _TEMP_MEDIA_ENTRIES[entry_id] = entry
+        add_temp_entry_keys(entry_id, keys)
+    return entry
+
+
+def add_temp_entry_keys(entry_id, keys):
+    entry = _TEMP_MEDIA_ENTRIES.get(entry_id)
+    if not entry:
+        return
+    for key in keys:
+        if not key:
+            continue
+        norm = normalize_media_key(key)
+        _TEMP_MEDIA[norm] = entry_id
+        entry["keys"].add(norm)
+
+
+def normalize_media_key(key: str):
+    if not key:
+        return ""
+    if "://" in key:
+        return normalize_media_url(key)
+    return os.path.normpath(key)
+
+
+def _create_image_session_dir():
+    ensure_upload_dir()
+    ts = int(time.time() * 1000)
+    local_dir = os.path.join(UPLOAD_DIR, f"slideshow_{ts}")
+    os.makedirs(local_dir, exist_ok=True)
+    return {
+        "local_dir": local_dir,
+        "kodi_dir": resolve_kodi_media_path(local_dir),
+        "count": 0,
+        "image_paths": [],
+        "title": "Photo slideshow",
+    }
+
+
+def _stage_image_into_session(session, item):
+    src_path = item.get("path") or ""
+    if not src_path or not os.path.exists(src_path):
+        raise FileNotFoundError(f"Image source missing path={src_path}")
+    next_index = session["count"] + 1
+    base = os.path.basename(src_path)
+    name, ext = os.path.splitext(base)
+    dst_name = f"{next_index:03d}_{sanitize_stem(name)}{ext.lower()}"
+    dst_path = os.path.join(session["local_dir"], dst_name)
+    os.replace(src_path, dst_path)
+    session["count"] = next_index
+    session["image_paths"].append(dst_path)
+    if item.get("title") and session["title"] == "Photo slideshow":
+        session["title"] = item["title"]
+    return dst_path
+
+
+def start_image_session(item):
+    cleanup_active_image_session()
+    session = _create_image_session_dir()
+    try:
+        _stage_image_into_session(session, item)
+    except Exception:
+        shutil.rmtree(session["local_dir"], ignore_errors=True)
+        raise
+    entry = register_temp_entry(
+        keys=(session["local_dir"], session["kodi_dir"], session["image_paths"][0], resolve_kodi_media_path(session["image_paths"][0])),
+        title=session["title"],
+        kind="image",
+        cleanup_dirs=(session["local_dir"],),
+    )
+    session["entry_id"] = id(entry)
+    with _IMAGE_SESSION_LOCK:
+        global _IMAGE_SESSION
+        _IMAGE_SESSION = session
+    return get_image_session()
+
+
+def add_image_to_session(item):
+    with _IMAGE_SESSION_LOCK:
+        session = _IMAGE_SESSION
+    if session is None:
+        return start_image_session(item)
+    dst_path = _stage_image_into_session(session, item)
+    kodi_path = resolve_kodi_media_path(dst_path)
+    with _TEMP_MEDIA_LOCK:
+        add_temp_entry_keys(session["entry_id"], (dst_path, kodi_path))
+        entry = _TEMP_MEDIA_ENTRIES.get(session["entry_id"])
+        if entry:
+            entry["title"] = session["title"]
+    return get_image_session()
+
+
+def get_image_session():
+    with _IMAGE_SESSION_LOCK:
+        if _IMAGE_SESSION is None:
+            return None
+        return {
+            "local_dir": _IMAGE_SESSION["local_dir"],
+            "kodi_dir": _IMAGE_SESSION["kodi_dir"],
+            "count": _IMAGE_SESSION["count"],
+            "image_paths": list(_IMAGE_SESSION["image_paths"]),
+            "title": _IMAGE_SESSION["title"],
+            "entry_id": _IMAGE_SESSION["entry_id"],
+        }
+
+
+def cleanup_active_image_session():
+    with _IMAGE_SESSION_LOCK:
+        session = _IMAGE_SESSION
+    if not session:
+        return False
+    return cleanup_temp_media(session["kodi_dir"])
 
 
 def extract_first_url(text: str):
@@ -251,6 +392,18 @@ def classify_message(msg):
             "storage_name": build_storage_name("video_note", None, "video/mp4", ".mp4"),
         }
 
+    if msg.photo:
+        dt = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+        title = caption or f"Photo {dt}"
+        largest = msg.photo[-1]
+        return {
+            "file_id": largest.file_id,
+            "file_size": getattr(largest, "file_size", None),
+            "kind": "image",
+            "title": title,
+            "storage_name": build_storage_name("photo", None, "image/jpeg", ".jpg"),
+        }
+
     if msg.document:
         mime_type = (msg.document.mime_type or "").lower()
         if mime_type.startswith("video/"):
@@ -261,6 +414,10 @@ def classify_message(msg):
             kind = "audio"
             fallback_ext = ".ogg"
             default_title = "Audio file"
+        elif mime_type.startswith("image/"):
+            kind = "image"
+            fallback_ext = ".jpg"
+            default_title = "Image file"
         else:
             return None
         title = caption or msg.document.file_name or default_title
@@ -328,6 +485,13 @@ async def download_media_item(bot, msg):
             ) from e
         raise
     target_path = await to_thread(maybe_faststart_mp4, target_path, media["kind"])
+    if media["kind"] == "image":
+        return {
+            "title": media["title"],
+            "kind": "image",
+            "path": target_path,
+            "kodi_path": resolve_kodi_media_path(target_path),
+        }
     item = register_temp_media(target_path, media["title"])
     item["kind"] = media["kind"]
     return item
@@ -375,26 +539,57 @@ async def download_social_video_item(text: str):
 
 def get_temp_media_title(url: str):
     with _TEMP_MEDIA_LOCK:
-        entry = _TEMP_MEDIA.get(normalize_media_url(url))
+        entry_id = _TEMP_MEDIA.get(normalize_media_key(url))
+        entry = _TEMP_MEDIA_ENTRIES.get(entry_id)
     if not entry:
         return None
     return entry.get("title")
 
 
-def cleanup_temp_media(url: str):
-    norm_url = normalize_media_url(url)
+def is_active_image_session_media(url: str):
     with _TEMP_MEDIA_LOCK:
-        entry = _TEMP_MEDIA.pop(norm_url, None)
-    if not entry:
+        entry_id = _TEMP_MEDIA.get(normalize_media_key(url))
+    if entry_id is None:
         return False
-    path = entry.get("path")
+    with _IMAGE_SESSION_LOCK:
+        return bool(_IMAGE_SESSION and _IMAGE_SESSION.get("entry_id") == entry_id)
+
+
+def cleanup_temp_media(url: str):
+    norm_url = normalize_media_key(url)
+    with _TEMP_MEDIA_LOCK:
+        entry_id = _TEMP_MEDIA.pop(norm_url, None)
+        entry = _TEMP_MEDIA_ENTRIES.pop(entry_id, None) if entry_id is not None else None
+        if entry_id is not None:
+            stale_keys = [key for key, value in _TEMP_MEDIA.items() if value == entry_id]
+            for key in stale_keys:
+                _TEMP_MEDIA.pop(key, None)
+    if entry_id is not None:
+        with _IMAGE_SESSION_LOCK:
+            global _IMAGE_SESSION
+            if _IMAGE_SESSION and _IMAGE_SESSION.get("entry_id") == entry_id:
+                _IMAGE_SESSION = None
+    if entry_id is None or not entry:
+        return False
+    cleanup_paths = entry.get("cleanup_paths") or ()
+    cleanup_dirs = entry.get("cleanup_dirs") or ()
     try:
-        if path and os.path.exists(path):
-            os.remove(path)
-        print(f"TEMP MEDIA cleaned url={norm_url} path={path}", flush=True)
+        for path in cleanup_paths:
+            if path and os.path.exists(path):
+                os.remove(path)
+        for path in cleanup_dirs:
+            if path and os.path.exists(path):
+                shutil.rmtree(path, ignore_errors=False)
+        print(
+            f"TEMP MEDIA cleaned key={norm_url} paths={list(cleanup_paths)} dirs={list(cleanup_dirs)}",
+            flush=True,
+        )
         return True
     except Exception as e:
-        print(f"TEMP MEDIA cleanup fail url={norm_url} path={path} err={e}", flush=True)
+        print(
+            f"TEMP MEDIA cleanup fail key={norm_url} paths={list(cleanup_paths)} dirs={list(cleanup_dirs)} err={e}",
+            flush=True,
+        )
         return False
 
 
@@ -413,11 +608,18 @@ def cleanup_stale_temp_media():
             if os.path.isfile(path):
                 os.remove(path)
                 removed += 1
+            elif os.path.isdir(path):
+                shutil.rmtree(path)
+                removed += 1
         except Exception as e:
             failed += 1
             print(f"TEMP MEDIA startup cleanup fail path={path} err={e}", flush=True)
     with _TEMP_MEDIA_LOCK:
         _TEMP_MEDIA.clear()
+        _TEMP_MEDIA_ENTRIES.clear()
+    with _IMAGE_SESSION_LOCK:
+        global _IMAGE_SESSION
+        _IMAGE_SESSION = None
     print(
         f"TEMP MEDIA startup cleanup dir={UPLOAD_DIR} removed={removed} failed={failed}",
         flush=True,

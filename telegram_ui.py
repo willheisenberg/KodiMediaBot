@@ -21,6 +21,9 @@ PLAYLIST_DIR = os.environ.get("PLAYLIST_DIR", "/data/playlists")
 UI_STATE_FILE = os.environ.get("UI_STATE_FILE", "/data/telegram_ui_state.json")
 
 pending = {}
+IMAGE_GROUPS = {}
+IMAGE_GROUP_TASKS = {}
+IMAGE_GROUP_DELAY_SECONDS = 1.2
 
 LAST_BOT_ID = {}
 PREV_BOT_ID = {}
@@ -960,6 +963,67 @@ async def warn_and_cleanup_chat(ctx, chat_id, user_msg_id, delay=5):
         await telegram_request(ctx.bot.delete_message, chat_id=chat_id, message_id=user_msg_id)
     except Exception as e:
         print(f"DELETE FAIL chat_id={chat_id} message_id={user_msg_id} err={e}", flush=True)
+
+
+async def play_image_items(ctx, chat_id, message_ids, items):
+    created_session = False
+    try:
+        session = await asyncio.to_thread(telegram_media.get_image_session)
+        picture_active = await asyncio.to_thread(kodi_api.is_picture_player_active)
+        if session and not picture_active:
+            await asyncio.to_thread(telegram_media.cleanup_active_image_session)
+            session = None
+        if session is None:
+            await asyncio.to_thread(queue_state.clear_bot_playback_state)
+            session = await asyncio.to_thread(telegram_media.start_image_session, items[0])
+            created_session = True
+            start_index = 1
+        else:
+            start_index = 0
+        for item in items[start_index:]:
+            session = await asyncio.to_thread(telegram_media.add_image_to_session, item)
+        if session["count"] > 1:
+            ok = await asyncio.to_thread(kodi_api.play_picture_slideshow, session["kodi_dir"])
+        else:
+            kodi_image_path = telegram_media.resolve_kodi_media_path(session["image_paths"][0])
+            ok = await asyncio.to_thread(kodi_api.play_picture, kodi_image_path)
+        if not ok:
+            ok = await asyncio.to_thread(kodi_api.wait_for_picture_player_active)
+        if not ok:
+            raise RuntimeError("Kodi rejected picture playback.")
+    except Exception as e:
+        print(
+            f"IMAGE PLAY FAIL chat_id={chat_id} message_ids={message_ids} count={len(items)} err={e}",
+            flush=True,
+        )
+        if created_session:
+            telegram_media.cleanup_active_image_session()
+        else:
+            for item in items:
+                try:
+                    path = item.get("path")
+                    if path and os.path.exists(path):
+                        os.remove(path)
+                except Exception:
+                    pass
+        await send_and_track(ctx, chat_id, "⚠ Image upload could not be displayed.")
+        schedule_cleanup(ctx, chat_id, LAST_BOT_ID.get(chat_id))
+        return
+    await delete_message_if_present(ctx, chat_id, message_ids)
+    await update_now_playing_message(ctx, chat_id)
+
+
+async def _flush_image_group(ctx, chat_id, group_key):
+    try:
+        await asyncio.sleep(IMAGE_GROUP_DELAY_SECONDS)
+        bucket = IMAGE_GROUPS.pop(group_key, None)
+        if not bucket:
+            return
+        await play_image_items(ctx, chat_id, bucket["message_ids"], bucket["items"])
+    finally:
+        current = asyncio.current_task()
+        if IMAGE_GROUP_TASKS.get(group_key) is current:
+            IMAGE_GROUP_TASKS.pop(group_key, None)
 
 
 # Handle inline keyboard button callbacks.
@@ -2098,6 +2162,7 @@ async def handle_nontext(update, ctx):
     if not msg:
         return
     chat_id = update.effective_chat.id
+    media_group_id = getattr(msg, "media_group_id", None)
 
     try:
         item = await telegram_media.download_media_item(ctx.bot, msg)
@@ -2109,6 +2174,20 @@ async def handle_nontext(update, ctx):
         return
     if item is None:
         await warn_and_cleanup_chat(ctx, chat_id, msg.message_id)
+        return
+
+    if item.get("kind") == "image":
+        if media_group_id:
+            group_key = (chat_id, media_group_id)
+            bucket = IMAGE_GROUPS.setdefault(group_key, {"items": [], "message_ids": []})
+            bucket["items"].append(item)
+            bucket["message_ids"].append(msg.message_id)
+            task = IMAGE_GROUP_TASKS.pop(group_key, None)
+            if task is not None and not task.done():
+                task.cancel()
+            IMAGE_GROUP_TASKS[group_key] = ctx.application.create_task(_flush_image_group(ctx, chat_id, group_key))
+            return
+        await play_image_items(ctx, chat_id, [msg.message_id], [item])
         return
 
     try:
@@ -2276,6 +2355,9 @@ def run(token: str):
         for task in list(PENDING_TIMEOUT_TASKS.values()):
             if task is not None and not task.done():
                 task.cancel()
+        for task in list(IMAGE_GROUP_TASKS.values()):
+            if task is not None and not task.done():
+                task.cancel()
         for task in (LIST_REFRESH_TASK, WS_LISTENER_TASK):
             if task is not None and not task.done():
                 task.cancel()
@@ -2291,6 +2373,8 @@ def run(token: str):
         WS_LISTENER_TASK = None
         PROMPT_TIMEOUT_TASKS.clear()
         PENDING_TIMEOUT_TASKS.clear()
+        IMAGE_GROUPS.clear()
+        IMAGE_GROUP_TASKS.clear()
         APP_INSTANCE = None
         MAIN_LOOP = None
     app.post_shutdown = _post_shutdown

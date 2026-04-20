@@ -9,6 +9,7 @@ from pytube import Playlist, YouTube
 from yt_dlp import YoutubeDL
 
 import kodi_api
+import telegram_media
 
 # Queue and playback state
 QUEUE = []
@@ -197,6 +198,7 @@ def seek_when_player_ready(t, context=""):
 # Start playback of a queue item via Kodi.
 def play_item(item: dict, resume_time=None):
     global BOT_EXPECTING_WS
+    telegram_media.cleanup_active_image_session()
     kodi_api.stop_all_players()
     kodi_api.kodi_clear_all_playlists()
     kind = item.get("kind", "video")
@@ -246,6 +248,7 @@ def resume_item_at_time(item: dict, t):
 def hard_stop_and_clear():
     global AUTOPLAY_ENABLED, CURRENT_INDEX, DISPLAY_INDEX, NEXT_INDEX, LAST_PROGRESS_TS, LAST_PROGRESS_TIME, LAST_PROGRESS_TOTAL, LAST_PROGRESS_INDEX, EXTERNAL_PLAYBACK, BOT_EXPECTING_WS
     AUTOPLAY_ENABLED = False
+    telegram_media.cleanup_active_image_session()
     kodi_api.stop_all_players()
     kodi_api.kodi_clear_all_playlists()
     CURRENT_INDEX = None
