@@ -1460,19 +1460,19 @@ def list_tvshow_episodes(tvshowid, showtitle=""):
     return []
 
 
-def play_movie(movieid):
+def play_movie(movieid, resume=False):
     if movieid is None:
         return False
     stop_player_and_clear_playlists()
-    res = kodi_call("Player.Open", {"item": {"movieid": movieid}})
+    res = kodi_call("Player.Open", {"item": {"movieid": movieid}, "options": {"resume": bool(resume)}})
     return "error" not in res
 
 
-def play_episode(episodeid):
+def play_episode(episodeid, resume=False):
     if episodeid is None:
         return False
     stop_player_and_clear_playlists()
-    res = kodi_call("Player.Open", {"item": {"episodeid": episodeid}})
+    res = kodi_call("Player.Open", {"item": {"episodeid": episodeid}, "options": {"resume": bool(resume)}})
     return "error" not in res
 
 

@@ -408,8 +408,10 @@ def media_prompt_active(user_data):
         for key in (
             "await_media_type",
             "await_movie_index",
+            "await_movie_start_mode",
             "await_show_index",
             "await_episode_index",
+            "await_episode_start_mode",
         )
     )
 
@@ -1540,16 +1542,52 @@ async def handle_text(update, ctx):
             i = int(txt) - 1
             if 0 <= i < len(movies):
                 movie = movies[i]
-                ok = await asyncio.to_thread(kodi_api.play_movie, movie.get("movieid"))
-                if ok:
-                    queue_state.clear_bot_playback_state()
-                    await send_and_track(ctx, chat_id, f"🎬 Playing: {movie.get('title')}")
-                else:
-                    await send_and_track(ctx, chat_id, "⚠ Movie could not be played.")
+                msg = await send_and_track(
+                    ctx,
+                    chat_id,
+                    "🎬 Start movie\n1. From Beginning\n2. Continue\nq = cancel",
+                )
+                ctx.user_data["media_movie"] = movie
+                activate_prompt(
+                    ctx,
+                    chat_id,
+                    user_id,
+                    "await_movie_start_mode",
+                    "await_movie_start_mode_msg_id",
+                    msg.message_id,
+                    extra_keys=("media_movie",),
+                )
+                skip_cleanup = True
             else:
                 await send_and_track(ctx, chat_id, "That number does not exist.")
         else:
             await send_and_track(ctx, chat_id, "Please enter a number only (or q to cancel).")
+        sent = True
+        await delete_message_if_present(ctx, chat_id, prompt_id)
+        if sent and not skip_cleanup:
+            schedule_cleanup(ctx, chat_id, prev_id)
+            await update_list_message(ctx, chat_id)
+            await update_now_playing_message(ctx, chat_id)
+        return
+
+    if ctx.user_data.get("await_movie_start_mode"):
+        cancel_prompt_timeout(chat_id, user_id, "await_movie_start_mode")
+        ctx.user_data["await_movie_start_mode"] = False
+        prompt_id = ctx.user_data.pop("await_movie_start_mode_msg_id", None)
+        movie = ctx.user_data.pop("media_movie", {})
+        await delete_message_if_present(ctx, chat_id, msg_id)
+        if txt_lower == "q":
+            await send_and_track(ctx, chat_id, "Cancelled.")
+        elif txt in ("1", "2"):
+            resume = txt == "2"
+            ok = await asyncio.to_thread(kodi_api.play_movie, movie.get("movieid"), resume)
+            if ok:
+                queue_state.clear_bot_playback_state()
+                await send_and_track(ctx, chat_id, f"🎬 Playing: {movie.get('title')}")
+            else:
+                await send_and_track(ctx, chat_id, "⚠ Movie could not be played.")
+        else:
+            await send_and_track(ctx, chat_id, "Please enter 1 or 2 (or q to cancel).")
         sent = True
         await delete_message_if_present(ctx, chat_id, prompt_id)
         if sent:
@@ -1692,12 +1730,22 @@ async def handle_text(update, ctx):
             i = int(txt) - 1
             if 0 <= i < len(episodes):
                 episode = episodes[i]
-                ok = await asyncio.to_thread(kodi_api.play_episode, episode.get("episodeid"))
-                if ok:
-                    queue_state.clear_bot_playback_state()
-                    await send_and_track(ctx, chat_id, f"📺 Playing: {episode.get('title')}")
-                else:
-                    await send_and_track(ctx, chat_id, "⚠ Episode could not be played.")
+                msg = await send_and_track(
+                    ctx,
+                    chat_id,
+                    "📺 Start episode\n1. From Beginning\n2. Continue\nq = cancel",
+                )
+                ctx.user_data["media_episode"] = episode
+                activate_prompt(
+                    ctx,
+                    chat_id,
+                    user_id,
+                    "await_episode_start_mode",
+                    "await_episode_start_mode_msg_id",
+                    msg.message_id,
+                    extra_keys=("media_episode",),
+                )
+                skip_cleanup = True
             elif i == len(episodes):
                 ok = await asyncio.to_thread(
                     kodi_api.play_all_episodes,
@@ -1712,6 +1760,32 @@ async def handle_text(update, ctx):
                 await send_and_track(ctx, chat_id, "That number does not exist.")
         else:
             await send_and_track(ctx, chat_id, "Please enter a number only (or q to cancel).")
+        sent = True
+        await delete_message_if_present(ctx, chat_id, prompt_id)
+        if sent and not skip_cleanup:
+            schedule_cleanup(ctx, chat_id, prev_id)
+            await update_list_message(ctx, chat_id)
+            await update_now_playing_message(ctx, chat_id)
+        return
+
+    if ctx.user_data.get("await_episode_start_mode"):
+        cancel_prompt_timeout(chat_id, user_id, "await_episode_start_mode")
+        ctx.user_data["await_episode_start_mode"] = False
+        prompt_id = ctx.user_data.pop("await_episode_start_mode_msg_id", None)
+        episode = ctx.user_data.pop("media_episode", {})
+        await delete_message_if_present(ctx, chat_id, msg_id)
+        if txt_lower == "q":
+            await send_and_track(ctx, chat_id, "Cancelled.")
+        elif txt in ("1", "2"):
+            resume = txt == "2"
+            ok = await asyncio.to_thread(kodi_api.play_episode, episode.get("episodeid"), resume)
+            if ok:
+                queue_state.clear_bot_playback_state()
+                await send_and_track(ctx, chat_id, f"📺 Playing: {episode.get('title')}")
+            else:
+                await send_and_track(ctx, chat_id, "⚠ Episode could not be played.")
+        else:
+            await send_and_track(ctx, chat_id, "Please enter 1 or 2 (or q to cancel).")
         sent = True
         await delete_message_if_present(ctx, chat_id, prompt_id)
         if sent:
