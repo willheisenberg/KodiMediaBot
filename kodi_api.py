@@ -1402,6 +1402,15 @@ def build_imdb_link(item):
     return ""
 
 
+def scan_video_library():
+    res = kodi_call("VideoLibrary.Scan")
+    if res.get("error"):
+        print(f"VIDEO LIBRARY SCAN FAIL error={res['error']}", flush=True)
+        return False
+    print(f"VIDEO LIBRARY SCAN OK res={res}", flush=True)
+    return True
+
+
 def list_movies():
     res = kodi_call(
         "VideoLibrary.GetMovies",

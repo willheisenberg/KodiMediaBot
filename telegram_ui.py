@@ -1186,6 +1186,9 @@ async def on_button(update, ctx):
     elif cmd == "media:ask":
         if media_prompt_active(ctx.user_data):
             return
+        scan_ok = await asyncio.to_thread(kodi_api.scan_video_library)
+        if not scan_ok:
+            await send_and_track(ctx, chat_id, "⚠ Library scan RPC failed.")
         msg = await send_and_track(
             ctx,
             chat_id,
