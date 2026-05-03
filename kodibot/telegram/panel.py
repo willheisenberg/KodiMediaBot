@@ -347,11 +347,12 @@ async def get_now_playing_text():
     """Assemble the now-playing display text. Returns (html_text, progress_text)."""
     name = None
     link = None
+    qitem = None
     with queue_state.LOCK:
         if not queue_state.EXTERNAL_PLAYBACK and queue_state.DISPLAY_INDEX is not None and 0 <= queue_state.DISPLAY_INDEX < len(queue_state.QUEUE):
-            it = queue_state.QUEUE[queue_state.DISPLAY_INDEX]
-            name = it.get("title") or None
-            link = it.get("link")
+            qitem = queue_state.QUEUE[queue_state.DISPLAY_INDEX]
+            name = qitem.get("title") or None
+            link = qitem.get("link")
 
     players = await kodi_api.kodi_call_async("Player.GetActivePlayers")
     players = (players or {}).get("result", [])
@@ -390,7 +391,8 @@ async def get_now_playing_text():
         {"playerid": pid, "properties": ["time", "totaltime"]}
     )).get("result", {})
 
-    if not name:
+    item = {}
+    if qitem or not name:
         item = (await kodi_api.kodi_call_async(
             "Player.GetItem",
             {
@@ -418,16 +420,20 @@ async def get_now_playing_text():
         if not item and ws_title:
             item = {"type": ws_type, "title": ws_title}
 
-        with queue_state.LOCK:
-            if queue_state.DISPLAY_INDEX is not None and 0 <= queue_state.DISPLAY_INDEX < len(queue_state.QUEUE):
-                qitem = queue_state.QUEUE[queue_state.DISPLAY_INDEX]
+        item_has_identity = bool(
+            item and any(item.get(key) for key in ("file", "title", "label", "channel"))
+        )
+        if qitem and item_has_identity:
+            if kodi_api.kodi_item_matches_queue(item, qitem):
+                queue_state.EXTERNAL_PLAYBACK = False
+                name = qitem.get("title") or None
+                link = qitem.get("link")
             else:
-                qitem = None
-        if qitem and kodi_api.kodi_item_matches_queue(item, qitem):
-            queue_state.EXTERNAL_PLAYBACK = False
-            name = qitem.get("title") or None
-            link = qitem.get("link")
-        else:
+                queue_state.clear_bot_playback_state()
+                name = None
+                link = None
+
+        if not name:
             name, link = kodi_api.external_item_display(item)
         if not name:
             name = "Unknown"
