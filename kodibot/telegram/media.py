@@ -1,3 +1,5 @@
+import json
+import logging
 import mimetypes
 import os
 import posixpath
@@ -13,19 +15,9 @@ from urllib.parse import quote, urlparse
 
 from yt_dlp import YoutubeDL
 
+from kodibot.config import CFG
 
-UPLOAD_DIR = os.environ.get("UPLOAD_DIR", "/data/uploads")
-KODI_UPLOAD_DIR = "/storage/docker/partyqueue/uploads"
-MEDIA_SERVER_HOST = os.environ.get("MEDIA_SERVER_HOST", "0.0.0.0")
-MEDIA_SERVER_PORT = int(os.environ.get("MEDIA_SERVER_PORT", "8765"))
-MEDIA_SERVER_SCHEME = os.environ.get("MEDIA_SERVER_SCHEME", "http")
-MEDIA_BASE_URL = (os.environ.get("MEDIA_BASE_URL") or "").rstrip("/")
-TELEGRAM_LOCAL_MODE = (os.environ.get("TELEGRAM_LOCAL_MODE") or "").strip().lower() in ("1", "true", "yes", "on")
-TELEGRAM_DOWNLOAD_SIZE_LIMIT = int(os.environ.get("TELEGRAM_DOWNLOAD_SIZE_LIMIT_MB", "20")) * 1024 * 1024
-TELEGRAM_GET_FILE_READ_TIMEOUT = float(os.environ.get("TELEGRAM_GET_FILE_READ_TIMEOUT", "300"))
-TELEGRAM_GET_FILE_WRITE_TIMEOUT = float(os.environ.get("TELEGRAM_GET_FILE_WRITE_TIMEOUT", "30"))
-TELEGRAM_GET_FILE_CONNECT_TIMEOUT = float(os.environ.get("TELEGRAM_GET_FILE_CONNECT_TIMEOUT", "30"))
-TELEGRAM_GET_FILE_POOL_TIMEOUT = float(os.environ.get("TELEGRAM_GET_FILE_POOL_TIMEOUT", "30"))
+log = logging.getLogger(__name__)
 SOCIAL_VIDEO_DOMAINS = (
     "tiktok.com",
     "instagram.com",
@@ -52,32 +44,23 @@ class MediaDownloadError(Exception):
 
 
 def ensure_upload_dir():
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    os.makedirs(CFG.upload_dir, exist_ok=True)
 
 
 def resolve_kodi_media_path(local_path: str):
     abs_local = os.path.abspath(local_path)
-    abs_upload = os.path.abspath(UPLOAD_DIR)
+    abs_upload = os.path.abspath(CFG.upload_dir)
     try:
         rel = os.path.relpath(abs_local, abs_upload)
     except Exception:
         return local_path
     if rel.startswith(".."):
         return local_path
-    return os.path.normpath(os.path.join(KODI_UPLOAD_DIR, rel))
+    return os.path.normpath(os.path.join(CFG.kodi_upload_dir, rel))
 
 
 def resolve_media_base_url():
-    if MEDIA_BASE_URL:
-        return MEDIA_BASE_URL
-    public_host = (
-        os.environ.get("MEDIA_SERVER_PUBLIC_HOST")
-        or os.environ.get("HOST_IP")
-        or os.environ.get("CEC_HOST")
-        or os.environ.get("KODI_HOST")
-        or "127.0.0.1"
-    )
-    return f"{MEDIA_SERVER_SCHEME}://{public_host}:{MEDIA_SERVER_PORT}"
+    return CFG.resolve_media_base_url()
 
 
 def build_media_url(filename: str):
@@ -183,7 +166,7 @@ def normalize_media_key(key: str):
 def _create_image_session_dir():
     ensure_upload_dir()
     ts = int(time.time() * 1000)
-    local_dir = os.path.join(UPLOAD_DIR, f"slideshow_{ts}")
+    local_dir = os.path.join(CFG.upload_dir, f"slideshow_{ts}")
     os.makedirs(local_dir, exist_ok=True)
     return {
         "local_dir": local_dir,
@@ -315,17 +298,14 @@ def maybe_faststart_mp4(path: str, kind: str):
             timeout=30,
         )
     except FileNotFoundError:
-        print("FASTSTART skipped: ffmpeg not found", flush=True)
+        log.debug("faststart skipped: ffmpeg not found")
         return path
     except Exception as e:
-        print(f"FASTSTART skipped path={path} err={e}", flush=True)
+        log.debug("faststart skipped path=%s err=%s", path, e)
         return path
 
     if res.returncode != 0 or not os.path.exists(faststart_path):
-        print(
-            f"FASTSTART failed path={path} rc={res.returncode} stderr={(res.stderr or '').strip()}",
-            flush=True,
-        )
+        log.info("FASTSTART failed path={path} rc={res.returncode} stderr={(res.stderr or '').strip()}")
         try:
             if os.path.exists(faststart_path):
                 os.remove(faststart_path)
@@ -335,9 +315,9 @@ def maybe_faststart_mp4(path: str, kind: str):
 
     try:
         os.replace(faststart_path, path)
-        print(f"FASTSTART ok path={path}", flush=True)
+        log.debug("faststart ok path=%s", path)
     except Exception as e:
-        print(f"FASTSTART replace failed path={path} err={e}", flush=True)
+        log.warning("faststart replace failed path=%s err=%s", path, e)
         try:
             os.remove(faststart_path)
         except Exception:
@@ -438,31 +418,31 @@ async def download_media_item(bot, msg):
     if not media:
         return None
     file_size = media.get("file_size")
-    if not TELEGRAM_LOCAL_MODE and file_size and file_size > TELEGRAM_DOWNLOAD_SIZE_LIMIT:
+    if not CFG.telegram_local_mode and file_size and file_size > CFG.telegram_download_size_limit:
         raise MediaDownloadError(
             (
                 f"⚠ Upload is {format_bytes(file_size)}. "
                 "The standard Telegram Bot API can only download files up to 20 MB. "
                 "For larger uploads, run a local telegram-bot-api server and set "
-                "`TELEGRAM_LOCAL_MODE=1` plus `TELEGRAM_BASE_URL`/`TELEGRAM_BASE_FILE_URL`."
+                "`CFG.telegram_local_mode=1` plus `TELEGRAM_BASE_URL`/`TELEGRAM_BASE_FILE_URL`."
             ),
             detail=(
                 f"telegram download limit exceeded size={file_size} "
-                f"limit={TELEGRAM_DOWNLOAD_SIZE_LIMIT} local_mode={TELEGRAM_LOCAL_MODE}"
+                f"limit={CFG.telegram_download_size_limit} local_mode={CFG.telegram_local_mode}"
             ),
         )
     ensure_upload_dir()
-    target_path = os.path.join(UPLOAD_DIR, media["storage_name"])
+    target_path = os.path.join(CFG.upload_dir, media["storage_name"])
     try:
         tg_file = await bot.get_file(
             media["file_id"],
-            read_timeout=TELEGRAM_GET_FILE_READ_TIMEOUT,
-            write_timeout=TELEGRAM_GET_FILE_WRITE_TIMEOUT,
-            connect_timeout=TELEGRAM_GET_FILE_CONNECT_TIMEOUT,
-            pool_timeout=TELEGRAM_GET_FILE_POOL_TIMEOUT,
+            read_timeout=CFG.telegram_get_file_read_timeout,
+            write_timeout=CFG.telegram_get_file_write_timeout,
+            connect_timeout=CFG.telegram_get_file_connect_timeout,
+            pool_timeout=CFG.telegram_get_file_pool_timeout,
         )
         file_path = getattr(tg_file, "file_path", None)
-        if TELEGRAM_LOCAL_MODE and file_path and os.path.isabs(file_path):
+        if CFG.telegram_local_mode and file_path and os.path.isabs(file_path):
             if not os.path.exists(file_path):
                 raise MediaDownloadError(
                     "⚠ Upload could not be processed. The local Telegram Bot API file store is not mounted in the bot container.",
@@ -479,7 +459,7 @@ async def download_media_item(bot, msg):
                     f"⚠ Upload is {format_bytes(file_size)}. "
                     "Telegram rejected the download because the bot is using the standard Bot API. "
                     "For larger uploads, run a local telegram-bot-api server and set "
-                    "`TELEGRAM_LOCAL_MODE=1` plus `TELEGRAM_BASE_URL`/`TELEGRAM_BASE_FILE_URL`."
+                    "`CFG.telegram_local_mode=1` plus `TELEGRAM_BASE_URL`/`TELEGRAM_BASE_FILE_URL`."
                 ),
                 detail=f"telegram get_file failed size={file_size} err={e}",
             ) from e
@@ -500,7 +480,7 @@ async def download_media_item(bot, msg):
 def _download_social_video(url: str):
     ensure_upload_dir()
     temp_name = build_storage_name("social_video", None, "video/mp4", ".mp4")
-    temp_path = os.path.join(UPLOAD_DIR, temp_name)
+    temp_path = os.path.join(CFG.upload_dir, temp_name)
     base_path, _ = os.path.splitext(temp_path)
     ydl_opts = {
         "quiet": True,
@@ -580,16 +560,10 @@ def cleanup_temp_media(url: str):
         for path in cleanup_dirs:
             if path and os.path.exists(path):
                 shutil.rmtree(path, ignore_errors=False)
-        print(
-            f"TEMP MEDIA cleaned key={norm_url} paths={list(cleanup_paths)} dirs={list(cleanup_dirs)}",
-            flush=True,
-        )
+        log.info("TEMP MEDIA cleaned key={norm_url} paths={list(cleanup_paths)} dirs={list(cleanup_dirs)}")
         return True
     except Exception as e:
-        print(
-            f"TEMP MEDIA cleanup fail key={norm_url} paths={list(cleanup_paths)} dirs={list(cleanup_dirs)} err={e}",
-            flush=True,
-        )
+        log.info("TEMP MEDIA cleanup fail key={norm_url} paths={list(cleanup_paths)} dirs={list(cleanup_dirs)} err={e}")
         return False
 
 
@@ -598,12 +572,12 @@ def cleanup_stale_temp_media():
     removed = 0
     failed = 0
     try:
-        names = os.listdir(UPLOAD_DIR)
+        names = os.listdir(CFG.upload_dir)
     except Exception as e:
-        print(f"TEMP MEDIA startup scan fail dir={UPLOAD_DIR} err={e}", flush=True)
+        log.warning("temp media startup scan fail dir=%s err=%s", CFG.upload_dir, e)
         return
     for name in names:
-        path = os.path.join(UPLOAD_DIR, name)
+        path = os.path.join(CFG.upload_dir, name)
         try:
             if os.path.isfile(path):
                 os.remove(path)
@@ -613,22 +587,19 @@ def cleanup_stale_temp_media():
                 removed += 1
         except Exception as e:
             failed += 1
-            print(f"TEMP MEDIA startup cleanup fail path={path} err={e}", flush=True)
+            log.warning("temp media startup cleanup fail path=%s err=%s", path, e)
     with _TEMP_MEDIA_LOCK:
         _TEMP_MEDIA.clear()
         _TEMP_MEDIA_ENTRIES.clear()
     with _IMAGE_SESSION_LOCK:
         global _IMAGE_SESSION
         _IMAGE_SESSION = None
-    print(
-        f"TEMP MEDIA startup cleanup dir={UPLOAD_DIR} removed={removed} failed={failed}",
-        flush=True,
-    )
+    log.info("TEMP MEDIA startup cleanup dir={CFG.upload_dir} removed={removed} failed={failed}")
 
 
 class _MediaRequestHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, directory=UPLOAD_DIR, **kwargs)
+        super().__init__(*args, directory=CFG.upload_dir, **kwargs)
 
     def translate_path(self, path):
         parsed = urlparse(path)
@@ -638,7 +609,7 @@ class _MediaRequestHandler(SimpleHTTPRequestHandler):
         else:
             rel_path = clean.lstrip("/")
         rel_path = rel_path.lstrip("/")
-        base_dir = os.path.abspath(UPLOAD_DIR)
+        base_dir = os.path.abspath(CFG.upload_dir)
         full_path = os.path.abspath(os.path.join(base_dir, rel_path))
         if os.path.commonpath([base_dir, full_path]) != base_dir:
             return base_dir
@@ -742,6 +713,21 @@ class _MediaRequestHandler(SimpleHTTPRequestHandler):
         self._send_media_file(send_body=False)
 
     def do_GET(self):
+        if self.path == "/health":
+            from kodibot.core import kodi_api
+            from kodibot.core import queue_state
+            body = json.dumps({
+                "status": "ok",
+                "ws_connected": kodi_api.WS_CONNECTED,
+                "ws_state": kodi_api.WS_STATE,
+                "queue_length": len(queue_state.QUEUE),
+            }).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         self._send_media_file(send_body=True)
 
     def log_message(self, format, *args):
@@ -755,12 +741,11 @@ def start_media_server():
             return
         ensure_upload_dir()
         cleanup_stale_temp_media()
-        server = ThreadingHTTPServer((MEDIA_SERVER_HOST, MEDIA_SERVER_PORT), _MediaRequestHandler)
+        server = ThreadingHTTPServer((CFG.media_server_host, CFG.media_server_port), _MediaRequestHandler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         _SERVER_STARTED = True
-        print(
-            f"MEDIA SERVER listening host={MEDIA_SERVER_HOST} port={MEDIA_SERVER_PORT} "
-            f"base_url={resolve_media_base_url()} dir={UPLOAD_DIR}",
-            flush=True,
+        log.info(
+            "Media server listening host=%s port=%s base_url=%s dir=%s",
+            CFG.media_server_host, CFG.media_server_port, resolve_media_base_url(), CFG.upload_dir,
         )

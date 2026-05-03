@@ -1,15 +1,18 @@
-import asyncio
+import logging
 import re
+import subprocess
 import threading
 import time
 from urllib.parse import unquote
 
+import asyncio
 import requests
-from pytube import Playlist, YouTube
 from yt_dlp import YoutubeDL
 
-import kodi_api
-import telegram_media
+from kodibot.core import kodi_api
+from kodibot.telegram import media
+
+log = logging.getLogger(__name__)
 
 # Queue and playback state
 QUEUE = []
@@ -75,6 +78,86 @@ def set_ui_callbacks(schedule_now_playing_refresh):
 def schedule_now_playing_refresh():
     if _SCHEDULE_NOW_PLAYING_REFRESH:
         _SCHEDULE_NOW_PLAYING_REFRESH()
+
+
+# ── Thread-safe helpers for BOT_EXPECTING_WS ─────────────────────────
+def set_expecting_ws(n: int):
+    """Set BOT_EXPECTING_WS under LOCK."""
+    global BOT_EXPECTING_WS
+    with LOCK:
+        BOT_EXPECTING_WS = n
+
+
+def decrement_expecting_ws() -> int:
+    """Decrement BOT_EXPECTING_WS under LOCK, return new value."""
+    global BOT_EXPECTING_WS
+    with LOCK:
+        if BOT_EXPECTING_WS > 0:
+            BOT_EXPECTING_WS -= 1
+        return BOT_EXPECTING_WS
+
+
+def get_expecting_ws() -> int:
+    """Read BOT_EXPECTING_WS under LOCK."""
+    with LOCK:
+        return BOT_EXPECTING_WS
+
+
+# ── WS callback handlers (registered with kodi_api) ────────────────
+def _handle_ws_play(*, item, item_params):
+    """Called from kodi_api WS listener on Player.OnPlay/OnAVStart."""
+    # decrement_expecting_ws returns the value AFTER decrement.
+    # If before decrement it was > 0, this play was bot-initiated.
+    with LOCK:
+        was_expecting = BOT_EXPECTING_WS > 0
+        if was_expecting:
+            BOT_EXPECTING_WS -= 1
+    if was_expecting:
+        log.debug("WS play expected, remaining=%d", BOT_EXPECTING_WS)
+        return
+    # External play – check mismatch
+    with LOCK:
+        if DISPLAY_INDEX is not None and 0 <= DISPLAY_INDEX < len(QUEUE):
+            qitem = QUEUE[DISPLAY_INDEX]
+        else:
+            qitem = None
+    if not kodi_api.kodi_item_matches_queue(item, qitem):
+        log.info(
+            "WS mismatch clear_bot_playback_state "
+            "item_file=%s item_title=%s q_url=%s q_title=%s q_link=%s",
+            (item or {}).get('file'), (item or {}).get('title'),
+            (qitem or {}).get('url'), (qitem or {}).get('title'),
+            (qitem or {}).get('link'),
+        )
+        clear_bot_playback_state()
+        schedule_now_playing_refresh()
+
+
+def _handle_ws_pause():
+    schedule_now_playing_refresh()
+
+
+def _handle_ws_resume():
+    schedule_now_playing_refresh()
+
+
+def _handle_ws_stop():
+    schedule_now_playing_refresh()
+
+
+def _handle_ws_playback_refresh():
+    schedule_playback_refresh()
+
+
+def register_ws_callbacks():
+    """Register our event handlers with kodi_api's WS callback system."""
+    kodi_api.set_ws_handlers(
+        on_play=_handle_ws_play,
+        on_pause=_handle_ws_pause,
+        on_resume=_handle_ws_resume,
+        on_stop=_handle_ws_stop,
+        on_playback_refresh=_handle_ws_playback_refresh,
+    )
 
 
 # Mark the playlist display as needing refresh.
@@ -161,20 +244,13 @@ def seek_when_player_ready(t, context=""):
                         {"playerid": pid, "properties": ["totaltime", "canseek"]}
                     ).get("result", {})
                     if not props.get("canseek"):
-                        print(f"RESUME SEEK skip canseek=false playerid={pid} ctx={context}", flush=True)
+                        log.debug("Resume seek skip canseek=false playerid=%s ctx=%s", pid, context)
                         return
                     target_sec = kodi_api.kodi_time_seconds(t)
                     if target_sec is None:
-                        print(
-                            f"RESUME SEEK skip invalid times playerid={pid} ctx={context} "
-                            f"target={t}",
-                            flush=True
-                        )
+                        log.debug( f"RESUME SEEK skip invalid times playerid={pid} ctx={context} " f"target={t}" )
                         return
-                    print(
-                        f"RESUME SEEK playerid={pid} ctx={context} target_sec={target_sec}",
-                        flush=True
-                    )
+                    log.debug( f"RESUME SEEK playerid={pid} ctx={context} target_sec={target_sec}" )
                     kodi_api.kodi_call(
                         "Player.Seek",
                         {"playerid": pid, "value": {"time": t}}
@@ -185,42 +261,35 @@ def seek_when_player_ready(t, context=""):
             now = time.time()
             if now - last_log_ts >= 1.0:
                 elapsed = now - start_ts
-                print(
-                    f"RESUME SEEK waiting for playerid ctx={context} elapsed={elapsed:.1f}s players={players}",
-                    flush=True
-                )
+                log.debug( f"RESUME SEEK waiting for playerid ctx={context} elapsed={elapsed:.1f}s players={players}" )
                 last_log_ts = now
             time.sleep(0.3)
-        print(f"RESUME SEEK gave up: no playerid ctx={context}", flush=True)
+        log.warning("Resume seek gave up: no playerid ctx=%s", context)
     threading.Thread(target=_seek, daemon=True).start()
 
 
 # Start playback of a queue item via Kodi.
 def play_item(item: dict, resume_time=None):
-    global BOT_EXPECTING_WS
-    telegram_media.cleanup_active_image_session()
+    media.cleanup_active_image_session()
     kodi_api.stop_all_players()
     kodi_api.kodi_clear_all_playlists()
     kind = item.get("kind", "video")
     resolver = item.get("resolver")
-    BOT_EXPECTING_WS = 2
-    print(
-        f"PLAY_ITEM start kind={item.get('kind')} title={item.get('title')} url={item.get('url')}",
-        flush=True,
-    )
+    set_expecting_ws(2)
+    log.info("play_item start kind=%s title=%s url=%s", item.get('kind'), item.get('title'), item.get('url'))
 
     if kind == "audio" and resolver == "soundcloud":
         playlistid = 0
         kodi_api.maybe_cache_soundcloud_url(item.get("url"))
         kodi_add_to_playlist(item["url"], playlistid)
         res = kodi_api.kodi_call("Player.Open", {"item": {"playlistid": playlistid, "position": 0}})
-        print(f"PLAY_ITEM open audio res={res}", flush=True)
+        log.debug("play_item open audio res=%s", res)
         schedule_audio_resolve_and_open(playlistid, resume_time=resume_time)
     elif kind == "audio":
         playlistid = 0
         kodi_add_to_playlist(item["url"], playlistid)
         res = kodi_api.kodi_call("Player.Open", {"item": {"playlistid": playlistid, "position": 0}})
-        print(f"PLAY_ITEM open direct audio res={res}", flush=True)
+        log.debug("play_item open direct audio res=%s", res)
         schedule_playback_refresh()
         if resume_time is not None:
             seek_when_player_ready(resume_time, context="audio")
@@ -228,12 +297,12 @@ def play_item(item: dict, resume_time=None):
         playlistid = 1
         kodi_add_to_playlist(item["url"], playlistid)
         res = kodi_api.kodi_call("Player.Open", {"item": {"playlistid": playlistid}})
-        print(f"PLAY_ITEM open video res={res}", flush=True)
+        log.debug("play_item open video res=%s", res)
         schedule_playback_refresh()
         if resume_time is not None:
             seek_when_player_ready(resume_time, context="video")
     players = kodi_api.get_active_players()
-    print(f"PLAY_ITEM active_players={players}", flush=True)
+    log.debug("play_item active_players=%s", players)
 
 
 # Start playback and then seek to a saved timestamp.
@@ -246,21 +315,22 @@ def resume_item_at_time(item: dict, t):
 
 # Stop playback and reset bot playback state.
 def hard_stop_and_clear():
-    global AUTOPLAY_ENABLED, CURRENT_INDEX, DISPLAY_INDEX, NEXT_INDEX, LAST_PROGRESS_TS, LAST_PROGRESS_TIME, LAST_PROGRESS_TOTAL, LAST_PROGRESS_INDEX, EXTERNAL_PLAYBACK, BOT_EXPECTING_WS
-    AUTOPLAY_ENABLED = False
-    telegram_media.cleanup_active_image_session()
+    global AUTOPLAY_ENABLED, CURRENT_INDEX, DISPLAY_INDEX, NEXT_INDEX, LAST_PROGRESS_TS, LAST_PROGRESS_TIME, LAST_PROGRESS_TOTAL, LAST_PROGRESS_INDEX, EXTERNAL_PLAYBACK
+    media.cleanup_active_image_session()
     kodi_api.stop_all_players()
     kodi_api.kodi_clear_all_playlists()
-    CURRENT_INDEX = None
-    DISPLAY_INDEX = None
-    NEXT_INDEX = 0
-    LAST_PROGRESS_TS = 0.0
-    LAST_PROGRESS_TIME = None
-    LAST_PROGRESS_TOTAL = None
-    LAST_PROGRESS_INDEX = None
-    EXTERNAL_PLAYBACK = False
-    BOT_EXPECTING_WS = 0
-    RESUME_ATTEMPTS.clear()
+    with LOCK:
+        AUTOPLAY_ENABLED = False
+        CURRENT_INDEX = None
+        DISPLAY_INDEX = None
+        NEXT_INDEX = 0
+        LAST_PROGRESS_TS = 0.0
+        LAST_PROGRESS_TIME = None
+        LAST_PROGRESS_TOTAL = None
+        LAST_PROGRESS_INDEX = None
+        EXTERNAL_PLAYBACK = False
+        BOT_EXPECTING_WS = 0
+        RESUME_ATTEMPTS.clear()
     schedule_playback_refresh()
 
 
@@ -308,19 +378,7 @@ def fetch_youtube_title(vid):
     if cached:
         return cached
     url = f"https://youtu.be/{vid}"
-    try:
-        yt = YouTube(url)
-        author = yt.author or ""
-        title = yt.title or ""
-        if author and title:
-            out = f"{author} - {title}"
-            cache_youtube_title(vid, out)
-            return out
-        if title:
-            cache_youtube_title(vid, title)
-            return title
-    except Exception:
-        pass
+    # Try oembed first (fast, no subprocess)
     try:
         oembed = HTTP.get(
             "https://www.youtube.com/oembed",
@@ -338,6 +396,23 @@ def fetch_youtube_title(vid):
             if title:
                 cache_youtube_title(vid, title)
                 return title
+    except Exception:
+        pass
+    # Fallback: yt-dlp metadata extraction
+    try:
+        res = subprocess.run(
+            ["yt-dlp", "--skip-download", "--print", "%(uploader)s\t%(title)s", "--no-warnings", url],
+            capture_output=True, text=True, timeout=15,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            parts = res.stdout.strip().split("\t", 1)
+            if len(parts) == 2 and parts[0] and parts[1]:
+                out = f"{parts[0]} - {parts[1]}"
+                cache_youtube_title(vid, out)
+                return out
+            if parts[-1]:
+                cache_youtube_title(vid, parts[-1])
+                return parts[-1]
     except Exception:
         pass
     return url
@@ -392,20 +467,20 @@ def resolve_sc_short(url):
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
         }
         r = HTTP.get(url, allow_redirects=True, timeout=8, headers=headers)
-        print(f"SC_SHORT RESOLVE start={url} final={r.url} history={[h.url for h in r.history]}", flush=True)
+        log.debug("SC short resolve start=%s final=%s", url, r.url)
         candidates = [h.url for h in r.history] + [r.url]
         for u in candidates:
             if SC_BASE_RE.match(u) and "discover/sets" not in u:
-                print(f"SC_SHORT RESOLVE pick={u}", flush=True)
+                log.debug("SC short resolve pick=%s", u)
                 return u
         m = SC_HTML_RE.search(r.text)
         if m:
-            print(f"SC_SHORT RESOLVE html={m.group(0)}", flush=True)
+            log.debug("SC short resolve html=%s", m.group(0))
             return m.group(0)
-        print("SC_SHORT RESOLVE failed", flush=True)
+        log.debug("SC short resolve failed")
         return None
     except Exception as e:
-        print(f"SC_SHORT RESOLVE error={e}", flush=True)
+        log.warning("SC short resolve error=%s", e)
         return None
 
 
@@ -452,7 +527,7 @@ def schedule_audio_resolve_and_open(playlistid, resume_time=None):
         kodi_api.kodi_call("Playlist.Clear", {"playlistid": playlistid})
         schedule_playback_refresh()
         if resume_time is not None:
-            print("PLAY_ITEM audio stream opened; seeking...", flush=True)
+            log.debug("play_item audio stream opened, seeking")
             seek_when_player_ready(resume_time, context="audio")
     threading.Thread(target=_run, daemon=True).start()
 
@@ -503,13 +578,17 @@ def queue_item(item):
 
 # Expand a YouTube playlist into video ids.
 def expand_playlist(pid):
-    pl = Playlist(f"https://www.youtube.com/playlist?list={pid}")
-    vids = []
-    for v in pl.video_urls:
-        m = kodi_api.YT.search(v)
-        if m:
-            vids.append(m.group(1))
-    return vids
+    url = f"https://www.youtube.com/playlist?list={pid}"
+    try:
+        res = subprocess.run(
+            ["yt-dlp", "--flat-playlist", "--print", "id", "--no-warnings", url],
+            capture_output=True, text=True, timeout=30,
+        )
+        if res.returncode == 0:
+            return [line.strip() for line in res.stdout.strip().splitlines() if line.strip()]
+    except Exception as e:
+        log.warning("yt-dlp playlist expansion failed: %s", e)
+    return []
 
 
 # Append a YouTube video to the queue.
@@ -569,7 +648,7 @@ def clear_queue():
         LAST_PROGRESS_TOTAL = None
         LAST_PROGRESS_INDEX = None
         EXTERNAL_PLAYBACK = False
-        BOT_EXPECTING_WS = 0
+        BOT_EXPECTING_WS = 0  # safe: under LOCK
         RESUME_ATTEMPTS.clear()
     mark_list_dirty()
 
@@ -622,7 +701,7 @@ def is_requested_track_already_playing(i):
     with LOCK:
         if DISPLAY_INDEX is None or i != DISPLAY_INDEX:
             return False
-    if BOT_EXPECTING_WS > 0:
+    if get_expecting_ws() > 0:
         return True
     return kodi_api.WS_PLAYING
 
@@ -655,7 +734,6 @@ def back_queue():
 def autoplay_loop():
     global CURRENT_INDEX, NEXT_INDEX, AUTOPLAY_ENABLED, DISPLAY_INDEX
     global LAST_PROGRESS_INDEX, LAST_PROGRESS_TIME, LAST_PROGRESS_TOTAL
-    global BOT_EXPECTING_WS
 
     while True:
         try:
@@ -670,7 +748,7 @@ def autoplay_loop():
                 time.sleep(0.5)
                 continue
 
-            if BOT_EXPECTING_WS > 0:
+            if get_expecting_ws() > 0:
                 time.sleep(0.2)
                 continue
 
@@ -682,10 +760,10 @@ def autoplay_loop():
                 if stale:
                     players = kodi_api.get_active_players()
                     if not players:
-                        print(
-                            "RESUME INFER stopped without ws-event "
-                            f"state={playback_state} idx={DISPLAY_INDEX} stale_for={now - freshness_ts:.1f}s",
-                            flush=True,
+                        log.info(
+                            "Resume inferred stop without ws-event "
+                            "state=%s idx=%s stale_for=%.1fs",
+                            playback_state, DISPLAY_INDEX, now - freshness_ts,
                         )
                         playback_state = "stopped"
 
@@ -709,9 +787,9 @@ def autoplay_loop():
                     attempts = RESUME_ATTEMPTS.get(DISPLAY_INDEX, 0)
                     resume_pending = attempts < RESUME_MAX_ATTEMPTS
                     if resume_pending:
-                        print(
-                            f"RESUME PENDING idx={DISPLAY_INDEX} attempts={attempts} remaining={remaining}",
-                            flush=True,
+                        log.info(
+                            "Resume pending idx=%s attempts=%s remaining=%s",
+                            DISPLAY_INDEX, attempts, remaining,
                         )
 
             if playback_state == "stopped" and DISPLAY_INDEX is not None:
@@ -735,10 +813,9 @@ def autoplay_loop():
                     attempts = RESUME_ATTEMPTS.get(DISPLAY_INDEX, 0)
                     if attempts < RESUME_MAX_ATTEMPTS:
                         RESUME_ATTEMPTS[DISPLAY_INDEX] = attempts + 1
-                        print(
-                            f"RESUME ATTEMPT idx={DISPLAY_INDEX} attempt={RESUME_ATTEMPTS[DISPLAY_INDEX]} "
-                            f"remaining={remaining}",
-                            flush=True,
+                        log.info(
+                            "Resume attempt idx=%s attempt=%s remaining=%s",
+                            DISPLAY_INDEX, RESUME_ATTEMPTS[DISPLAY_INDEX], remaining,
                         )
                         with LOCK:
                             if DISPLAY_INDEX is not None and DISPLAY_INDEX < len(QUEUE):
@@ -788,7 +865,7 @@ def autoplay_loop():
                     play_item(item)
 
         except Exception as e:
-            print("AUTOPLAY ERROR:", e)
+            log.error("Autoplay error: %s", e, exc_info=True)
 
         time.sleep(1)
 

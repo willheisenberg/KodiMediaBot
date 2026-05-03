@@ -1,29 +1,23 @@
-import os
+import logging
 import re
+import shlex
 import threading
 import time
 import subprocess
 import json
 import asyncio
 import unicodedata
-import importlib
 from urllib.parse import unquote, quote_plus, urlparse, parse_qs
 
 import requests
 import websockets
-import telegram_media
+from kodibot.telegram import media
+from kodibot.config import CFG
 
-KODI_HOST = os.environ["KODI_HOST"]
-KODI_PORT = os.environ["KODI_PORT"]
-KODI_WS_PORT = os.environ["KODI_WS_PORT"]
-KODI_URL = f"http://{KODI_HOST}:{KODI_PORT}/jsonrpc"
-AUTH = (os.environ["KODI_USER"], os.environ["KODI_PASS"])
-CEC_HOST = os.environ.get("CEC_HOST") or os.environ.get("HOST_IP")
+log = logging.getLogger(__name__)
+
 CEC_CMD_VOL_UP = "0x41"
 CEC_CMD_VOL_DOWN = "0x42"
-DEBUG_WS = os.environ.get("DEBUG_WS") in ("1", "true", "True", "yes", "YES")
-DENON_HOST = os.environ.get("DENON_HOST")
-DENON_VOLUME_STEP_COMMANDS = 2
 
 YT = re.compile(r"(?:v=|youtu\.be/|shorts/)([A-Za-z0-9_-]{11})")
 PL = re.compile(r"(?:[?&]list=)([A-Za-z0-9_-]+)")
@@ -38,7 +32,6 @@ WS_CONNECTED = False
 WS_PLAYING = False
 WS_LAST_EVENT_TS = 0.0
 WS_STATE = "unknown"
-KODI_WS_URL = None
 
 LAST_WS_ITEM = {}
 LAST_WS_PLAYERID = None
@@ -57,28 +50,30 @@ SC_PERMALINK_TTL = 3600.0
 RADIO_STREAM_MAP_CACHE = None
 RADIO_M3U_MAP_CACHE = None
 ICY_TITLE_CACHE = {}
-ICY_TITLE_TTL = float(os.environ.get("ICY_TITLE_TTL", "15"))
-ICY_TIMEOUT = float(os.environ.get("ICY_TIMEOUT", "6"))
-RADIO_M3U_PATH = os.environ.get("RADIO_M3U_PATH", "/data/kodi.m3u")
 YT_SEARCH_CACHE = {}
-YT_SEARCH_TTL = float(os.environ.get("RADIO_YT_TTL", "21600"))
-YT_SEARCH_FAIL_TTL = float(os.environ.get("RADIO_YT_FAIL_TTL", "300"))
-YT_SEARCH_TIMEOUT = float(os.environ.get("RADIO_YT_TIMEOUT", "8"))
 SC_SEARCH_CACHE = {}
-SC_SEARCH_TTL = float(os.environ.get("RADIO_SC_TTL", "21600"))
-SC_SEARCH_FAIL_TTL = float(os.environ.get("RADIO_SC_FAIL_TTL", "300"))
-SC_SEARCH_TIMEOUT = float(os.environ.get("RADIO_SC_TIMEOUT", "8"))
 HTTP = requests.Session()
-QUEUE_STATE_MODULE = None
 LAST_KODI_ERROR_LOG_TS = 0.0
-KODI_ERROR_LOG_INTERVAL = 10.0
+
+# ── WebSocket callback registry ─────────────────────────────────────
+# Replaces the circular importlib hack.  queue_state registers its
+# handlers via set_ws_handlers() during startup.
+_ws_on_play = None
+_ws_on_pause = None
+_ws_on_resume = None
+_ws_on_stop = None
+_ws_on_playback_refresh = None
 
 
-def get_queue_state_module():
-    global QUEUE_STATE_MODULE
-    if QUEUE_STATE_MODULE is None:
-        QUEUE_STATE_MODULE = importlib.import_module("queue_state")
-    return QUEUE_STATE_MODULE
+def set_ws_handlers(*, on_play=None, on_pause=None, on_resume=None,
+                    on_stop=None, on_playback_refresh=None):
+    global _ws_on_play, _ws_on_pause, _ws_on_resume, _ws_on_stop
+    global _ws_on_playback_refresh
+    _ws_on_play = on_play
+    _ws_on_pause = on_pause
+    _ws_on_resume = on_resume
+    _ws_on_stop = on_stop
+    _ws_on_playback_refresh = on_playback_refresh
 
 
 # Send a JSON-RPC request to Kodi and return the response JSON.
@@ -88,16 +83,13 @@ def kodi_call(method: str, params: dict | None = None):
     if params:
         payload["params"] = params
     try:
-        resp = HTTP.post(KODI_URL, auth=AUTH, json=payload, timeout=5)
+        resp = HTTP.post(CFG.kodi_url, auth=CFG.kodi_auth, json=payload, timeout=5)
         return resp.json()
     except (requests.RequestException, ValueError) as e:
         now = time.time()
-        if now - LAST_KODI_ERROR_LOG_TS >= KODI_ERROR_LOG_INTERVAL:
+        if now - LAST_KODI_ERROR_LOG_TS >= CFG.kodi_error_log_interval:
             LAST_KODI_ERROR_LOG_TS = now
-            print(
-                f"KODI CALL FAIL method={method} host={KODI_HOST} port={KODI_PORT} err={e}",
-                flush=True,
-            )
+            log.error("Kodi call failed: method={method} host={CFG.kodi_host} port={CFG.kodi_port} err={e}")
         return {
             "error": {
                 "message": str(e),
@@ -117,8 +109,8 @@ def kodi_call_with_props(method, id_key, id_value, properties):
         res = kodi_call(method, {id_key: id_value, "properties": props})
         if not res.get("error"):
             return res
-        if DEBUG_WS:
-            print(f"LIB FETCH retry method={method} props={props} err={res.get('error')}", flush=True)
+        if log.isEnabledFor(logging.DEBUG):
+            log.debug("Library fetch: retry method={method} props={props} err={res.get('error')}")
         props = props[:-1]
     return kodi_call(method, {id_key: id_value, "properties": []})
 
@@ -240,11 +232,11 @@ def wait_for_picture_player_active(timeout_s=2.0, interval_s=0.1):
 
 async def cleanup_image_session_after_stop_delay(stopped_file, delay_s=2.0):
     await asyncio.sleep(delay_s)
-    if not telegram_media.is_active_image_session_media(stopped_file):
+    if not media.is_active_image_session_media(stopped_file):
         return
     picture_active = await asyncio.to_thread(is_picture_player_active)
     if not picture_active:
-        await asyncio.to_thread(telegram_media.cleanup_temp_media, stopped_file)
+        await asyncio.to_thread(media.cleanup_temp_media, stopped_file)
 
 
 def get_av_settings():
@@ -318,48 +310,48 @@ def pick_playerid(players):
 
 # Send repeated CEC volume commands over SSH.
 def run_cec_volume(times: int, cmd_hex: str) -> bool:
+    host = shlex.quote(CFG.cec_host)
+    q_times = shlex.quote(str(times))
+    q_cmd = shlex.quote(f"ui-cmd={cmd_hex}")
+    ssh = f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{host}"
     cmd = (
-        f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{CEC_HOST} seq {times} | "
-        f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{CEC_HOST} "
-        f"xargs -Iz cec-ctl --user-control-pressed ui-cmd={cmd_hex} -t5"
+        f"{ssh} seq {q_times} | "
+        f"{ssh} xargs -Iz cec-ctl --user-control-pressed {q_cmd} -t5"
     )
     try:
         res = subprocess.run(cmd, shell=True, check=False, capture_output=True, text=True)
         if res.returncode != 0:
-            print(f"CEC FAIL rc={res.returncode} stderr={res.stderr.strip()}", flush=True)
+            log.warning("CEC command failed: rc={res.returncode} stderr={res.stderr.strip()}")
             return False
         return True
     except Exception as e:
-        print(f"CEC ERROR err={e}", flush=True)
+        log.warning("CEC error: err={e}")
         return False
 
 
 def run_denon_volume_delta(points: int) -> bool:
-    if not DENON_HOST:
+    if not CFG.denon_host:
         return False
     if points == 0:
         return True
     cmd = "MVUP" if points > 0 else "MVDOWN"
-    steps = abs(points) * DENON_VOLUME_STEP_COMMANDS
-    url = f"http://{DENON_HOST}/goform/formiPhoneAppDirect.xml?{cmd}"
+    steps = abs(points) * CFG.denon_volume_step_commands
+    url = f"http://{CFG.denon_host}/goform/formiPhoneAppDirect.xml?{cmd}"
     try:
         for _ in range(steps):
             res = HTTP.get(url, timeout=4)
             if res.status_code != 200:
-                print(
-                    f"DENON VOLUME FAIL status={res.status_code} host={DENON_HOST} points={points} cmd={cmd}",
-                    flush=True,
-                )
+                log.warning("Denon volume failed: status={res.status_code} host={CFG.denon_host} points={points} cmd={cmd}")
                 return False
             time.sleep(0.05)
         return True
     except Exception as e:
-        print(f"DENON VOLUME ERROR host={DENON_HOST} points={points} err={e}", flush=True)
+        log.warning("Denon volume error: host={CFG.denon_host} points={points} err={e}")
         return False
 
 
 def run_volume_delta(points: int) -> bool:
-    if DENON_HOST:
+    if CFG.denon_host:
         return run_denon_volume_delta(points)
     if points == 0:
         return True
@@ -369,84 +361,81 @@ def run_volume_delta(points: int) -> bool:
 
 
 def run_denon_power(on: bool) -> bool:
-    if not DENON_HOST:
+    if not CFG.denon_host:
         return False
     action = "PowerOn" if on else "PowerStandby"
-    url = f"http://{DENON_HOST}/goform/formiPhoneAppPower.xml?1+{action}"
+    url = f"http://{CFG.denon_host}/goform/formiPhoneAppPower.xml?1+{action}"
     try:
         res = HTTP.get(url, timeout=4)
         if res.status_code != 200:
-            print(f"DENON POWER FAIL status={res.status_code} host={DENON_HOST} action={action}", flush=True)
+            log.warning("Denon power failed: status={res.status_code} host={CFG.denon_host} action={action}")
             return False
         text = res.text or ""
         expected = "ON" if on else "OFF"
         m = re.search(r"<Power>\s*<value>\s*(ON|OFF)\s*</value>\s*</Power>", text, flags=re.IGNORECASE)
         if not m:
-            print(f"DENON POWER FAIL host={DENON_HOST} action={action} body={text[:120]!r}", flush=True)
+            log.warning("Denon power failed: host={CFG.denon_host} action={action} body={text[:120]!r}")
             return False
         state = m.group(1).upper()
         if state != expected:
-            print(f"DENON POWER FAIL host={DENON_HOST} expected={expected} got={state}", flush=True)
+            log.warning("Denon power failed: host={CFG.denon_host} expected={expected} got={state}")
             return False
         return True
     except Exception as e:
-        print(f"DENON POWER ERROR host={DENON_HOST} action={action} err={e}", flush=True)
+        log.warning("Denon power error: host={CFG.denon_host} action={action} err={e}")
         return False
 
 
 # Turn the audio system on or off via CEC over SSH.
 def run_cec_power(on: bool) -> bool:
-    if DENON_HOST:
+    if CFG.denon_host:
         return run_denon_power(on)
+    host = shlex.quote(CFG.cec_host)
+    ssh = f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{host}"
     if on:
         cmd = (
-            f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{CEC_HOST} "
-            f"cec-ctl --user-control-pressed ui-cmd=power-on-function -t0 && "
-            f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{CEC_HOST} "
-            f"cec-ctl --user-control-pressed ui-cmd=power-on-function -t5"
+            f"{ssh} cec-ctl --user-control-pressed ui-cmd=power-on-function -t0 && "
+            f"{ssh} cec-ctl --user-control-pressed ui-cmd=power-on-function -t5"
         )
     else:
         cmd = (
-            f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{CEC_HOST} "
-            f"cec-ctl --standby -t0 && "
-            f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{CEC_HOST} "
-            f"cec-ctl --standby -t5"
+            f"{ssh} cec-ctl --standby -t0 && "
+            f"{ssh} cec-ctl --standby -t5"
         )
     try:
         res = subprocess.run(cmd, shell=True, check=False, capture_output=True, text=True)
         if res.returncode != 0:
-            print(f"CEC FAIL rc={res.returncode} stderr={res.stderr.strip()}", flush=True)
+            log.warning("CEC command failed: rc=%d stderr=%s", res.returncode, res.stderr.strip())
             return False
         return True
     except Exception as e:
-        print(f"CEC ERROR err={e}", flush=True)
+        log.warning("CEC error: %s", e)
         return False
 
 
 def run_airplay_kill() -> bool:
-    cmd = (
-        f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{CEC_HOST} "
-        f"cec-ctl --active-source phys-addr=1.5.0.0 -t0"
-    )
+    host = shlex.quote(CFG.cec_host)
+    ssh = f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{host}"
+    cmd = f"{ssh} cec-ctl --active-source phys-addr=1.5.0.0 -t0"
     try:
         res = subprocess.run(cmd, shell=True, check=False, capture_output=True, text=True)
         if res.returncode != 0:
-            print(f"CEC FAIL rc={res.returncode} stderr={res.stderr.strip()}", flush=True)
+            log.warning("CEC command failed: rc=%d stderr=%s", res.returncode, res.stderr.strip())
             return False
         return True
     except Exception as e:
-        print(f"CEC ERROR err={e}", flush=True)
+        log.warning("CEC error: %s", e)
         return False
 
 
 # Query the audio system power state (DENON over IP when available, else CEC).
 def get_hifi_power_status():
-    if DENON_HOST:
-        url = f"http://{DENON_HOST}/goform/formMainZone_MainZoneXml.xml"
+    if CFG.denon_host:
+        url = f"http://{CFG.denon_host}/goform/formMainZone_MainZoneXml.xml"
         try:
             res = HTTP.get(url, timeout=4)
             if res.status_code != 200:
-                print(f"DENON POWER STATUS FAIL status={res.status_code} host={DENON_HOST}", flush=True)
+                log.warning("Denon power status failed: status={res.status_code} host={CFG.denon_host}")
                 return None
             text = res.text or ""
             m = re.search(r"<Power>\s*<value>\s*(ON|OFF|STANDBY)\s*</value>\s*</Power>", text, flags=re.IGNORECASE)
@@ -459,35 +448,34 @@ def get_hifi_power_status():
                 return "Standby"
             return None
         except Exception as e:
-            print(f"DENON POWER STATUS ERROR host={DENON_HOST} err={e}", flush=True)
+            log.warning("Denon power status error: host={CFG.denon_host} err={e}")
             return None
 
-    cmd = (
-        f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{CEC_HOST} "
-        f"cec-ctl --show-topology | awk '/Audio System/ {{f=1}} f && /Power Status/ {{print $NF; exit}}'"
-    )
+    host = shlex.quote(CFG.cec_host)
+    ssh = f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{host}"
+    cmd = f"{ssh} cec-ctl --show-topology | awk '/Audio System/ {{f=1}} f && /Power Status/ {{print $NF; exit}}'"
     try:
         res = subprocess.run(cmd, shell=True, check=False, capture_output=True, text=True)
         if res.returncode != 0:
-            print(f"CEC FAIL rc={res.returncode} stderr={res.stderr.strip()}", flush=True)
+            log.warning("CEC command failed: rc={res.returncode} stderr={res.stderr.strip()}")
             return None
         val = (res.stdout or "").strip()
         if val in ("On", "Standby"):
             return val
         return None
     except Exception as e:
-        print(f"CEC ERROR err={e}", flush=True)
+        log.warning("CEC error: err={e}")
         return None
 
 
 def get_airplay_status():
-    if not DENON_HOST:
+    if not CFG.denon_host:
         return None
-    url = f"http://{DENON_HOST}/goform/formNetAudio_StatusXml.xml"
+    url = f"http://{CFG.denon_host}/goform/formNetAudio_StatusXml.xml"
     try:
         res = HTTP.get(url, timeout=4)
         if res.status_code != 200:
-            print(f"AIRPLAY FAIL status={res.status_code} host={DENON_HOST}", flush=True)
+            log.warning("AirPlay failed: status={res.status_code} host={CFG.denon_host}")
             return None
         text = res.text or ""
         m = re.search(r"<szLine>(.*?)</szLine>", text, flags=re.DOTALL | re.IGNORECASE)
@@ -500,18 +488,18 @@ def get_airplay_status():
             return "On"
         return "Off"
     except Exception as e:
-        print(f"AIRPLAY ERROR host={DENON_HOST} err={e}", flush=True)
+        log.warning("AirPlay error: host={CFG.denon_host} err={e}")
         return None
 
 
 def get_denon_mainzone_volume():
-    if not DENON_HOST:
+    if not CFG.denon_host:
         return None
-    url = f"http://{DENON_HOST}/goform/formMainZone_MainZoneXml.xml"
+    url = f"http://{CFG.denon_host}/goform/formMainZone_MainZoneXml.xml"
     try:
         res = HTTP.get(url, timeout=4)
         if res.status_code != 200:
-            print(f"DENON VOLUME FAIL status={res.status_code} host={DENON_HOST}", flush=True)
+            log.warning("Denon volume failed: status={res.status_code} host={CFG.denon_host}")
             return None
         text = res.text or ""
         m = re.search(
@@ -529,7 +517,7 @@ def get_denon_mainzone_volume():
                 return val
         return values[0]
     except Exception as e:
-        print(f"DENON VOLUME ERROR host={DENON_HOST} err={e}", flush=True)
+        log.warning("Denon volume error: host={CFG.denon_host} err={e}")
         return None
 
 
@@ -729,15 +717,11 @@ def read_soundcloud_client_id():
     now = time.time()
     if SC_CLIENT_ID_CACHE and now - SC_CLIENT_ID_TS < 300:
         return SC_CLIENT_ID_CACHE
-    env_id = os.environ.get("SC_CLIENT_ID")
-    if env_id:
-        SC_CLIENT_ID_CACHE = env_id.strip()
+    if CFG.sc_client_id:
+        SC_CLIENT_ID_CACHE = CFG.sc_client_id
         SC_CLIENT_ID_TS = now
         return SC_CLIENT_ID_CACHE
-    path = os.environ.get(
-        "SC_CLIENT_ID_FILE",
-        "/storage/.kodi/userdata/addon_data/plugin.audio.soundcloud/cache/api-client-id",
-    )
+    path = CFG.sc_client_id_file
     try:
         with open(path, "r") as f:
             SC_CLIENT_ID_CACHE = f.read().strip()
@@ -766,7 +750,7 @@ def normalize_channel_name(name):
 
 
 def read_radio_stream_map():
-    raw = os.environ.get("RADIO_STREAM_MAP", "")
+    raw = CFG.radio_stream_map_raw
     if not raw:
         return {}
     try:
@@ -822,7 +806,7 @@ def read_radio_stream_map_from_m3u(path):
 def get_radio_stream_m3u_map():
     global RADIO_M3U_MAP_CACHE
     if RADIO_M3U_MAP_CACHE is None:
-        RADIO_M3U_MAP_CACHE = read_radio_stream_map_from_m3u(RADIO_M3U_PATH)
+        RADIO_M3U_MAP_CACHE = read_radio_stream_map_from_m3u(CFG.radio_m3u_path)
     return RADIO_M3U_MAP_CACHE
 
 
@@ -847,7 +831,7 @@ def get_cached_icy_title(stream_url):
     if not hit:
         return ""
     title, ts = hit
-    if time.time() - ts > ICY_TITLE_TTL:
+    if time.time() - ts > CFG.icy_title_ttl:
         ICY_TITLE_CACHE.pop(stream_url, None)
         return ""
     return title
@@ -867,7 +851,7 @@ def fetch_icy_title(stream_url):
         return cached
     try:
         headers = {"Icy-MetaData": "1", "User-Agent": "KodiMediaBot/1.0"}
-        with HTTP.get(stream_url, headers=headers, stream=True, timeout=ICY_TIMEOUT, allow_redirects=True) as resp:
+        with HTTP.get(stream_url, headers=headers, stream=True, timeout=CFG.icy_timeout, allow_redirects=True) as resp:
             if not resp.ok:
                 return ""
             metaint = resp.headers.get("icy-metaint")
@@ -898,7 +882,7 @@ def get_cached_youtube_link(query_key):
     if not hit:
         return None
     link, ts = hit
-    ttl = YT_SEARCH_TTL if link else YT_SEARCH_FAIL_TTL
+    ttl = CFG.yt_search_ttl if link else CFG.yt_search_fail_ttl
     if time.time() - ts > ttl:
         YT_SEARCH_CACHE.pop(query_key, None)
         return None
@@ -918,7 +902,7 @@ def get_cached_soundcloud_link(query_key):
     if not hit:
         return None
     link, ts = hit
-    ttl = SC_SEARCH_TTL if link else SC_SEARCH_FAIL_TTL
+    ttl = CFG.sc_search_ttl if link else CFG.sc_search_fail_ttl
     if time.time() - ts > ttl:
         SC_SEARCH_CACHE.pop(query_key, None)
         return None
@@ -951,7 +935,7 @@ def search_youtube_link(query, expected_title=""):
             check=False,
             capture_output=True,
             text=True,
-            timeout=YT_SEARCH_TIMEOUT,
+            timeout=CFG.yt_search_timeout,
         )
         out = (res.stdout or "").strip().splitlines()
         link = ""
@@ -991,7 +975,7 @@ def search_soundcloud_link(query, expected_title=""):
             check=False,
             capture_output=True,
             text=True,
-            timeout=SC_SEARCH_TIMEOUT,
+            timeout=CFG.sc_search_timeout,
         )
         out = (res.stdout or "").strip().splitlines()
         link = ""
@@ -1207,8 +1191,8 @@ def schedule_soundcloud_permalink_probe(timeout_s=2.0, interval_s=0.2):
 def external_item_display(item):
     global LAST_WS_SC_LOOKUP_TS, LAST_WS_SC_URL, LAST_WS_SC_TRACK_ID
     if not item:
-        if DEBUG_WS:
-            print("EXT ITEM display: empty item", flush=True)
+        if log.isEnabledFor(logging.DEBUG):
+            log.debug("External item display: empty item")
         return None, None
     itype = (item.get("type") or "").lower()
     title = item.get("title") or ""
@@ -1227,7 +1211,7 @@ def external_item_display(item):
     channel = item.get("channel") or ""
 
     link = None
-    temp_title = telegram_media.get_temp_media_title(file_url)
+    temp_title = media.get_temp_media_title(file_url)
     if temp_title:
         return temp_title, file_url
     if not link and file_url.startswith("plugin://plugin.video.youtube/"):
@@ -1342,8 +1326,8 @@ def fetch_library_item(item_type, item_id):
             item_id,
             ["title", "year", "originaltitle", "uniqueid", "imdbnumber"],
         )
-        if DEBUG_WS and res.get("error"):
-            print(f"LIB FETCH movie error={res.get('error')} id={item_id}", flush=True)
+        if res.get("error"):
+            log.debug("Library fetch: movie error={res.get('error')} id={item_id}")
         return (res.get("result", {}) or {}).get("moviedetails", {}) or {}
     if itype == "episode":
         res = kodi_call_with_props(
@@ -1352,8 +1336,8 @@ def fetch_library_item(item_type, item_id):
             item_id,
             ["title", "showtitle", "season", "episode", "uniqueid", "imdbnumber"],
         )
-        if DEBUG_WS and res.get("error"):
-            print(f"LIB FETCH episode error={res.get('error')} id={item_id}", flush=True)
+        if res.get("error"):
+            log.debug("Library fetch: episode error={res.get('error')} id={item_id}")
         return (res.get("result", {}) or {}).get("episodedetails", {}) or {}
     if itype == "tvshow":
         res = kodi_call_with_props(
@@ -1362,8 +1346,8 @@ def fetch_library_item(item_type, item_id):
             item_id,
             ["title", "year", "uniqueid", "imdbnumber"],
         )
-        if DEBUG_WS and res.get("error"):
-            print(f"LIB FETCH tvshow error={res.get('error')} id={item_id}", flush=True)
+        if res.get("error"):
+            log.debug("Library fetch: tvshow error={res.get('error')} id={item_id}")
         return (res.get("result", {}) or {}).get("tvshowdetails", {}) or {}
     return {}
 
@@ -1405,9 +1389,9 @@ def build_imdb_link(item):
 def scan_video_library():
     res = kodi_call("VideoLibrary.Scan")
     if res.get("error"):
-        print(f"VIDEO LIBRARY SCAN FAIL error={res['error']}", flush=True)
+        log.warning("Video library scan failed: error={res['error']}")
         return False
-    print(f"VIDEO LIBRARY SCAN OK res={res}", flush=True)
+    log.info("Video library scan ok: res={res}")
     return True
 
 
@@ -1520,22 +1504,23 @@ def kodi_clear_all_playlists():
 
 # Listen for Kodi playback events via WebSocket.
 async def kodi_ws_listener():
-    global KODI_WS_URL, WS_PLAYING, WS_LAST_EVENT_TS, WS_CONNECTED, WS_STATE
+    global WS_PLAYING, WS_LAST_EVENT_TS, WS_CONNECTED, WS_STATE
     global LAST_WS_YT_ID, LAST_WS_PLAYING_FILE, LAST_WS_PLAYERID
-    if KODI_WS_URL is None:
-        KODI_WS_URL = f"ws://{KODI_HOST}:{KODI_WS_PORT}/jsonrpc"
+    ws_url = CFG.kodi_ws_url
+    backoff = 3
     while True:
         try:
-            async with websockets.connect(KODI_WS_URL, ping_interval=20, ping_timeout=20) as ws:
+            async with websockets.connect(ws_url, ping_interval=20, ping_timeout=20) as ws:
                 WS_CONNECTED = True
+                backoff = 3  # reset on successful connect
                 async for raw in ws:
                     try:
                         msg = json.loads(raw)
                     except Exception:
                         continue
                     method = msg.get("method")
-                    if DEBUG_WS and method:
-                        print(f"WS EVENT method={method} msg={msg}", flush=True)
+                    if method:
+                        log.debug("WS event: method=%s msg=%s", method, msg)
                     if method == "Other.playback_init":
                         data = msg.get("params", {}).get("data", {}) or {}
                         vid = data.get("video_id") or ""
@@ -1545,7 +1530,6 @@ async def kodi_ws_listener():
                         if playing_file:
                             LAST_WS_PLAYING_FILE = playing_file
                     if method in ("Player.OnPlay", "Player.OnAVStart"):
-                        qs = get_queue_state_module()
                         now = time.time()
                         WS_PLAYING = True
                         WS_STATE = "playing"
@@ -1571,66 +1555,47 @@ async def kodi_ws_listener():
                             for k in ("id", "type", "title"):
                                 if k in item_params:
                                     LAST_WS_ITEM[k] = item_params.get(k)
-                        if qs.BOT_EXPECTING_WS > 0:
-                            qs.BOT_EXPECTING_WS -= 1
-                            if DEBUG_WS:
-                                print(
-                                    f"WS EXPECT dec method={method} remaining={qs.BOT_EXPECTING_WS}",
-                                    flush=True,
-                                )
-                        else:
-                            player = data.get("player", {}) or {}
-                            pid = player.get("playerid")
-                            if item is None and pid is not None:
+                        # Fetch second copy if needed for mismatch check
+                        if item is None:
+                            pid = player_params.get("playerid")
+                            if pid is not None:
                                 item = (await kodi_call_async(
                                     "Player.GetItem",
                                     {"playerid": pid, "properties": ["title", "artist", "file", "type", "label"]},
                                 )).get("result", {}).get("item", {})
-                            with qs.LOCK:
-                                if qs.DISPLAY_INDEX is not None and 0 <= qs.DISPLAY_INDEX < len(qs.QUEUE):
-                                    qitem = qs.QUEUE[qs.DISPLAY_INDEX]
-                                else:
-                                    qitem = None
-                            if not kodi_item_matches_queue(item, qitem):
-                                print(
-                                    "WS MISMATCH clear_bot_playback_state "
-                                    f"item_file={(item or {}).get('file')} "
-                                    f"item_title={(item or {}).get('title')} "
-                                    f"q_url={(qitem or {}).get('url')} "
-                                    f"q_title={(qitem or {}).get('title')} "
-                                    f"q_link={(qitem or {}).get('link')}",
-                                    flush=True,
-                                )
-                                qs.clear_bot_playback_state()
-                                qs.schedule_now_playing_refresh()
-                        qs.schedule_playback_refresh()
+                        if _ws_on_play:
+                            _ws_on_play(item=item, item_params=item_params)
+                        if _ws_on_playback_refresh:
+                            _ws_on_playback_refresh()
                     elif method == "Player.OnPause":
-                        qs = get_queue_state_module()
                         WS_PLAYING = False
                         WS_STATE = "paused"
                         WS_LAST_EVENT_TS = time.time()
-                        qs.schedule_now_playing_refresh()
+                        if _ws_on_pause:
+                            _ws_on_pause()
                     elif method == "Player.OnResume":
-                        qs = get_queue_state_module()
                         WS_PLAYING = True
                         WS_STATE = "playing"
                         WS_LAST_EVENT_TS = time.time()
-                        qs.schedule_now_playing_refresh()
+                        if _ws_on_resume:
+                            _ws_on_resume()
                     elif method == "Player.OnStop":
-                        qs = get_queue_state_module()
                         WS_PLAYING = False
                         WS_STATE = "stopped"
                         WS_LAST_EVENT_TS = time.time()
                         data = msg.get("params", {}).get("data", {}) or {}
                         item_params = data.get("item", {}) or {}
                         stopped_file = item_params.get("file") or LAST_WS_PLAYING_FILE
-                        if telegram_media.is_active_image_session_media(stopped_file):
+                        if media.is_active_image_session_media(stopped_file):
                             asyncio.create_task(cleanup_image_session_after_stop_delay(stopped_file))
                         else:
-                            telegram_media.cleanup_temp_media(stopped_file)
+                            media.cleanup_temp_media(stopped_file)
                         LAST_WS_PLAYING_FILE = ""
-                        qs.schedule_now_playing_refresh()
+                        if _ws_on_stop:
+                            _ws_on_stop()
         except Exception:
             WS_CONNECTED = False
             WS_STATE = "unknown"
-            await asyncio.sleep(3)
+            log.debug("WS disconnected, reconnecting in %ds", backoff)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 60)
