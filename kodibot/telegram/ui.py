@@ -693,7 +693,7 @@ async def on_button(update, ctx):
     elif cmd == "hifi:on":
         ok = await asyncio.to_thread(kodi_api.run_cec_power, True)
         await send_and_track(ctx, chat_id, "🔌 Hifi On" if ok else "⚠ Hifi On failed")
-        if kodi_api.DENON_HOST:
+        if CFG.denon_host:
             schedule_cleanup(ctx, chat_id, prev_id)
             await update_list_message(ctx, chat_id)
             skip_cleanup = True
@@ -706,7 +706,7 @@ async def on_button(update, ctx):
     elif cmd == "hifi:off":
         ok = await asyncio.to_thread(kodi_api.run_cec_power, False)
         await send_and_track(ctx, chat_id, "🔌 Hifi Off" if ok else "⚠ Hifi Off failed")
-        if kodi_api.DENON_HOST:
+        if CFG.denon_host:
             schedule_cleanup(ctx, chat_id, prev_id)
             await update_list_message(ctx, chat_id)
             skip_cleanup = True
