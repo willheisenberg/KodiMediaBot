@@ -223,20 +223,39 @@ async def send_chunked_selection(ctx, chat_id, header, lines, footer=None):
 
 
 def movie_list_lines(movies):
-    return [format_link_line(i, m.get("label") or m.get("title", "?"), None) for i, m in enumerate(movies)]
+    lines = []
+    for i, movie in enumerate(movies):
+        title = movie.get("label") or movie.get("title") or "Unknown"
+        year = movie.get("year")
+        if year:
+            title = f"{title} ({year})"
+        lines.append(format_link_line(i, title, kodi_api.build_imdb_link(movie)))
+    return lines
 
 
 def show_list_lines(shows):
-    return [format_link_line(i, s.get("label") or s.get("title", "?"), None) for i, s in enumerate(shows)]
+    lines = []
+    for i, show in enumerate(shows):
+        title = show.get("label") or show.get("title") or "Unknown"
+        year = show.get("year")
+        if year:
+            title = f"{title} ({year})"
+        lines.append(format_link_line(i, title, kodi_api.build_imdb_link(show)))
+    return lines
 
 
 def episode_list_lines(episodes):
     lines = []
     for i, ep in enumerate(episodes):
-        s = ep.get("season", "?")
-        e = ep.get("episode", "?")
-        label = ep.get("label") or ep.get("title", "?")
-        lines.append(format_link_line(i, f"S{s}E{e} – {label}", None))
+        season = ep.get("season", "?")
+        number = ep.get("episode", "?")
+        prefix = ""
+        if isinstance(season, int) and isinstance(number, int):
+            prefix = f"S{season:02d}E{number:02d} "
+        else:
+            prefix = f"S{season}E{number} "
+        title = f"{prefix}{ep.get('label') or ep.get('title') or 'Unknown'}".strip()
+        lines.append(format_link_line(i, title, kodi_api.build_imdb_link(ep)))
     return lines
 
 
