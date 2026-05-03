@@ -89,7 +89,7 @@ def kodi_call(method: str, params: dict | None = None):
         now = time.time()
         if now - LAST_KODI_ERROR_LOG_TS >= CFG.kodi_error_log_interval:
             LAST_KODI_ERROR_LOG_TS = now
-            log.error("Kodi call failed: method={method} host={CFG.kodi_host} port={CFG.kodi_port} err={e}")
+            log.error(f"Kodi call failed: method={method} host={CFG.kodi_host} port={CFG.kodi_port} err={e}")
         return {
             "error": {
                 "message": str(e),
@@ -110,7 +110,7 @@ def kodi_call_with_props(method, id_key, id_value, properties):
         if not res.get("error"):
             return res
         if log.isEnabledFor(logging.DEBUG):
-            log.debug("Library fetch: retry method={method} props={props} err={res.get('error')}")
+            log.debug(f"Library fetch: retry method={method} props={props} err={res.get('error')}")
         props = props[:-1]
     return kodi_call(method, {id_key: id_value, "properties": []})
 
@@ -321,11 +321,11 @@ def run_cec_volume(times: int, cmd_hex: str) -> bool:
     try:
         res = subprocess.run(cmd, shell=True, check=False, capture_output=True, text=True)
         if res.returncode != 0:
-            log.warning("CEC command failed: rc={res.returncode} stderr={res.stderr.strip()}")
+            log.warning(f"CEC command failed: rc={res.returncode} stderr={res.stderr.strip()}")
             return False
         return True
     except Exception as e:
-        log.warning("CEC error: err={e}")
+        log.warning(f"CEC error: err={e}")
         return False
 
 
@@ -339,14 +339,14 @@ def run_denon_volume_delta(points: int) -> bool:
     url = f"http://{CFG.denon_host}/goform/formiPhoneAppDirect.xml?{cmd}"
     try:
         for _ in range(steps):
-            res = HTTP.get(url, timeout=4)
+            res = requests.get(url, timeout=4)
             if res.status_code != 200:
-                log.warning("Denon volume failed: status={res.status_code} host={CFG.denon_host} points={points} cmd={cmd}")
+                log.warning(f"Denon volume failed: status={res.status_code} host={CFG.denon_host} points={points} cmd={cmd}")
                 return False
             time.sleep(0.05)
         return True
     except Exception as e:
-        log.warning("Denon volume error: host={CFG.denon_host} points={points} err={e}")
+        log.warning(f"Denon volume error: host={CFG.denon_host} points={points} err={e}")
         return False
 
 
@@ -366,30 +366,22 @@ def run_denon_power(on: bool) -> bool:
     action = "PowerOn" if on else "PowerStandby"
     url = f"http://{CFG.denon_host}/goform/formiPhoneAppPower.xml?1+{action}"
     try:
-        res = HTTP.get(url, timeout=4)
+        res = requests.get(url, timeout=4)
         if res.status_code != 200:
-            log.warning("Denon power failed: status={res.status_code} host={CFG.denon_host} action={action}")
-            return False
-        text = res.text or ""
-        expected = "ON" if on else "OFF"
-        m = re.search(r"<Power>\s*<value>\s*(ON|OFF)\s*</value>\s*</Power>", text, flags=re.IGNORECASE)
-        if not m:
-            log.warning("Denon power failed: host={CFG.denon_host} action={action} body={text[:120]!r}")
-            return False
-        state = m.group(1).upper()
-        if state != expected:
-            log.warning("Denon power failed: host={CFG.denon_host} expected={expected} got={state}")
+            log.warning(f"Denon power failed: status={res.status_code} host={CFG.denon_host} action={action}")
             return False
         return True
     except Exception as e:
-        log.warning("Denon power error: host={CFG.denon_host} action={action} err={e}")
+        log.warning(f"Denon power error: host={CFG.denon_host} action={action} err={e}")
         return False
 
 
 # Turn the audio system on or off via CEC over SSH.
 def run_cec_power(on: bool) -> bool:
     if CFG.denon_host:
-        return run_denon_power(on)
+        if run_denon_power(on):
+            return True
+        log.info("Denon power command failed, falling back to CEC")
     host = shlex.quote(CFG.cec_host)
     ssh = f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{host}"
     if on:
@@ -433,9 +425,9 @@ def get_hifi_power_status():
     if CFG.denon_host:
         url = f"http://{CFG.denon_host}/goform/formMainZone_MainZoneXml.xml"
         try:
-            res = HTTP.get(url, timeout=4)
+            res = requests.get(url, timeout=4)
             if res.status_code != 200:
-                log.warning("Denon power status failed: status={res.status_code} host={CFG.denon_host}")
+                log.warning(f"Denon power status failed: status={res.status_code} host={CFG.denon_host}")
                 return None
             text = res.text or ""
             m = re.search(r"<Power>\s*<value>\s*(ON|OFF|STANDBY)\s*</value>\s*</Power>", text, flags=re.IGNORECASE)
@@ -448,7 +440,7 @@ def get_hifi_power_status():
                 return "Standby"
             return None
         except Exception as e:
-            log.warning("Denon power status error: host={CFG.denon_host} err={e}")
+            log.warning(f"Denon power status error: host={CFG.denon_host} err={e}")
             return None
 
     host = shlex.quote(CFG.cec_host)
@@ -457,14 +449,14 @@ def get_hifi_power_status():
     try:
         res = subprocess.run(cmd, shell=True, check=False, capture_output=True, text=True)
         if res.returncode != 0:
-            log.warning("CEC command failed: rc={res.returncode} stderr={res.stderr.strip()}")
+            log.warning(f"CEC command failed: rc={res.returncode} stderr={res.stderr.strip()}")
             return None
         val = (res.stdout or "").strip()
         if val in ("On", "Standby"):
             return val
         return None
     except Exception as e:
-        log.warning("CEC error: err={e}")
+        log.warning(f"CEC error: err={e}")
         return None
 
 
@@ -473,9 +465,9 @@ def get_airplay_status():
         return None
     url = f"http://{CFG.denon_host}/goform/formNetAudio_StatusXml.xml"
     try:
-        res = HTTP.get(url, timeout=4)
+        res = requests.get(url, timeout=4)
         if res.status_code != 200:
-            log.warning("AirPlay failed: status={res.status_code} host={CFG.denon_host}")
+            log.warning(f"AirPlay failed: status={res.status_code} host={CFG.denon_host}")
             return None
         text = res.text or ""
         m = re.search(r"<szLine>(.*?)</szLine>", text, flags=re.DOTALL | re.IGNORECASE)
@@ -488,7 +480,7 @@ def get_airplay_status():
             return "On"
         return "Off"
     except Exception as e:
-        log.warning("AirPlay error: host={CFG.denon_host} err={e}")
+        log.warning(f"AirPlay error: host={CFG.denon_host} err={e}")
         return None
 
 
@@ -497,9 +489,9 @@ def get_denon_mainzone_volume():
         return None
     url = f"http://{CFG.denon_host}/goform/formMainZone_MainZoneXml.xml"
     try:
-        res = HTTP.get(url, timeout=4)
+        res = requests.get(url, timeout=4)
         if res.status_code != 200:
-            log.warning("Denon volume failed: status={res.status_code} host={CFG.denon_host}")
+            log.warning(f"Denon volume failed: status={res.status_code} host={CFG.denon_host}")
             return None
         text = res.text or ""
         m = re.search(
@@ -517,7 +509,7 @@ def get_denon_mainzone_volume():
                 return val
         return values[0]
     except Exception as e:
-        log.warning("Denon volume error: host={CFG.denon_host} err={e}")
+        log.warning(f"Denon volume error: host={CFG.denon_host} err={e}")
         return None
 
 
@@ -1327,7 +1319,7 @@ def fetch_library_item(item_type, item_id):
             ["title", "year", "originaltitle", "uniqueid", "imdbnumber"],
         )
         if res.get("error"):
-            log.debug("Library fetch: movie error={res.get('error')} id={item_id}")
+            log.debug(f"Library fetch: movie error={res.get('error')} id={item_id}")
         return (res.get("result", {}) or {}).get("moviedetails", {}) or {}
     if itype == "episode":
         res = kodi_call_with_props(
@@ -1337,7 +1329,7 @@ def fetch_library_item(item_type, item_id):
             ["title", "showtitle", "season", "episode", "uniqueid", "imdbnumber"],
         )
         if res.get("error"):
-            log.debug("Library fetch: episode error={res.get('error')} id={item_id}")
+            log.debug(f"Library fetch: episode error={res.get('error')} id={item_id}")
         return (res.get("result", {}) or {}).get("episodedetails", {}) or {}
     if itype == "tvshow":
         res = kodi_call_with_props(
@@ -1347,7 +1339,7 @@ def fetch_library_item(item_type, item_id):
             ["title", "year", "uniqueid", "imdbnumber"],
         )
         if res.get("error"):
-            log.debug("Library fetch: tvshow error={res.get('error')} id={item_id}")
+            log.debug(f"Library fetch: tvshow error={res.get('error')} id={item_id}")
         return (res.get("result", {}) or {}).get("tvshowdetails", {}) or {}
     return {}
 
@@ -1389,9 +1381,9 @@ def build_imdb_link(item):
 def scan_video_library():
     res = kodi_call("VideoLibrary.Scan")
     if res.get("error"):
-        log.warning("Video library scan failed: error={res['error']}")
+        log.warning(f"Video library scan failed: error={res['error']}")
         return False
-    log.info("Video library scan ok: res={res}")
+    log.info(f"Video library scan ok: res={res}")
     return True
 
 
