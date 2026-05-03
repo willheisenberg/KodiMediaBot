@@ -96,7 +96,11 @@ def schedule_playback_action(ctx, chat_id, action, *args):
             try:
                 await asyncio.to_thread(action, *args)
             except Exception as e:
-                log.info("PLAYBACK ACTION ERROR action={getattr(action, '__name__', action)} err={e}")
+                log.info(
+                    "PLAYBACK ACTION ERROR action=%s err=%s",
+                    getattr(action, "__name__", action),
+                    e,
+                )
 
     asyncio.get_running_loop().create_task(_run())
 
@@ -263,7 +267,12 @@ def record_last_seen(ctx, update):
     msg = update.effective_message
     if msg:
         seen_id = remember_last_seen(update.effective_chat.id, msg.message_id)
-        log.info("SEEN chat_id={update.effective_chat.id} message_id={msg.message_id} stored={seen_id}")
+        log.info(
+            "SEEN chat_id=%s message_id=%s stored=%s",
+            update.effective_chat.id,
+            msg.message_id,
+            seen_id,
+        )
 
 
 # Schedule deletion of recent messages after a delay.
@@ -283,7 +292,14 @@ def schedule_cleanup(ctx, chat_id, prev_id):
     else:
         prev_id = FIRST_BOT_ID.get(chat_id)
     end_id = max(x for x in [last_seen, last_bot] if x is not None)
-    log.info("SCHEDULE CLEANUP chat_id={chat_id} prev_id={prev_id} end_id={end_id} inclusive={start_inclusive} last_cleanup={LAST_CLEANUP_ID.get(chat_id)}")
+    log.info(
+        "SCHEDULE CLEANUP chat_id=%s prev_id=%s end_id=%s inclusive=%s last_cleanup=%s",
+        chat_id,
+        prev_id,
+        end_id,
+        start_inclusive,
+        LAST_CLEANUP_ID.get(chat_id),
+    )
     if hasattr(ctx, "application"):
         ctx.application.create_task(_cleanup_after_delay(ctx, chat_id, prev_id, end_id, start_inclusive))
     elif S.MAIN_LOOP is not None:
@@ -302,7 +318,13 @@ def schedule_cleanup(ctx, chat_id, prev_id):
 # Delete a range of messages after a delay.
 async def _cleanup_after_delay(ctx, chat_id, start_id, end_id, start_inclusive):
     await asyncio.sleep(4)
-    log.info("RUN CLEANUP chat_id={chat_id} start_id={start_id} end_id={end_id} inclusive={start_inclusive}")
+    log.info(
+        "RUN CLEANUP chat_id=%s start_id=%s end_id=%s inclusive=%s",
+        chat_id,
+        start_id,
+        end_id,
+        start_inclusive,
+    )
     if start_id is not None:
         begin = start_id if start_inclusive else start_id + 1
         for mid in range(begin, end_id + 1):
@@ -313,7 +335,7 @@ async def _cleanup_after_delay(ctx, chat_id, start_id, end_id, start_inclusive):
                     continue
                 await telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=mid)
             except Exception as e:
-                log.info("DELETE FAIL chat_id={chat_id} message_id={mid} err={e}")
+                log.info("DELETE FAIL chat_id=%s message_id=%s err=%s", chat_id, mid, e)
     prev_cleanup = LAST_CLEANUP_ID.get(chat_id)
     if prev_cleanup is None or end_id > prev_cleanup:
         LAST_CLEANUP_ID[chat_id] = end_id
@@ -330,11 +352,11 @@ async def warn_and_cleanup_chat(ctx, chat_id, user_msg_id, delay=5):
     try:
         await telegram_request(ctx.bot.delete_message, chat_id=chat_id, message_id=warn.message_id)
     except Exception as e:
-        log.info("DELETE FAIL chat_id={chat_id} message_id={warn.message_id} err={e}")
+        log.info("DELETE FAIL chat_id=%s message_id=%s err=%s", chat_id, warn.message_id, e)
     try:
         await telegram_request(ctx.bot.delete_message, chat_id=chat_id, message_id=user_msg_id)
     except Exception as e:
-        log.info("DELETE FAIL chat_id={chat_id} message_id={user_msg_id} err={e}")
+        log.info("DELETE FAIL chat_id=%s message_id=%s err=%s", chat_id, user_msg_id, e)
 
 
 async def play_image_items(ctx, chat_id, message_ids, items):
@@ -364,7 +386,13 @@ async def play_image_items(ctx, chat_id, message_ids, items):
         if not ok:
             raise RuntimeError("Kodi rejected picture playback.")
     except Exception as e:
-        log.info("IMAGE PLAY FAIL chat_id={chat_id} message_ids={message_ids} count={len(items)} err={e}")
+        log.info(
+            "IMAGE PLAY FAIL chat_id=%s message_ids=%s count=%s err=%s",
+            chat_id,
+            message_ids,
+            len(items),
+            e,
+        )
         if created_session:
             media.cleanup_active_image_session()
         else:
@@ -403,7 +431,12 @@ async def on_button(update, ctx):
     cmd = q.data
     if q.message:
         seen_id = remember_last_seen(update.effective_chat.id, q.message.message_id)
-        log.info("SEEN chat_id={update.effective_chat.id} message_id={q.message.message_id} stored={seen_id}")
+        log.info(
+            "SEEN chat_id=%s message_id=%s stored=%s",
+            update.effective_chat.id,
+            q.message.message_id,
+            seen_id,
+        )
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
     prev_id = LAST_BOT_ID.get(chat_id)
@@ -1570,7 +1603,7 @@ async def handle_text(update, ctx):
         try:
             item = await media.download_social_video_item(txt)
         except Exception as e:
-            log.info("SOCIAL VIDEO DOWNLOAD FAIL chat_id={chat_id} message_id={msg_id} err={e}")
+            log.info("SOCIAL VIDEO DOWNLOAD FAIL chat_id=%s message_id=%s err=%s", chat_id, msg_id, e)
             await send_and_track(ctx, chat_id, "⚠ Video link could not be downloaded.")
             schedule_cleanup(ctx, chat_id, prev_id)
             return
@@ -1579,7 +1612,7 @@ async def handle_text(update, ctx):
                 await asyncio.to_thread(queue_state.clear_bot_playback_state)
                 await asyncio.to_thread(queue_state.play_item, item)
             except Exception as e:
-                log.info("SOCIAL VIDEO PLAY FAIL chat_id={chat_id} message_id={msg_id} err={e}")
+                log.info("SOCIAL VIDEO PLAY FAIL chat_id=%s message_id=%s err=%s", chat_id, msg_id, e)
                 media.cleanup_temp_media(item.get("url"))
                 await send_and_track(ctx, chat_id, "⚠ Video link could not be played.")
                 schedule_cleanup(ctx, chat_id, prev_id)
@@ -1611,7 +1644,7 @@ async def handle_nontext(update, ctx):
     try:
         item = await media.download_media_item(ctx.bot, msg)
     except Exception as e:
-        log.info("MEDIA DOWNLOAD FAIL chat_id={chat_id} message_id={msg.message_id} err={e}")
+        log.info("MEDIA DOWNLOAD FAIL chat_id=%s message_id=%s err=%s", chat_id, msg.message_id, e)
         user_msg = getattr(e, "user_message", "⚠ Upload could not be processed.")
         await send_and_track(ctx, chat_id, user_msg)
         schedule_cleanup(ctx, chat_id, LAST_BOT_ID.get(chat_id))
@@ -1638,7 +1671,7 @@ async def handle_nontext(update, ctx):
         await asyncio.to_thread(queue_state.clear_bot_playback_state)
         await asyncio.to_thread(queue_state.play_item, item)
     except Exception as e:
-        log.info("MEDIA PLAY FAIL chat_id={chat_id} message_id={msg.message_id} err={e}")
+        log.info("MEDIA PLAY FAIL chat_id=%s message_id=%s err=%s", chat_id, msg.message_id, e)
         media.cleanup_temp_media(item.get("url"))
         await send_and_track(ctx, chat_id, "⚠ Upload could not be played.")
         schedule_cleanup(ctx, chat_id, LAST_BOT_ID.get(chat_id))
@@ -1693,7 +1726,7 @@ async def reset_panel_command(update, ctx):
                 try:
                     await telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=mid)
                 except Exception as e:
-                    log.info("DELETE FAIL chat_id={chat_id} message_id={mid} err={e}")
+                    log.info("DELETE FAIL chat_id=%s message_id=%s err=%s", chat_id, mid, e)
 
             LAST_BOT_ID.pop(chat_id, None)
             PREV_BOT_ID.pop(chat_id, None)

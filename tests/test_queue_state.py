@@ -84,6 +84,21 @@ class TestQueueOperations:
         queue_state.queue_item(queue_state.make_item("B", "url2", "video"))
         queue_state.clear_queue()
         assert len(queue_state.QUEUE) == 0
+        assert queue_state.CURRENT_INDEX is None
+        assert queue_state.DISPLAY_INDEX is None
+        assert queue_state.NEXT_INDEX == 0
+
+    def test_clear_queue_resets_display_and_ws_expectation(self):
+        queue_state.queue_item(queue_state.make_item("A", "url1", "video"))
+        queue_state.DISPLAY_INDEX = 0
+        queue_state.CURRENT_INDEX = 0
+        queue_state.NEXT_INDEX = 1
+        queue_state.set_expecting_ws(2)
+        queue_state.clear_queue()
+        assert queue_state.DISPLAY_INDEX is None
+        assert queue_state.CURRENT_INDEX is None
+        assert queue_state.NEXT_INDEX == 0
+        assert queue_state.get_expecting_ws() == 0
 
     def test_delete_index(self):
         queue_state.queue_item(queue_state.make_item("A", "url1", "video"))

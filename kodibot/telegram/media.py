@@ -305,7 +305,12 @@ def maybe_faststart_mp4(path: str, kind: str):
         return path
 
     if res.returncode != 0 or not os.path.exists(faststart_path):
-        log.info("FASTSTART failed path={path} rc={res.returncode} stderr={(res.stderr or '').strip()}")
+        log.info(
+            "FASTSTART failed path=%s rc=%s stderr=%s",
+            path,
+            res.returncode,
+            (res.stderr or "").strip(),
+        )
         try:
             if os.path.exists(faststart_path):
                 os.remove(faststart_path)
@@ -560,10 +565,21 @@ def cleanup_temp_media(url: str):
         for path in cleanup_dirs:
             if path and os.path.exists(path):
                 shutil.rmtree(path, ignore_errors=False)
-        log.info("TEMP MEDIA cleaned key={norm_url} paths={list(cleanup_paths)} dirs={list(cleanup_dirs)}")
+        log.info(
+            "TEMP MEDIA cleaned key=%s paths=%s dirs=%s",
+            norm_url,
+            list(cleanup_paths),
+            list(cleanup_dirs),
+        )
         return True
     except Exception as e:
-        log.info("TEMP MEDIA cleanup fail key={norm_url} paths={list(cleanup_paths)} dirs={list(cleanup_dirs)} err={e}")
+        log.info(
+            "TEMP MEDIA cleanup fail key=%s paths=%s dirs=%s err=%s",
+            norm_url,
+            list(cleanup_paths),
+            list(cleanup_dirs),
+            e,
+        )
         return False
 
 
@@ -594,7 +610,12 @@ def cleanup_stale_temp_media():
     with _IMAGE_SESSION_LOCK:
         global _IMAGE_SESSION
         _IMAGE_SESSION = None
-    log.info("TEMP MEDIA startup cleanup dir={CFG.upload_dir} removed={removed} failed={failed}")
+    log.info(
+        "TEMP MEDIA startup cleanup dir=%s removed=%s failed=%s",
+        CFG.upload_dir,
+        removed,
+        failed,
+    )
 
 
 class _MediaRequestHandler(SimpleHTTPRequestHandler):
