@@ -6,14 +6,13 @@ Besides YouTube and SoundCloud queue links, the bot can also play Telegram
 voice/video uploads and selected social-media video URLs directly once.
 Those temporary media files are deleted again after playback stops.
 
-## Files
-- `main.py`: entrypoint.
-- `telegram_ui.py`: Telegram UI handlers.
-- `queue_state.py`: queue + playback state.
-- `kodi_api.py`: Kodi JSON-RPC + WS helpers.
-- `playlist_store.py`: save/load playlist JSON.
-- `telegram_media.py`: Telegram uploads temporaer speichern, direkt an Kodi ausliefern und wieder loeschen.
-- `Dockerfile`: builds the image.
+## Structure
+- `main.py`: Entrypoint.
+- `kodibot/config.py`: Central configuration.
+- `kodibot/core/`: Kodi JSON-RPC, queue state, and playlist storage.
+- `kodibot/telegram/`: Telegram handlers, UI panel rendering, and integrated media server.
+- `tests/`: Pytest unit tests.
+- `Dockerfile`: Builds the image.
 
 ## Build
 From this folder:
