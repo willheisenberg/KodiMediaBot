@@ -1522,10 +1522,9 @@ async def kodi_ws_listener():
                         if playing_file:
                             LAST_WS_PLAYING_FILE = playing_file
                     if method in ("Player.OnPlay", "Player.OnAVStart"):
-                        now = time.time()
                         WS_PLAYING = True
                         WS_STATE = "playing"
-                        WS_LAST_EVENT_TS = now
+                        WS_LAST_EVENT_TS = time.time()
                         data = msg.get("params", {}).get("data", {}) or {}
                         player_params = data.get("player", {}) or {}
                         item_params = data.get("item", {}) or {}
@@ -1585,9 +1584,9 @@ async def kodi_ws_listener():
                         LAST_WS_PLAYING_FILE = ""
                         if _ws_on_stop:
                             _ws_on_stop()
-        except Exception:
+        except Exception as e:
             WS_CONNECTED = False
             WS_STATE = "unknown"
-            log.debug("WS disconnected, reconnecting in %ds", backoff)
+            log.warning("WS disconnected or error: %s. Reconnecting in %ds", e, backoff)
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 60)
