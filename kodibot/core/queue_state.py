@@ -106,6 +106,7 @@ def get_expecting_ws() -> int:
 # ── WS callback handlers (registered with kodi_api) ────────────────
 def _handle_ws_play(*, item, item_params):
     """Called from kodi_api WS listener on Player.OnPlay/OnAVStart."""
+    global BOT_EXPECTING_WS
     # decrement_expecting_ws returns the value AFTER decrement.
     # If before decrement it was > 0, this play was bot-initiated.
     with LOCK:
