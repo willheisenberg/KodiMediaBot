@@ -122,3 +122,52 @@ class TestNowPlayingText:
         assert queue_state.EXTERNAL_PLAYBACK is False
         assert queue_state.CURRENT_INDEX == 0
         assert queue_state.DISPLAY_INDEX == 0
+
+    def test_external_movie_replaces_stale_soundcloud_queue_title(self, monkeypatch):
+        queue_state.QUEUE.append(
+            {
+                "title": "artist - track",
+                "url": "plugin://plugin.audio.soundcloud/play/?url=https://soundcloud.com/artist/track",
+                "kind": "audio",
+                "link": "https://soundcloud.com/artist/track",
+            }
+        )
+        queue_state.CURRENT_INDEX = 0
+        queue_state.DISPLAY_INDEX = 0
+        kodi_api.LAST_WS_SC_URL = "https://soundcloud.com/artist/track"
+
+        async def fake_call(method, params=None):
+            if method == "Player.GetActivePlayers":
+                return {"result": [{"playerid": 1, "type": "video"}]}
+            if method == "Player.GetProperties":
+                return {
+                    "result": {
+                        "time": {"hours": 0, "minutes": 0, "seconds": 12},
+                        "totaltime": {"hours": 1, "minutes": 30, "seconds": 0},
+                    }
+                }
+            if method == "Player.GetItem":
+                return {
+                    "result": {
+                        "item": {
+                            "type": "movie",
+                            "title": "External Movie",
+                            "file": "smb://movies/external.mkv",
+                            "label": "External Movie",
+                        }
+                    }
+                }
+            raise AssertionError(method)
+
+        monkeypatch.setattr(panel.kodi_api, "kodi_call_async", fake_call)
+        monkeypatch.setattr(panel.kodi_api, "pick_playerid", lambda players: 1)
+        monkeypatch.setattr(panel.kodi_api, "external_item_display", lambda item: ("External Movie", "https://www.imdb.com/title/tt1234567/"))
+        monkeypatch.setattr(panel.kodi_api, "maybe_cache_soundcloud_url", lambda file_url: None)
+
+        text, progress = asyncio.run(panel.get_now_playing_text())
+
+        assert "External Movie" in text
+        assert "https://www.imdb.com/title/tt1234567/" in text
+        assert "soundcloud.com/artist/track" not in text
+        assert progress == "00:12 / 1:30:00"
+        assert queue_state.EXTERNAL_PLAYBACK is True

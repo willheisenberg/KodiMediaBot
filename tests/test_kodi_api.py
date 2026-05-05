@@ -134,6 +134,25 @@ class TestExternalItemDisplay:
         assert link == "https://soundcloud.com/artist-name/track-name"
 
 
+class TestKodiItemMatchesQueue:
+    def test_external_movie_does_not_match_stale_soundcloud_queue_item(self):
+        kodi_api.LAST_WS_SC_URL = "https://soundcloud.com/artist/track"
+        item = {
+            "file": "smb://movies/external.mkv",
+            "title": "External Movie",
+            "label": "External Movie",
+            "type": "movie",
+        }
+        qitem = {
+            "title": "artist - track",
+            "url": "plugin://plugin.audio.soundcloud/play/?url=https://soundcloud.com/artist/track",
+            "kind": "audio",
+            "link": "https://soundcloud.com/artist/track",
+        }
+
+        assert kodi_api.kodi_item_matches_queue(item, qitem) is False
+
+
 class TestFavouriteMediaTarget:
     def test_media_type(self):
         fav = {"type": "media", "path": "plugin://some/url"}

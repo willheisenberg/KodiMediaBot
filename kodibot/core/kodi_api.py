@@ -1325,7 +1325,10 @@ def kodi_item_matches_queue(item, qitem):
     if q_link and "soundcloud.com" in q_link:
         if item_file and "sndcdn" in item_file:
             return True
-        if LAST_WS_SC_URL and LAST_WS_SC_URL == q_link:
+        item_sc_url = extract_soundcloud_url(item_file)
+        if item_sc_url and item_sc_url == q_link:
+            return True
+        if LAST_WS_SC_URL and LAST_WS_SC_URL == q_link and is_soundcloud_stream_url(item_file):
             return True
         item_title = item.get("title") or item.get("label") or ""
         q_slug = soundcloud_track_slug_from_url(q_link)
