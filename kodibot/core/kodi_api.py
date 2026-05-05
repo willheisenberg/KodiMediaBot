@@ -54,6 +54,7 @@ YT_SEARCH_CACHE = {}
 SC_SEARCH_CACHE = {}
 HTTP = requests.Session()
 LAST_KODI_ERROR_LOG_TS = 0.0
+PLAYER_GETITEM_PROPERTIES = ["title", "artist", "file"]
 
 # ── WebSocket callback registry ─────────────────────────────────────
 # Replaces the circular importlib hack.  queue_state registers its
@@ -674,6 +675,25 @@ def soundcloud_track_slug_from_url(url):
     return m.group(2) or ""
 
 
+def soundcloud_display_title_from_url(url):
+    if not url:
+        return ""
+    m = re.match(r"^https?://(www\.)?soundcloud\.com/([^/]+)/([^/?#]+)", url)
+    if not m:
+        return ""
+    artist = unquote(m.group(2) or "").replace("-", " ").strip()
+    track = unquote(m.group(3) or "").replace("-", " ").strip()
+    if artist and track:
+        return f"{artist} - {track}"
+    return artist or track
+
+
+def is_soundcloud_stream_url(url):
+    if not isinstance(url, str):
+        return False
+    return "sndcdn" in url or "media-streaming.soundcloud.cloud" in url
+
+
 def guess_soundcloud_link(artist, title):
     if isinstance(artist, list):
         artist = artist[0] if artist else ""
@@ -1071,6 +1091,10 @@ def fetch_soundcloud_permalink(track_id):
 def maybe_cache_soundcloud_url(file_url):
     global LAST_WS_SC_URL
     sc_url = extract_soundcloud_url(file_url)
+    if not sc_url and isinstance(file_url, str):
+        clean = re.sub(r"\?.*$", "", file_url.strip())
+        if SC.match(clean):
+            sc_url = clean
     if sc_url:
         LAST_WS_SC_URL = sc_url
 
@@ -1221,7 +1245,15 @@ def external_item_display(item):
         yt_id = extract_youtube_id(link)
         if yt_id:
             link = f"https://youtu.be/{yt_id}"
-        elif "sndcdn" in link:
+        elif is_soundcloud_stream_url(link):
+            if LAST_WS_SC_URL:
+                link = LAST_WS_SC_URL
+                display_name = label or title
+                if display_name and display_name.casefold() != "playlist.m3u8":
+                    return display_name, link
+                fallback_name = soundcloud_display_title_from_url(LAST_WS_SC_URL)
+                if fallback_name:
+                    return fallback_name, link
             track_id = extract_soundcloud_track_id(file_url)
             if LAST_WS_SC_URL and LAST_WS_SC_TRACK_ID and track_id and track_id == LAST_WS_SC_TRACK_ID:
                 link = LAST_WS_SC_URL
@@ -1535,7 +1567,7 @@ async def kodi_ws_listener():
                                 "Player.GetItem",
                                 {
                                     "playerid": LAST_WS_PLAYERID,
-                                    "properties": ["title", "artist", "file", "type", "label"],
+                                    "properties": PLAYER_GETITEM_PROPERTIES,
                                 },
                             )).get("result", {}).get("item", {})
                             playing_file = (item or {}).get("file") or ""
@@ -1552,7 +1584,7 @@ async def kodi_ws_listener():
                             if pid is not None:
                                 item = (await kodi_call_async(
                                     "Player.GetItem",
-                                    {"playerid": pid, "properties": ["title", "artist", "file", "type", "label"]},
+                                    {"playerid": pid, "properties": PLAYER_GETITEM_PROPERTIES},
                                 )).get("result", {}).get("item", {})
                         if _ws_on_play:
                             _ws_on_play(item=item, item_params=item_params)

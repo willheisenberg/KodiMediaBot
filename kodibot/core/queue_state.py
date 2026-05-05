@@ -10,6 +10,7 @@ import requests
 from yt_dlp import YoutubeDL
 
 from kodibot.core import kodi_api
+from kodibot.config import CFG
 from kodibot.telegram import media
 
 log = logging.getLogger(__name__)
@@ -48,6 +49,8 @@ SC_HTML_RE = re.compile(r'https?://soundcloud\.com/[^\s"\'<>]+')
 YT_TITLE_CACHE = {}
 YT_TITLE_CACHE_TTL = 3600.0
 YT_TITLE_CACHE_LOCK = threading.Lock()
+SC_PLUGIN_START_TIMEOUT_S = 4.0
+SC_PLUGIN_START_POLL_S = 0.25
 
 
 def get_cached_youtube_title(vid: str):
@@ -269,6 +272,112 @@ def seek_when_player_ready(t, context=""):
     threading.Thread(target=_seek, daemon=True).start()
 
 
+def is_soundcloud_item(item: dict):
+    if not isinstance(item, dict):
+        return False
+    if item.get("resolver") == "soundcloud":
+        return True
+    link = item.get("link") or ""
+    url = item.get("url") or ""
+    if isinstance(link, str) and is_sc_track_url(link):
+        return True
+    if isinstance(url, str) and url.startswith("plugin://plugin.audio.soundcloud/"):
+        return True
+    return False
+
+
+def soundcloud_playback_started(source_link: str):
+    pid = kodi_api.get_active_playerid()
+    if pid is None:
+        return False
+    item = (
+        kodi_api.kodi_call(
+            "Player.GetItem",
+            {"playerid": pid, "properties": ["file", "title", "artist"]},
+        ).get("result", {}) or {}
+    ).get("item", {}) or {}
+    file_url = item.get("file") or ""
+    if not file_url:
+        return False
+    sc_url = kodi_api.extract_soundcloud_url(file_url)
+    if sc_url and source_link and sc_url == source_link:
+        return True
+    if kodi_api.is_soundcloud_stream_url(file_url):
+        return True
+    return False
+
+
+def resolve_soundcloud_playlist_media_url(playlistid=0, timeout_s=1.5, interval_s=0.25):
+    end = time.time() + timeout_s
+    while time.time() < end:
+        res = kodi_api.kodi_call(
+            "Playlist.GetItems",
+            {"playlistid": playlistid, "properties": ["file", "title"]},
+        )
+        items = ((res or {}).get("result", {}) or {}).get("items", []) or []
+        for it in items:
+            file_url = it.get("file") or ""
+            if "media_url=" in file_url:
+                return file_url
+        time.sleep(interval_s)
+    return ""
+
+
+def open_soundcloud_resolved_playlist_item(title: str, source_link: str, resume_time=None, playlistid=0, position=0):
+    res = kodi_api.kodi_call("Player.Open", {"item": {"playlistid": playlistid, "position": position}})
+    log.info("play_item soundcloud open_mode=resolved_playlist_start title=%s source=%s", title, source_link)
+    log.debug("play_item open soundcloud resolved_playlist_start res=%s", res)
+    schedule_playback_refresh()
+    if resume_time is not None:
+        seek_when_player_ready(resume_time, context="soundcloud")
+    return True
+
+
+def schedule_soundcloud_plugin_fallback(item: dict, source_link: str, resume_time=None):
+    title = item.get("title")
+
+    def _run():
+        end = time.time() + SC_PLUGIN_START_TIMEOUT_S
+        while time.time() < end:
+            try:
+                if soundcloud_playback_started(source_link):
+                    return
+            except Exception:
+                pass
+            time.sleep(SC_PLUGIN_START_POLL_S)
+
+        resolved_url = resolve_soundcloud_playlist_media_url()
+        if resolved_url:
+            log.warning(
+                "play_item soundcloud plugin_direct stalled, starting resolved playlist item "
+                "title=%s source=%s",
+                title,
+                source_link,
+            )
+            open_soundcloud_resolved_playlist_item(
+                title,
+                source_link,
+                resume_time=resume_time,
+            )
+            retry_end = time.time() + 2.0
+            while time.time() < retry_end:
+                try:
+                    if soundcloud_playback_started(source_link):
+                        return
+                except Exception:
+                    pass
+                time.sleep(SC_PLUGIN_START_POLL_S)
+
+        log.warning(
+            "play_item soundcloud plugin_direct stalled and resolved playlist did not start "
+            "title=%s source=%s",
+            title,
+            source_link,
+        )
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 # Start playback of a queue item via Kodi.
 def play_item(item: dict, resume_time=None):
     media.cleanup_active_image_session()
@@ -277,15 +386,28 @@ def play_item(item: dict, resume_time=None):
     kind = item.get("kind", "video")
     resolver = item.get("resolver")
     set_expecting_ws(2)
-    log.info("play_item start kind=%s title=%s url=%s", item.get('kind'), item.get('title'), item.get('url'))
+    log.info(
+        "play_item start kind=%s resolver=%s title=%s url=%s",
+        item.get("kind"),
+        resolver,
+        item.get("title"),
+        item.get("url"),
+    )
 
-    if kind == "audio" and resolver == "soundcloud":
-        playlistid = 0
-        kodi_api.maybe_cache_soundcloud_url(item.get("url"))
-        kodi_add_to_playlist(item["url"], playlistid)
-        res = kodi_api.kodi_call("Player.Open", {"item": {"playlistid": playlistid, "position": 0}})
-        log.debug("play_item open audio res=%s", res)
-        schedule_audio_resolve_and_open(playlistid, resume_time=resume_time)
+    if kind == "audio" and is_soundcloud_item(item):
+        # Open the addon URL directly. The old playlist-based SoundCloud path
+        # (`Playlist.Add` + `Player.Open(playlistid=0)`) was what created the
+        # duplicate placeholder/stream entries in Kodi's audio playlist.
+        plugin_url = item["url"]
+        source_link = item.get("link") or kodi_api.extract_soundcloud_url(plugin_url) or plugin_url
+        kodi_api.maybe_cache_soundcloud_url(source_link)
+        log.info("play_item soundcloud open_mode=plugin_direct title=%s source=%s", item.get("title"), source_link)
+        res = kodi_api.kodi_call("Player.Open", {"item": {"file": plugin_url}})
+        log.debug("play_item open soundcloud res=%s", res)
+        schedule_soundcloud_plugin_fallback(item, source_link, resume_time=resume_time)
+        schedule_playback_refresh()
+        if resume_time is not None:
+            seek_when_player_ready(resume_time, context="soundcloud")
     elif kind == "audio":
         playlistid = 0
         kodi_add_to_playlist(item["url"], playlistid)
@@ -452,6 +574,159 @@ def make_soundcloud(url):
     )
 
 
+def _pick_soundcloud_stream_url(info):
+    if not isinstance(info, dict):
+        return ""
+    direct = info.get("url") or ""
+    if isinstance(direct, str) and direct.startswith(("http://", "https://")):
+        return direct
+
+    best_url = ""
+    best_score = None
+    for fmt in info.get("formats") or []:
+        if not isinstance(fmt, dict):
+            continue
+        url = fmt.get("url") or ""
+        if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+            continue
+        score = 0
+        protocol = (fmt.get("protocol") or "").lower()
+        if protocol in ("http", "https"):
+            score += 100
+        if (fmt.get("vcodec") or "").lower() in ("", "none"):
+            score += 10
+        if (fmt.get("acodec") or "").lower() not in ("", "none"):
+            score += 5
+        abr = fmt.get("abr")
+        if isinstance(abr, (int, float)):
+            score += min(int(abr), 999)
+        if best_score is None or score > best_score:
+            best_score = score
+            best_url = url
+    return best_url
+
+
+def _pick_soundcloud_transcoding(track_info):
+    if not isinstance(track_info, dict):
+        return None
+    media_info = track_info.get("media") or {}
+    transcodings = media_info.get("transcodings") or []
+    best = None
+    best_score = None
+    for transcoding in transcodings:
+        if not isinstance(transcoding, dict):
+            continue
+        api_url = transcoding.get("url") or ""
+        if not isinstance(api_url, str) or not api_url.startswith(("http://", "https://")):
+            continue
+        format_info = transcoding.get("format") or {}
+        protocol = (format_info.get("protocol") or "").lower()
+        mime = (format_info.get("mime_type") or "").lower()
+        preset = (transcoding.get("preset") or "").lower()
+        score = 0
+        if protocol == "progressive":
+            score += 100
+        elif protocol == "hls":
+            score += 80
+        if "audio/mpeg" in mime or "mp3" in preset:
+            score += 10
+        if "opus" in preset:
+            score += 5
+        if best_score is None or score > best_score:
+            best_score = score
+            best = transcoding
+    return best
+
+
+def _resolve_soundcloud_stream_url_via_api(url):
+    client_id = kodi_api.read_soundcloud_client_id()
+    if not client_id:
+        log.warning("SoundCloud direct resolve skipped url=%s err=no_client_id", url)
+        return ""
+    try:
+        resp = HTTP.get(
+            "https://api-v2.soundcloud.com/resolve",
+            params={"url": url, "client_id": client_id},
+            timeout=CFG.sc_search_timeout,
+        )
+    except Exception as e:
+        log.warning("SoundCloud resolve api failed url=%s err=%s", url, e)
+        return ""
+    if not resp.ok:
+        log.warning("SoundCloud resolve api bad status url=%s status=%s", url, resp.status_code)
+        return ""
+    try:
+        track_info = resp.json() or {}
+    except Exception as e:
+        log.warning("SoundCloud resolve api bad json url=%s err=%s", url, e)
+        return ""
+    transcoding = _pick_soundcloud_transcoding(track_info)
+    if not transcoding:
+        log.warning("SoundCloud resolve api no transcoding url=%s", url)
+        return ""
+    api_url = transcoding.get("url") or ""
+    try:
+        stream_resp = HTTP.get(
+            api_url,
+            params={"client_id": client_id},
+            timeout=CFG.sc_search_timeout,
+        )
+    except Exception as e:
+        log.warning("SoundCloud transcoding api failed url=%s api_url=%s err=%s", url, api_url, e)
+        return ""
+    if not stream_resp.ok:
+        log.warning(
+            "SoundCloud transcoding api bad status url=%s api_url=%s status=%s",
+            url,
+            api_url,
+            stream_resp.status_code,
+        )
+        return ""
+    try:
+        data = stream_resp.json() or {}
+    except Exception as e:
+        log.warning("SoundCloud transcoding api bad json url=%s api_url=%s err=%s", url, api_url, e)
+        return ""
+    stream_url = data.get("url") or ""
+    if not isinstance(stream_url, str) or not stream_url.startswith(("http://", "https://")):
+        log.warning("SoundCloud transcoding api no stream url=%s api_url=%s", url, api_url)
+        return ""
+    return stream_url
+
+
+def _resolve_soundcloud_stream_url_via_ytdlp(url):
+    clean = re.sub(r"\?.*$", "", (url or "").strip())
+    if not clean or not is_sc_track_url(clean):
+        return ""
+    ydl_opts = {
+        "quiet": True,
+        "skip_download": True,
+        "noplaylist": True,
+        "format": "bestaudio/best",
+        "socket_timeout": CFG.sc_search_timeout,
+    }
+    try:
+        with YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(clean, download=False)
+    except Exception as e:
+        log.warning("SoundCloud yt-dlp resolve failed url=%s err=%s", clean, e)
+        return ""
+    stream_url = _pick_soundcloud_stream_url(info)
+    if not stream_url:
+        log.warning("SoundCloud yt-dlp resolve returned no stream url=%s", clean)
+    return stream_url
+
+
+def resolve_soundcloud_stream_url(url):
+    clean = re.sub(r"\?.*$", "", (url or "").strip())
+    if not clean or not is_sc_track_url(clean):
+        return ""
+    stream_url = _resolve_soundcloud_stream_url_via_api(clean)
+    if stream_url:
+        return stream_url
+    return _resolve_soundcloud_stream_url_via_ytdlp(clean)
+
+
 # Validate that a SoundCloud URL is a track link.
 def is_sc_track_url(url):
     return bool(SC_TRACK_RE.match(url)) and "discover/sets" not in url
@@ -491,46 +766,6 @@ def kodi_add_to_playlist(url, playlistid):
         "Playlist.Add",
         {"playlistid": playlistid, "item": {"file": url}}
     )
-
-
-# Start playback of a Kodi playlist.
-def kodi_play_playlist(playlistid):
-    kodi_api.kodi_call(
-        "Player.Open",
-        {"item": {"playlistid": playlistid}}
-    )
-
-
-# Poll the Kodi playlist for the resolved SoundCloud stream URL.
-def resolve_soundcloud_media_url(playlistid, timeout_s=6.0, interval_s=0.5):
-    end = time.time() + timeout_s
-    while time.time() < end:
-        res = kodi_api.kodi_call(
-            "Playlist.GetItems",
-            {"playlistid": playlistid, "properties": ["file", "title"]}
-        )
-        items = res.get("result", {}).get("items", [])
-        for it in items:
-            f = it.get("file", "")
-            if "media_url=" in f:
-                return f
-        time.sleep(interval_s)
-    return None
-
-
-# Resolve SoundCloud stream URL asynchronously and open it.
-def schedule_audio_resolve_and_open(playlistid, resume_time=None):
-    def _run():
-        url = resolve_soundcloud_media_url(playlistid)
-        if not url:
-            return
-        kodi_api.kodi_call("Player.Open", {"item": {"file": url}})
-        kodi_api.kodi_call("Playlist.Clear", {"playlistid": playlistid})
-        schedule_playback_refresh()
-        if resume_time is not None:
-            log.debug("play_item audio stream opened, seeking")
-            seek_when_player_ready(resume_time, context="audio")
-    threading.Thread(target=_run, daemon=True).start()
 
 
 # Expand a SoundCloud set into track URLs using yt-dlp.
