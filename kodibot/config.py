@@ -79,6 +79,15 @@ class Config:
     playlist_dir: str
     ui_state_file: str
 
+    # ── Home Assistant ────────────────────────────────────────────────
+    ha_host: str | None
+    ha_port: int
+    ha_token: str
+    ha_light_id: str
+    ha_colors_file: str
+    ha_webapp_url: str
+    ha_webapp_max_age: int
+
     # ── Internal tuning ──────────────────────────────────────────────
     kodi_error_log_interval: float
 
@@ -95,6 +104,12 @@ class Config:
     @property
     def kodi_ws_url(self) -> str:
         return f"ws://{self.kodi_host}:{self.kodi_ws_port}/jsonrpc"
+
+    @property
+    def ha_base_url(self) -> str | None:
+        if not self.ha_host:
+            return None
+        return f"http://{self.ha_host}:{self.ha_port}"
 
     def resolve_media_base_url(self) -> str:
         if self.media_base_url:
@@ -173,6 +188,14 @@ class Config:
             # Persistence
             playlist_dir=os.environ.get("PLAYLIST_DIR", "/data/playlists"),
             ui_state_file=os.environ.get("UI_STATE_FILE", "/data/telegram_ui_state.json"),
+            # Home Assistant
+            ha_host=os.environ.get("HA_HOST") or None,
+            ha_port=int(os.environ.get("HA_PORT", "8123")),
+            ha_token=(os.environ.get("HA_TOKEN") or "").strip(),
+            ha_light_id=(os.environ.get("HA_LIGHT_ID") or "").strip(),
+            ha_colors_file=os.environ.get("HA_COLORS_FILE", "/data/ha_colors.json"),
+            ha_webapp_url=(os.environ.get("HA_WEBAPP_URL") or "").strip(),
+            ha_webapp_max_age=int(os.environ.get("HA_WEBAPP_MAX_AGE", "900")),
             # Tuning
             kodi_error_log_interval=float(os.environ.get("KODI_ERROR_LOG_INTERVAL", "10")),
         )
