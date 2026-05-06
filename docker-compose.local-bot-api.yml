@@ -34,11 +34,35 @@ services:
       TELEGRAM_LOCAL_MODE: "1"
       TELEGRAM_BASE_URL: "http://127.0.0.1:8081/bot"
       TELEGRAM_BASE_FILE_URL: "http://127.0.0.1:8081/file/bot"
+      HA_HOST: "${HA_HOST}"
+      HA_PORT: "${HA_PORT:-8123}"
+      HA_TOKEN: "${HA_TOKEN}"
+      HA_LIGHT_ID: "${HA_LIGHT_ID}"
+      HA_WEBAPP_URL: "${HA_WEBAPP_URL}"
+      HA_COLORS_FILE: "/data/colors/ha_colors.json"
     volumes:
       - /storage/docker/partyqueue:/root/.ssh:ro
       - /storage/docker/partyqueue/playlists:/data/playlists
       - /storage/docker/partyqueue/uploads:/data/uploads
+      - /storage/docker/partyqueue/colors:/data/colors
       - telegram-bot-api-data:/var/lib/telegram-bot-api:ro
+
+  caddy-webapp:
+    image: caddy:2-alpine
+    container_name: kodi-media-bot-caddy
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - kodi-media-bot
+    environment:
+      WEBAPP_HOSTNAME: "${WEBAPP_HOSTNAME}"
+      ACME_EMAIL: "${ACME_EMAIL}"
+    volumes:
+      - ${CADDYFILE_PATH:-./Caddyfile}:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
 
 volumes:
   telegram-bot-api-data:
+  caddy-data:
+  caddy-config:
