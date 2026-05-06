@@ -15,6 +15,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from kodibot.core import kodi_api
 from kodibot.core import queue_state
+from kodibot.core import homeassistant as ha
 from kodibot.config import CFG
 from kodibot.telegram import state as S
 from kodibot.telegram.rate import (
@@ -159,10 +160,14 @@ def control_panel():
             InlineKeyboardButton("🔌 Hifi On", callback_data="hifi:on"),
             InlineKeyboardButton("🔌 Hifi Off", callback_data="hifi:off"),
         ],
+    ] + (
         [
-            InlineKeyboardButton("☠️ AirPlay Kill", callback_data="airplay:kill"),
-        ],
-    ])
+            [
+                InlineKeyboardButton("☠️ AirPlay Kill", callback_data="airplay:kill"),
+                InlineKeyboardButton("🏠 Home Assistant", callback_data="ha:menu"),
+            ],
+        ] if ha.ha_available() else []
+    ))
 
 
 # ── Formatting helpers ───────────────────────────────────────────────
