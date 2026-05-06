@@ -16,6 +16,26 @@ from kodibot.core import kodi_api, queue_state
 from kodibot.telegram import panel
 
 
+class TestControlPanelMarkup:
+    def test_main_panel_includes_controls_button(self, monkeypatch):
+        monkeypatch.setattr(panel.ha, "ha_available", lambda: False)
+
+        markup = panel.control_panel(mode="main")
+
+        assert markup.inline_keyboard[2][0].text == "🎛 Controls"
+        assert markup.inline_keyboard[2][0].callback_data == "controls:menu"
+        assert all(button.text != "-10s" for row in markup.inline_keyboard for button in row)
+
+    def test_controls_panel_includes_seek_queue_and_back(self):
+        markup = panel.control_panel(mode="controls")
+
+        assert markup.inline_keyboard[0][0].callback_data == "seek:-10s"
+        assert markup.inline_keyboard[2][0].callback_data == "seek:percent"
+        assert markup.inline_keyboard[3][0].callback_data == "delete:ask"
+        assert markup.inline_keyboard[4][0].callback_data == "plist:save"
+        assert markup.inline_keyboard[-1][0].callback_data == "controls:back"
+
+
 class TestNowPlayingText:
     def setup_method(self):
         queue_state.QUEUE.clear()
