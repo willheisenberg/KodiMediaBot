@@ -21,6 +21,7 @@ FIRST_BOT_ID = {}
 STARTUP_POSTED = {}
 LIST_MSG_ID = {}
 PANEL_MSG_ID = {}
+HA_MENU_MSG_ID = {}
 
 # ── Status caches ────────────────────────────────────────────────────
 HIFI_STATUS_CACHE = "⚪ Hifi: Unknown"
@@ -64,3 +65,5 @@ WS_LISTENER_TASK = None
 PROMPT_TIMEOUT_SECONDS = 120
 PROMPT_TIMEOUT_TASKS = {}
 PENDING_TIMEOUT_TASKS = {}
+HA_MENU_TIMEOUT_SECONDS = 300
+HA_MENU_TIMEOUT_TASKS = {}
