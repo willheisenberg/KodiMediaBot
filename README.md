@@ -96,6 +96,11 @@ services:
       - /storage/docker/partyqueue/uploads:/data/uploads
 ```
 
+If you also enable the Home Assistant integration in this minimal compose setup, add the HA environment variables plus a persistent colors mount, for example:
+- `HA_HOST`, `HA_PORT`, `HA_TOKEN`, `HA_LIGHT_ID`, `HA_WEBAPP_URL`
+- `HA_COLORS_FILE=/data/colors/ha_colors.json`
+- `/storage/docker/partyqueue/colors:/data/colors`
+
 Starten:
 ```bash
 docker compose up -d --build
@@ -115,12 +120,47 @@ docker compose -f docker-compose.local-bot-api.yml up -d --build
 
 The local Bot API server stores downloaded Telegram files under `/var/lib/telegram-bot-api`. The compose file mounts that same volume into `kodi-media-bot` as read-only, otherwise media downloads fail with `Not Found` even for small files.
 
+The bundled `docker-compose.local-bot-api.yml` currently includes:
+- `telegram-bot-api` for large Telegram uploads.
+- `kodi-media-bot` itself.
+- `caddy-webapp` as the public HTTPS reverse proxy for the Telegram Mini App.
+
+The same compose file also persists bot data on the host:
+- `/storage/docker/partyqueue/playlists` -> `/data/playlists`
+- `/storage/docker/partyqueue/uploads` -> `/data/uploads`
+- `/storage/docker/partyqueue/colors` -> `/data/colors`
+
 Important when switching an existing bot from the Telegram cloud Bot API to a local Bot API server:
 ```bash
 curl -s "https://api.telegram.org/bot${TG_TOKEN}/logOut"
 ```
 
 Without this one-time `logOut`, Telegram may keep the bot attached to the cloud Bot API and the local server will not behave correctly.
+
+### HTTPS for the Home Assistant Mini App
+Telegram Mini Apps require a public `https://` URL with a valid certificate. The local compose setup now includes a `caddy-webapp` reverse proxy for that purpose.
+
+Requirements:
+- A public DNS name such as `bot.example.com` pointing to your Docker host.
+- Incoming ports `80/tcp` and `443/tcp` forwarded to that host.
+- `WEBAPP_HOSTNAME` set to that DNS name.
+- `ACME_EMAIL` set to a real email address for Let's Encrypt.
+- `HA_WEBAPP_URL` set to `https://YOUR_HOST/app/ha-color`.
+- In `@BotFather`, configure the bot's Main Mini App to the same URL so the group-chat `Open Live Color` button can open the Mini App directly.
+- `CADDYFILE_PATH` set when the compose file is started from a different host directory than the project root.
+
+Important:
+- Keep `MEDIA_BASE_URL` for Kodi uploads separate if needed. It may stay an internal HTTP URL like `http://192.168.178.10:8765`.
+- `HA_WEBAPP_URL` is only for Telegram's Mini App webview and should usually be the public HTTPS hostname served by Caddy.
+
+Example:
+```env
+MEDIA_BASE_URL=http://192.168.178.10:8765
+WEBAPP_HOSTNAME=bot.example.com
+ACME_EMAIL=you@example.com
+HA_WEBAPP_URL=https://bot.example.com/app/ha-color
+CADDYFILE_PATH=/storage/docker/partyqueue/vOpus/Caddyfile
+```
 
 Notes:
 - `--network host` is required so the bot can reach Kodi JSON-RPC on the host.
@@ -156,6 +196,19 @@ Notes:
 - Telegram uploads are stored temporarily in `/data/uploads` inside the container, deleted again after playback stops, and old leftovers are cleaned up on bot startup.
 - Social-media video links from supported domains like TikTok, Instagram, Facebook and X/Twitter are downloaded once with `yt-dlp`, played directly, and then deleted again.
 - Use the “Save” and “Load” buttons in the Telegram panel to store or restore the queue.
+- `HA_HOST` is the IP address of your Home Assistant instance.
+- `HA_PORT` is the port of Home Assistant (default `8123`).
+- `HA_TOKEN` is your Long-Lived Access Token from Home Assistant.
+- `HA_LIGHT_ID` is the entity ID of the light you want to control (e.g., `light.living_room`).
+- `HA_WEBAPP_URL` optionally points to the Telegram Mini App for the HA light control. It must be an `https://` URL.
+- `HA_COLORS_FILE` stores saved colors as JSON. In `docker-compose.local-bot-api.yml` it is set to `/data/colors/ha_colors.json`.
+- `WEBAPP_HOSTNAME` is the public DNS hostname used by the bundled Caddy reverse proxy for the Mini App.
+- `ACME_EMAIL` is the email address Caddy uses for Let's Encrypt certificate management.
+- `CADDYFILE_PATH` optionally overrides the host path mounted as `/etc/caddy/Caddyfile`.
+- If `HA_WEBAPP_URL` is not set, the bot falls back to `MEDIA_BASE_URL/app/ha-color` when `MEDIA_BASE_URL` itself is `https://`.
+- If `HA_HOST` is set, a `🏠 Home Assistant` button appears in the panel with options to toggle the light, open `Live Color`, set a hex color, adjust brightness, save the current color, load saved colors, and delete saved colors.
+- In private chats the HA menu shows the embedded `Live Color` Mini App button directly.
+- In group chats the HA menu shows `Open Live Color`, which uses Telegram's Main Mini App deep link and therefore depends on the BotFather Mini App configuration above.
 
 ### `KODI_HOST` vs `MEDIA_BASE_URL`
 - `KODI_HOST=172.17.0.1` is used by the bot to reach Kodi JSON-RPC.
