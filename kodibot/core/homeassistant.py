@@ -236,6 +236,31 @@ def set_light_brightness(percent: int) -> bool:
         return False
 
 
+def set_light_effect(effect_name: str) -> bool:
+    """Enable a named Home Assistant light effect."""
+    if not ha_available():
+        return False
+    effect_name = (effect_name or "").strip()
+    if not effect_name:
+        return False
+    try:
+        resp = requests.post(
+            _url("/api/services/light/turn_on"),
+            headers=_headers(),
+            json={
+                "entity_id": CFG.ha_light_id,
+                "effect": effect_name,
+            },
+            timeout=_TIMEOUT,
+        )
+        resp.raise_for_status()
+        log.info("HA set_effect entity=%s effect=%s", CFG.ha_light_id, effect_name)
+        return True
+    except Exception as e:
+        log.warning("HA set_effect fail entity=%s effect=%s err=%s", CFG.ha_light_id, effect_name, e)
+        return False
+
+
 # ── Saved colors persistence ────────────────────────────────────────
 
 def _load_colors_file() -> list[dict]:
