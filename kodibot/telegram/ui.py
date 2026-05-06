@@ -32,6 +32,7 @@ from kodibot.telegram.panel import (
     is_not_modified_error,
     resolve_airplay_status_text,
     control_panel,
+    set_panel_menu_mode,
     save_ui_state,
     load_ui_state,
     format_item_line,
@@ -71,6 +72,7 @@ FIRST_BOT_ID = S.FIRST_BOT_ID
 STARTUP_POSTED = S.STARTUP_POSTED
 LIST_MSG_ID = S.LIST_MSG_ID
 PANEL_MSG_ID = S.PANEL_MSG_ID
+PANEL_MENU_MODE = S.PANEL_MENU_MODE
 LIST_RENDER_CACHE = S.LIST_RENDER_CACHE
 PANEL_RENDER_CACHE = S.PANEL_RENDER_CACHE
 HA_MENU_MSG_ID = S.HA_MENU_MSG_ID
@@ -368,6 +370,9 @@ def build_ha_preset_menu_markup(saved_colors):
             InlineKeyboardButton("🌈 Cyan", callback_data="ha:color:00FFFF"),
             InlineKeyboardButton("🌸 Pink", callback_data="ha:color:FF69B4"),
             InlineKeyboardButton("🤎 Brown", callback_data="ha:color:8B4513"),
+        ],
+        [
+            InlineKeyboardButton("🪩 Disco", callback_data="ha:effect:colorloop"),
         ],
     ]
 
@@ -1045,6 +1050,14 @@ async def on_button(update, ctx):
                 state=state,
             )
             return
+    elif cmd == "controls:menu":
+        set_panel_menu_mode(chat_id, "controls")
+        await update_now_playing_message(ctx, chat_id)
+        return
+    elif cmd == "controls:back":
+        set_panel_menu_mode(chat_id, "main")
+        await update_now_playing_message(ctx, chat_id)
+        return
     elif cmd == "ha:back":
         if not ha.ha_available():
             await close_ha_menu_message(ctx, chat_id, q.message.message_id if q.message else None)
@@ -1149,6 +1162,18 @@ async def on_button(update, ctx):
                     await send_and_track(ctx, chat_id, "⚠ Color could not be applied.")
             else:
                 await send_and_track(ctx, chat_id, "⚠ Saved color not found.")
+        sent = True
+    elif cmd.startswith("ha:effect:"):
+        effect_name = cmd.split(":", 2)[2].strip()
+        if not effect_name:
+            await send_and_track(ctx, chat_id, "⚠ Invalid effect.")
+        else:
+            ok = await asyncio.to_thread(ha.set_light_effect, effect_name)
+            if ok:
+                label = "Disco" if effect_name == "colorloop" else effect_name
+                await send_and_track(ctx, chat_id, f"🪩 Effect enabled: {label}")
+            else:
+                await send_and_track(ctx, chat_id, "⚠ Effect could not be enabled.")
         sent = True
     elif cmd.startswith("ha:color:"):
         hex_part = cmd.split(":", 2)[2]
@@ -2334,6 +2359,7 @@ async def reset_panel_command(update, ctx):
             STARTUP_POSTED.pop(chat_id, None)
             LIST_MSG_ID.pop(chat_id, None)
             PANEL_MSG_ID.pop(chat_id, None)
+            PANEL_MENU_MODE.pop(chat_id, None)
             LIST_RENDER_CACHE.pop(chat_id, None)
             PANEL_RENDER_CACHE.pop(chat_id, None)
             save_ui_state()
