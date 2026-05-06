@@ -1,0 +1,19 @@
+{
+    email {$ACME_EMAIL}
+
+    # Stay on TCP-based HTTPS for Telegram Mini Apps.
+    # HTTP/3 advertises alt-svc and can trigger QUIC/UDP paths that are not
+    # forwarded in the current FRITZ!Box setup.
+    servers :443 {
+        protocols h1 h2
+    }
+}
+
+{$WEBAPP_HOSTNAME} {
+    log {
+        output stdout
+        format console
+    }
+    encode gzip zstd
+    reverse_proxy 127.0.0.1:8765
+}
