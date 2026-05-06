@@ -103,10 +103,18 @@ def resolve_airplay_status_text(status):
 
 # ── Control panel markup ─────────────────────────────────────────────
 
-def control_panel():
-    """Build the inline keyboard control panel markup."""
-    play_label = "⏸" if kodi_api.WS_STATE == "playing" else "▶"
-    return InlineKeyboardMarkup([
+def panel_menu_mode(chat_id=None):
+    if chat_id is None:
+        return "main"
+    return S.PANEL_MENU_MODE.get(chat_id, "main")
+
+
+def set_panel_menu_mode(chat_id, mode):
+    S.PANEL_MENU_MODE[chat_id] = mode if mode in {"main", "controls"} else "main"
+
+
+def build_main_control_panel(play_label):
+    rows = [
         [
             InlineKeyboardButton("⏮", callback_data="back"),
             InlineKeyboardButton(play_label, callback_data="playpause"),
@@ -116,6 +124,35 @@ def control_panel():
             InlineKeyboardButton("▶ №", callback_data="play:ask"),
             InlineKeyboardButton("⏹", callback_data="stop"),
         ],
+        [
+            InlineKeyboardButton("🎛 Controls", callback_data="controls:menu"),
+        ],
+        [
+            InlineKeyboardButton("🔉 -5", callback_data="vol:down5"),
+            InlineKeyboardButton("🔊 +5", callback_data="vol:up5"),
+            InlineKeyboardButton("🔉 -10", callback_data="vol:down10"),
+            InlineKeyboardButton("🔊 +10", callback_data="vol:up10"),
+        ],
+        [
+            InlineKeyboardButton("⭐", callback_data="fav:ask"),
+            InlineKeyboardButton("🎬", callback_data="media:ask"),
+            InlineKeyboardButton("🗣", callback_data="av:ask"),
+        ],
+        [
+            InlineKeyboardButton("🔌 Hifi On", callback_data="hifi:on"),
+            InlineKeyboardButton("🔌 Hifi Off", callback_data="hifi:off"),
+        ],
+    ]
+    if ha.ha_available():
+        rows.append([
+            InlineKeyboardButton("☠️ AirPlay Kill", callback_data="airplay:kill"),
+            InlineKeyboardButton("🏠 Home Assistant", callback_data="ha:menu"),
+        ])
+    return rows
+
+
+def build_controls_panel():
+    return [
         [
             InlineKeyboardButton("-10s", callback_data="seek:-10s"),
             InlineKeyboardButton("-30s", callback_data="seek:-30s"),
@@ -141,33 +178,22 @@ def control_panel():
             InlineKeyboardButton("🗑 All", callback_data="deleteall"),
         ],
         [
-            InlineKeyboardButton("🔉 -5", callback_data="vol:down5"),
-            InlineKeyboardButton("🔊 +5", callback_data="vol:up5"),
-            InlineKeyboardButton("🔉 -10", callback_data="vol:down10"),
-            InlineKeyboardButton("🔊 +10", callback_data="vol:up10"),
-        ],
-        [
-            InlineKeyboardButton("⭐", callback_data="fav:ask"),
-            InlineKeyboardButton("🎬", callback_data="media:ask"),
-            InlineKeyboardButton("🗣", callback_data="av:ask"),
-        ],
-        [
             InlineKeyboardButton("💾 Save", callback_data="plist:save"),
             InlineKeyboardButton("🎵 Delete", callback_data="plist:delete"),
             InlineKeyboardButton("📂 Load", callback_data="plist:load"),
         ],
         [
-            InlineKeyboardButton("🔌 Hifi On", callback_data="hifi:on"),
-            InlineKeyboardButton("🔌 Hifi Off", callback_data="hifi:off"),
+            InlineKeyboardButton("⬅ Back", callback_data="controls:back"),
         ],
-    ] + (
-        [
-            [
-                InlineKeyboardButton("☠️ AirPlay Kill", callback_data="airplay:kill"),
-                InlineKeyboardButton("🏠 Home Assistant", callback_data="ha:menu"),
-            ],
-        ] if ha.ha_available() else []
-    ))
+    ]
+
+
+def control_panel(chat_id=None, *, mode=None):
+    """Build the inline keyboard control panel markup."""
+    play_label = "⏸" if kodi_api.WS_STATE == "playing" else "▶"
+    resolved_mode = mode or panel_menu_mode(chat_id)
+    rows = build_controls_panel() if resolved_mode == "controls" else build_main_control_panel(play_label)
+    return InlineKeyboardMarkup(rows)
 
 
 # ── Formatting helpers ───────────────────────────────────────────────
@@ -302,7 +328,8 @@ async def send_info_list_panel(ctx, chat_id):
             out = "\n".join(lines)
     list_msg = await send_and_track(ctx, chat_id, out, parse_mode="HTML")
     S.LIST_MSG_ID[chat_id] = list_msg.message_id
-    panel_msg = await send_and_track(ctx, chat_id, "🎛 Kodi Remote - Current track:", reply_markup=control_panel())
+    set_panel_menu_mode(chat_id, "main")
+    panel_msg = await send_and_track(ctx, chat_id, "🎛 Kodi Remote - Current track:", reply_markup=control_panel(chat_id))
     S.PANEL_MSG_ID[chat_id] = panel_msg.message_id
     save_ui_state()
 
@@ -470,7 +497,7 @@ async def update_now_playing_message(ctx, chat_id):
     if progress_text:
         status_parts.append(f"⏱ {progress_text}")
     full_text = f"🎛 Kodi Remote - Current track:\n{text}\n{' | '.join(status_parts)}"
-    panel_markup = control_panel()
+    panel_markup = control_panel(chat_id)
     render_sig = (
         full_text,
         tuple(
