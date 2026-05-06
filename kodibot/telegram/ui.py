@@ -9,12 +9,13 @@ import time
 import traceback
 
 from telegram.ext import Application, MessageHandler, filters, CallbackQueryHandler, CommandHandler
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.error import RetryAfter, TimedOut, NetworkError, BadRequest
 
 from kodibot.core import kodi_api
 from kodibot.core import playlist_store
 from kodibot.core import queue_state
+from kodibot.core import homeassistant as ha
 from kodibot.telegram import media
 from kodibot.telegram import state as S
 from kodibot.config import CFG
@@ -70,6 +71,9 @@ FIRST_BOT_ID = S.FIRST_BOT_ID
 STARTUP_POSTED = S.STARTUP_POSTED
 LIST_MSG_ID = S.LIST_MSG_ID
 PANEL_MSG_ID = S.PANEL_MSG_ID
+LIST_RENDER_CACHE = S.LIST_RENDER_CACHE
+PANEL_RENDER_CACHE = S.PANEL_RENDER_CACHE
+HA_MENU_MSG_ID = S.HA_MENU_MSG_ID
 
 HIFI_STATUS_CACHE = S.HIFI_STATUS_CACHE
 HIFI_STATUS_TS = S.HIFI_STATUS_TS
@@ -85,11 +89,17 @@ RESETTING_CHATS = S.RESETTING_CHATS
 PROMPT_TIMEOUT_SECONDS = S.PROMPT_TIMEOUT_SECONDS
 PROMPT_TIMEOUT_TASKS = S.PROMPT_TIMEOUT_TASKS
 PENDING_TIMEOUT_TASKS = S.PENDING_TIMEOUT_TASKS
+HA_MENU_TIMEOUT_SECONDS = S.HA_MENU_TIMEOUT_SECONDS
+HA_MENU_TIMEOUT_TASKS = S.HA_MENU_TIMEOUT_TASKS
+
+
 def remember_last_seen(chat_id, message_id):
     prev = LAST_SEEN_ID.get(chat_id)
     if prev is None or message_id > prev:
         LAST_SEEN_ID[chat_id] = message_id
     return LAST_SEEN_ID.get(chat_id)
+
+
 def schedule_playback_action(ctx, chat_id, action, *args):
     async def _run():
         async with PLAYBACK_TASK_LOCK:
@@ -214,6 +224,261 @@ def activate_pending_choice(ctx, chat_id, user_id, prompt_id, video_id, list_id)
     PENDING_TIMEOUT_TASKS[user_id] = ctx.application.create_task(
         _expire_pending_timeout(ctx, chat_id, user_id, prompt_id)
     )
+
+
+def cancel_ha_menu_timeout(chat_id):
+    task = HA_MENU_TIMEOUT_TASKS.pop(chat_id, None)
+    if task is not None and not task.done():
+        task.cancel()
+
+
+async def _expire_ha_menu_timeout(ctx, chat_id, expected_message_id):
+    try:
+        await asyncio.sleep(HA_MENU_TIMEOUT_SECONDS)
+        if HA_MENU_MSG_ID.get(chat_id) != expected_message_id:
+            return
+        HA_MENU_MSG_ID.pop(chat_id, None)
+        await delete_message_if_present(ctx, chat_id, expected_message_id)
+    except asyncio.CancelledError:
+        return
+    finally:
+        if HA_MENU_TIMEOUT_TASKS.get(chat_id) is asyncio.current_task():
+            HA_MENU_TIMEOUT_TASKS.pop(chat_id, None)
+
+
+def arm_ha_menu_timeout(ctx, chat_id, message_id):
+    HA_MENU_MSG_ID[chat_id] = message_id
+    cancel_ha_menu_timeout(chat_id)
+    HA_MENU_TIMEOUT_TASKS[chat_id] = ctx.application.create_task(
+        _expire_ha_menu_timeout(ctx, chat_id, message_id)
+    )
+
+
+def touch_ha_menu_timeout(ctx, chat_id, message_id):
+    if HA_MENU_MSG_ID.get(chat_id) != message_id:
+        return
+    arm_ha_menu_timeout(ctx, chat_id, message_id)
+
+
+async def close_ha_menu_message(ctx, chat_id, message_id=None):
+    tracked_id = HA_MENU_MSG_ID.get(chat_id)
+    target_id = message_id or tracked_id
+    if tracked_id == target_id:
+        HA_MENU_MSG_ID.pop(chat_id, None)
+        cancel_ha_menu_timeout(chat_id)
+    if target_id:
+        await delete_message_if_present(ctx, chat_id, target_id)
+
+
+def format_ha_state_text(state):
+    if not state:
+        return ""
+    status = state.get("state", "unknown")
+    name = CFG.ha_light_id or state.get("friendly_name") or "light"
+    rgb = state.get("rgb_color")
+    brightness_pct = ha.brightness_percent_from_ha(state.get("brightness"))
+    color_hex = ""
+    brightness_text = ""
+    if rgb and len(rgb) == 3:
+        color_hex = f" | #{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
+    if brightness_pct is not None:
+        brightness_text = f" | {brightness_pct}%"
+    return f"\n\n💡 {name}: {status}{color_hex}{brightness_text}"
+
+
+def saved_color_name(color, index):
+    return (color.get("name") or f"Color {index + 1}").strip() or f"Color {index + 1}"
+
+
+def saved_color_button_label(color, index):
+    name = saved_color_name(color, index)
+    return name if len(name) <= 20 else f"{name[:17]}..."
+
+
+def build_main_mini_app_url(bot_username, start_param="", mode="compact"):
+    bot_username = (bot_username or "").strip().lstrip("@")
+    start_param = (start_param or "").strip()
+    mode = (mode or "").strip()
+    if not bot_username:
+        return ""
+    if start_param and not re.fullmatch(r"[A-Za-z0-9_-]+", start_param):
+        return ""
+    if mode and mode not in {"compact", "fullscreen"}:
+        return ""
+
+    params = ["startapp" if not start_param else f"startapp={start_param}"]
+    if mode:
+        params.append(f"mode={mode}")
+    return f"https://t.me/{bot_username}?{'&'.join(params)}"
+
+
+def build_ha_main_menu_markup(*, live_color_button=None, extra_rows=None):
+    load_color_button = InlineKeyboardButton("🎨 Load Color", callback_data="ha:loadcolor")
+    brightness_button = InlineKeyboardButton("🔆 Brightness", callback_data="ha:brightness")
+    rows = []
+    if live_color_button is not None:
+        rows.append([
+            InlineKeyboardButton("💡 Toggle", callback_data="ha:toggle"),
+            live_color_button,
+        ])
+        rows.append([
+            load_color_button,
+            InlineKeyboardButton("🔢 Set Hex", callback_data="ha:sethex"),
+        ])
+        rows.append([
+            brightness_button,
+            InlineKeyboardButton("💾 Save Color", callback_data="ha:savecolor"),
+        ])
+    else:
+        rows.append([
+            InlineKeyboardButton("💡 Toggle", callback_data="ha:toggle"),
+            load_color_button,
+        ])
+        rows.append([
+            InlineKeyboardButton("🔢 Set Hex", callback_data="ha:sethex"),
+            brightness_button,
+        ])
+        rows.append([
+            InlineKeyboardButton("💾 Save Color", callback_data="ha:savecolor"),
+        ])
+    rows.extend(extra_rows or ())
+    rows.append([
+        InlineKeyboardButton("Cancel", callback_data="ha:close"),
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_ha_preset_menu_markup(saved_colors):
+    rows = [
+        [
+            InlineKeyboardButton("🔴 Red", callback_data="ha:color:FF0000"),
+            InlineKeyboardButton("🟢 Green", callback_data="ha:color:00FF00"),
+            InlineKeyboardButton("🔵 Blue", callback_data="ha:color:0000FF"),
+        ],
+        [
+            InlineKeyboardButton("🟡 Yellow", callback_data="ha:color:FFD700"),
+            InlineKeyboardButton("🟣 Purple", callback_data="ha:color:8B00FF"),
+            InlineKeyboardButton("🟠 Orange", callback_data="ha:color:FF8C00"),
+        ],
+        [
+            InlineKeyboardButton("⬜ Warm White", callback_data="ha:color:FFE4B5"),
+            InlineKeyboardButton("❄️ Cool White", callback_data="ha:color:F0F8FF"),
+        ],
+        [
+            InlineKeyboardButton("🌈 Cyan", callback_data="ha:color:00FFFF"),
+            InlineKeyboardButton("🌸 Pink", callback_data="ha:color:FF69B4"),
+            InlineKeyboardButton("🤎 Brown", callback_data="ha:color:8B4513"),
+        ],
+    ]
+
+    if saved_colors:
+        rows.append([
+            InlineKeyboardButton("💾 Saved Colors", callback_data="ha:noop"),
+        ])
+        for i, color in enumerate(saved_colors):
+            rows.append([
+                InlineKeyboardButton(
+                    saved_color_button_label(color, i),
+                    callback_data=f"ha:savedcolor:{i}",
+                ),
+            ])
+        rows.append([
+            InlineKeyboardButton("🗑 Delete Color", callback_data="ha:deletecolor:ask"),
+        ])
+    else:
+        rows.append([
+            InlineKeyboardButton("No saved colors yet", callback_data="ha:noop"),
+        ])
+
+    rows.append([
+        InlineKeyboardButton("⬅ Back", callback_data="ha:back"),
+        InlineKeyboardButton("Cancel", callback_data="ha:close"),
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+async def _edit_or_send_ha_message(ctx, chat_id, text, reply_markup, *, edit_message_id=None):
+    if edit_message_id:
+        try:
+            await telegram_request(
+                ctx.bot.edit_message_text,
+                chat_id=chat_id,
+                message_id=edit_message_id,
+                text=text,
+                reply_markup=reply_markup,
+                disable_web_page_preview=True,
+            )
+        except Exception as e:
+            if is_not_modified_error(e):
+                arm_ha_menu_timeout(ctx, chat_id, edit_message_id)
+                return edit_message_id
+            if not should_recreate_after_edit_error(e):
+                log.info("HA menu edit fail chat_id=%s message_id=%s err=%s", chat_id, edit_message_id, e)
+                return None
+        else:
+            arm_ha_menu_timeout(ctx, chat_id, edit_message_id)
+            return edit_message_id
+
+    tracked_id = HA_MENU_MSG_ID.get(chat_id)
+    if tracked_id and tracked_id != edit_message_id:
+        await close_ha_menu_message(ctx, chat_id, tracked_id)
+
+    msg = await send_and_track(
+        ctx,
+        chat_id,
+        text,
+        reply_markup=reply_markup,
+    )
+    arm_ha_menu_timeout(ctx, chat_id, msg.message_id)
+    return msg.message_id
+
+
+async def show_ha_menu(ctx, chat_id, *, chat_type, bot_username, state, edit_message_id=None):
+    webapp_url = ha.resolve_ha_webapp_url()
+    log.info("HA webapp menu resolved_url=%s explicit_url=%s", webapp_url or "-", CFG.ha_webapp_url or "-")
+    main_mini_app_url = build_main_mini_app_url(bot_username, "ha_color", "compact")
+    extra_rows = []
+    live_color_button = None
+    if webapp_url and chat_type == "private":
+        live_color_button = InlineKeyboardButton("🎛 Live Color", web_app=WebAppInfo(url=webapp_url))
+        webapp_hint = ""
+    elif webapp_url:
+        webapp_hint = ""
+        if main_mini_app_url:
+            extra_rows.append([
+                InlineKeyboardButton("🎛 Open Live Color", url=main_mini_app_url),
+            ])
+    else:
+        webapp_hint = (
+            "\n\nMini App disabled: Telegram only accepts HTTPS here. "
+            "Set `HA_WEBAPP_URL` or use a `MEDIA_BASE_URL` with `https://`."
+        )
+
+    text = f"🏠 Home Assistant Light{format_ha_state_text(state)}{webapp_hint}"
+    markup = build_ha_main_menu_markup(
+        live_color_button=live_color_button,
+        extra_rows=extra_rows,
+    )
+    await _edit_or_send_ha_message(
+        ctx,
+        chat_id,
+        text,
+        markup,
+        edit_message_id=edit_message_id,
+    )
+
+
+async def show_ha_preset_menu(ctx, chat_id, *, edit_message_id=None):
+    saved_colors = await asyncio.to_thread(ha.load_saved_colors)
+    await _edit_or_send_ha_message(
+        ctx,
+        chat_id,
+        "🎨 Load Color\n\nBuilt-in colors above, saved colors below.",
+        build_ha_preset_menu_markup(saved_colors),
+        edit_message_id=edit_message_id,
+    )
+
+
 async def list_refresher(ctx):
     last_np = 0.0
     last_hifi = 0.0
@@ -442,6 +707,9 @@ async def on_button(update, ctx):
     prev_id = LAST_BOT_ID.get(chat_id)
     sent = False
     skip_cleanup = False
+
+    if cmd.startswith("ha:") and cmd != "ha:close" and q.message:
+        touch_ha_menu_timeout(ctx, chat_id, q.message.message_id)
 
     if cmd == "skip":
         with queue_state.LOCK:
@@ -761,6 +1029,170 @@ async def on_button(update, ctx):
         await update_now_playing_message(ctx, chat_id)
         sent = True
 
+    # ── Home Assistant handlers ──────────────────────────────────────
+    elif cmd == "ha:menu":
+        if not ha.ha_available():
+            await send_and_track(ctx, chat_id, "⚠ Home Assistant is not configured.")
+            sent = True
+        else:
+            chat_type = getattr(update.effective_chat, "type", "") or ""
+            bot_username = getattr(ctx.bot, "username", "") or ""
+            state = await asyncio.to_thread(ha.get_light_state)
+            await show_ha_menu(
+                ctx, chat_id,
+                chat_type=chat_type,
+                bot_username=bot_username,
+                state=state,
+            )
+            return
+    elif cmd == "ha:back":
+        if not ha.ha_available():
+            await close_ha_menu_message(ctx, chat_id, q.message.message_id if q.message else None)
+            return
+        chat_type = getattr(update.effective_chat, "type", "") or ""
+        bot_username = getattr(ctx.bot, "username", "") or ""
+        state = await asyncio.to_thread(ha.get_light_state)
+        await show_ha_menu(
+            ctx,
+            chat_id,
+            chat_type=chat_type,
+            bot_username=bot_username,
+            state=state,
+            edit_message_id=q.message.message_id if q.message else None,
+        )
+        return
+    elif cmd == "ha:close":
+        await close_ha_menu_message(ctx, chat_id, q.message.message_id if q.message else None)
+        return
+    elif cmd == "ha:noop":
+        return
+    elif cmd == "ha:toggle":
+        ok, new_state = await asyncio.to_thread(ha.toggle_light)
+        if ok:
+            emoji = "🟢" if new_state == "on" else "🔴"
+            await send_and_track(ctx, chat_id, f"{emoji} Light: {new_state}")
+        else:
+            await send_and_track(ctx, chat_id, "⚠ Toggle failed.")
+        sent = True
+    elif cmd in {"ha:setcolor", "ha:loadcolor"}:
+        await show_ha_preset_menu(
+            ctx,
+            chat_id,
+            edit_message_id=q.message.message_id if q.message else None,
+        )
+        return
+    elif cmd == "ha:brightness":
+        if ctx.user_data.get("await_ha_brightness_pct"):
+            return
+        state = await asyncio.to_thread(ha.get_light_state)
+        current_pct = ha.brightness_percent_from_ha((state or {}).get("brightness"))
+        prompt = "🔆 Enter brightness percent (0-100, q = cancel)"
+        if current_pct is not None:
+            prompt += f"\nCurrent brightness: {current_pct}%"
+        msg = await send_and_track(ctx, chat_id, prompt)
+        activate_prompt(
+            ctx,
+            chat_id,
+            user_id,
+            "await_ha_brightness_pct",
+            "await_ha_brightness_msg_id",
+            msg.message_id,
+        )
+        sent = True
+        skip_cleanup = True
+    elif cmd == "ha:deletecolor:ask":
+        colors = await asyncio.to_thread(ha.load_saved_colors)
+        if not colors:
+            await send_and_track(ctx, chat_id, "⚠ No saved colors found.")
+            sent = True
+        elif ctx.user_data.get("await_ha_delete_color_index"):
+            return
+        else:
+            lines = [f"{i+1}. {saved_color_name(color, i)}" for i, color in enumerate(colors)]
+            ctx.user_data["ha_delete_colors"] = colors
+            msg = await send_and_track(
+                ctx,
+                chat_id,
+                "🗑 Delete which saved color? (q = cancel)\n" + "\n".join(lines),
+            )
+            activate_prompt(
+                ctx,
+                chat_id,
+                user_id,
+                "await_ha_delete_color_index",
+                "await_ha_delete_color_msg_id",
+                msg.message_id,
+                extra_keys=("ha_delete_colors",),
+            )
+            sent = True
+            skip_cleanup = True
+    elif cmd.startswith("ha:savedcolor:"):
+        idx_text = cmd.rsplit(":", 1)[-1]
+        colors = await asyncio.to_thread(ha.load_saved_colors)
+        if not idx_text.isdigit():
+            await send_and_track(ctx, chat_id, "⚠ Invalid saved color.")
+        else:
+            idx = int(idx_text)
+            if 0 <= idx < len(colors):
+                color = colors[idx]
+                r = int(color.get("r", 0))
+                g = int(color.get("g", 0))
+                b = int(color.get("b", 0))
+                ok = await asyncio.to_thread(ha.set_light_color, r, g, b)
+                if ok:
+                    await send_and_track(
+                        ctx,
+                        chat_id,
+                        f"🎨 Color \"{color.get('name', '?')}\" applied: #{r:02X}{g:02X}{b:02X}",
+                    )
+                else:
+                    await send_and_track(ctx, chat_id, "⚠ Color could not be applied.")
+            else:
+                await send_and_track(ctx, chat_id, "⚠ Saved color not found.")
+        sent = True
+    elif cmd.startswith("ha:color:"):
+        hex_part = cmd.split(":", 2)[2]
+        parsed = ha.parse_hex_color(hex_part)
+        if parsed:
+            r, g, b = parsed
+            ok = await asyncio.to_thread(ha.set_light_color, r, g, b)
+            if ok:
+                await send_and_track(ctx, chat_id, f"🎨 Color applied: #{hex_part}")
+            else:
+                await send_and_track(ctx, chat_id, "⚠ Color could not be applied.")
+        else:
+            await send_and_track(ctx, chat_id, "⚠ Invalid color code.")
+        sent = True
+    elif cmd == "ha:sethex":
+        if ctx.user_data.get("await_ha_hex"):
+            return
+        msg = await send_and_track(ctx, chat_id, "🔢 Enter a hex code (e.g. #FF5500 or FF5500, q = cancel)")
+        activate_prompt(ctx, chat_id, user_id, "await_ha_hex", "await_ha_hex_msg_id", msg.message_id)
+        sent = True
+        skip_cleanup = True
+    elif cmd == "ha:savecolor":
+        if ctx.user_data.get("await_ha_save_color_name"):
+            return
+        state = await asyncio.to_thread(ha.get_light_state)
+        rgb = (state or {}).get("rgb_color")
+        if not rgb or len(rgb) != 3:
+            await send_and_track(ctx, chat_id, "⚠ Current color could not be determined.")
+            sent = True
+        else:
+            ctx.user_data["ha_save_rgb"] = list(rgb)
+            msg = await send_and_track(
+                ctx, chat_id,
+                f"💾 Current color: #{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}\n"
+                "Enter a name for this color (q = cancel):"
+            )
+            activate_prompt(
+                ctx, chat_id, user_id,
+                "await_ha_save_color_name", "await_ha_save_color_msg_id",
+                msg.message_id,
+                extra_keys=("ha_save_rgb",),
+            )
+            sent = True
+            skip_cleanup = True
     if sent and not skip_cleanup:
         schedule_cleanup(ctx, chat_id, prev_id)
         await update_list_message(ctx, chat_id)
@@ -777,6 +1209,125 @@ async def handle_text(update, ctx):
     msg_id = update.message.message_id
     txt = update.message.text.strip()
     txt_lower = txt.lower()
+
+    # ── Home Assistant text prompts ──────────────────────────────────
+    if ctx.user_data.get("await_ha_hex"):
+        cancel_prompt_timeout(chat_id, user_id, "await_ha_hex")
+        ctx.user_data["await_ha_hex"] = False
+        prompt_id = ctx.user_data.pop("await_ha_hex_msg_id", None)
+        await delete_message_if_present(ctx, chat_id, msg_id)
+        if txt_lower == "q":
+            await send_and_track(ctx, chat_id, "Cancelled.")
+        else:
+            parsed = ha.parse_hex_color(txt)
+            if parsed:
+                r, g, b = parsed
+                ok = await asyncio.to_thread(ha.set_light_color, r, g, b)
+                if ok:
+                    await send_and_track(ctx, chat_id, f"🎨 Color applied: #{r:02X}{g:02X}{b:02X}")
+                else:
+                    await send_and_track(ctx, chat_id, "⚠ Color could not be applied.")
+            else:
+                await send_and_track(ctx, chat_id, "⚠ Invalid hex code. Use the format #FF5500 or FF5500.")
+        sent = True
+        await delete_message_if_present(ctx, chat_id, prompt_id)
+        if sent:
+            schedule_cleanup(ctx, chat_id, prev_id)
+            await update_list_message(ctx, chat_id)
+        return
+
+    if ctx.user_data.get("await_ha_brightness_pct"):
+        cancel_prompt_timeout(chat_id, user_id, "await_ha_brightness_pct")
+        ctx.user_data["await_ha_brightness_pct"] = False
+        prompt_id = ctx.user_data.pop("await_ha_brightness_msg_id", None)
+        await delete_message_if_present(ctx, chat_id, msg_id)
+        if txt_lower == "q":
+            await send_and_track(ctx, chat_id, "Cancelled.")
+        else:
+            try:
+                percent = int(txt)
+            except ValueError:
+                percent = -1
+            if 0 <= percent <= 100:
+                ok = await asyncio.to_thread(ha.set_light_brightness, percent)
+                if ok:
+                    menu_message_id = HA_MENU_MSG_ID.get(chat_id)
+                    if menu_message_id:
+                        state = await asyncio.to_thread(ha.get_light_state)
+                        await show_ha_menu(
+                            ctx,
+                            chat_id,
+                            chat_type=getattr(update.effective_chat, "type", "") or "",
+                            bot_username=getattr(ctx.bot, "username", "") or "",
+                            state=state,
+                            edit_message_id=menu_message_id,
+                        )
+                    await send_and_track(ctx, chat_id, f"🔆 Brightness set: {percent}%")
+                else:
+                    await send_and_track(ctx, chat_id, "⚠ Brightness could not be updated.")
+            else:
+                await send_and_track(ctx, chat_id, "⚠ Enter a brightness percent from 0 to 100.")
+        sent = True
+        await delete_message_if_present(ctx, chat_id, prompt_id)
+        if sent:
+            schedule_cleanup(ctx, chat_id, prev_id)
+            await update_list_message(ctx, chat_id)
+        return
+
+    if ctx.user_data.get("await_ha_save_color_name"):
+        cancel_prompt_timeout(chat_id, user_id, "await_ha_save_color_name")
+        ctx.user_data["await_ha_save_color_name"] = False
+        prompt_id = ctx.user_data.pop("await_ha_save_color_msg_id", None)
+        rgb = ctx.user_data.pop("ha_save_rgb", None)
+        await delete_message_if_present(ctx, chat_id, msg_id)
+        if txt_lower == "q":
+            await send_and_track(ctx, chat_id, "Cancelled.")
+        elif rgb and len(rgb) == 3:
+            ok = await asyncio.to_thread(ha.save_color, txt.strip(), rgb[0], rgb[1], rgb[2])
+            if ok:
+                await send_and_track(ctx, chat_id, f"💾 Color \"{txt.strip()}\" saved.")
+            else:
+                await send_and_track(ctx, chat_id, "⚠ Color could not be saved.")
+        else:
+            await send_and_track(ctx, chat_id, "⚠ No color available.")
+        sent = True
+        await delete_message_if_present(ctx, chat_id, prompt_id)
+        if sent:
+            schedule_cleanup(ctx, chat_id, prev_id)
+            await update_list_message(ctx, chat_id)
+        return
+
+    if ctx.user_data.get("await_ha_delete_color_index"):
+        cancel_prompt_timeout(chat_id, user_id, "await_ha_delete_color_index")
+        ctx.user_data["await_ha_delete_color_index"] = False
+        prompt_id = ctx.user_data.pop("await_ha_delete_color_msg_id", None)
+        colors = ctx.user_data.pop("ha_delete_colors", [])
+        await delete_message_if_present(ctx, chat_id, msg_id)
+        if txt_lower == "q":
+            await send_and_track(ctx, chat_id, "Cancelled.")
+        elif txt.isdigit():
+            idx = int(txt) - 1
+            if 0 <= idx < len(colors):
+                color = colors[idx]
+                color_name = saved_color_name(color, idx)
+                ok = await asyncio.to_thread(ha.delete_saved_color, color.get("name", ""))
+                if ok:
+                    menu_message_id = HA_MENU_MSG_ID.get(chat_id)
+                    if menu_message_id:
+                        await show_ha_preset_menu(ctx, chat_id, edit_message_id=menu_message_id)
+                    await send_and_track(ctx, chat_id, f"🗑 Color \"{color_name}\" deleted.")
+                else:
+                    await send_and_track(ctx, chat_id, "⚠ Color could not be deleted.")
+            else:
+                await send_and_track(ctx, chat_id, "⚠ Invalid color number.")
+        else:
+            await send_and_track(ctx, chat_id, "⚠ Enter a valid number or q to cancel.")
+        sent = True
+        await delete_message_if_present(ctx, chat_id, prompt_id)
+        if sent:
+            schedule_cleanup(ctx, chat_id, prev_id)
+            await update_list_message(ctx, chat_id)
+        return
 
     if ctx.user_data.get("await_media_type"):
         cancel_prompt_timeout(chat_id, user_id, "await_media_type")
@@ -1692,6 +2243,53 @@ async def handle_unknown_command(update, ctx):
     await warn_and_cleanup_chat(ctx, update.effective_chat.id, msg.message_id)
 
 
+async def start_command(update, ctx):
+    record_last_seen(ctx, update)
+    chat = update.effective_chat
+    msg = update.effective_message
+    if chat is None:
+        return
+
+    start_param = ctx.args[0] if getattr(ctx, "args", None) else ""
+    if start_param == "ha_livecolor":
+        if chat.type != "private":
+            sent = await send_and_track(ctx, chat.id, "🔒 Please open Live Color in the private chat with the bot.")
+            schedule_cleanup(ctx, chat.id, sent.message_id)
+            return
+        if not ha.ha_available():
+            await send_and_track(ctx, chat.id, "⚠ Home Assistant is not configured.")
+            return
+        state = await asyncio.to_thread(ha.get_light_state)
+        bot_username = getattr(ctx.bot, "username", "") or ""
+        await show_ha_menu(
+            ctx,
+            chat.id,
+            chat_type="private",
+            bot_username=bot_username,
+            state=state,
+        )
+        if msg is not None:
+            await delete_message_if_present(ctx, chat.id, msg.message_id)
+        return
+
+    if chat.type == "private" and ha.ha_available():
+        state = await asyncio.to_thread(ha.get_light_state)
+        bot_username = getattr(ctx.bot, "username", "") or ""
+        await show_ha_menu(
+            ctx,
+            chat.id,
+            chat_type="private",
+            bot_username=bot_username,
+            state=state,
+        )
+        if msg is not None:
+            await delete_message_if_present(ctx, chat.id, msg.message_id)
+        return
+
+    if msg is not None:
+        await warn_and_cleanup_chat(ctx, chat.id, msg.message_id)
+
+
 async def reset_panel_command(update, ctx):
     async with RESET_PANEL_LOCK:
         record_last_seen(ctx, update)
@@ -1790,6 +2388,11 @@ def run(token: str):
         telegram_base_file_url or 'default',
         telegram_read_timeout,
     )
+    log.info(
+        "HA webapp config explicit=%s resolved=%s",
+        CFG.ha_webapp_url or "-",
+        ha.resolve_ha_webapp_url() or "-",
+    )
 
     app = builder.build()
     load_ui_state()
@@ -1798,6 +2401,7 @@ def run(token: str):
     queue_state.register_ws_callbacks()
     queue_state.start_autoplay_thread()
     app.add_handler(CallbackQueryHandler(on_button))
+    app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("resetpanel", reset_panel_command))
 
     app.add_handler(MessageHandler(filters.COMMAND, handle_unknown_command))
