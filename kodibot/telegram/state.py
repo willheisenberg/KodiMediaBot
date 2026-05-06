@@ -21,6 +21,7 @@ FIRST_BOT_ID = {}
 STARTUP_POSTED = {}
 LIST_MSG_ID = {}
 PANEL_MSG_ID = {}
+PANEL_MENU_MODE = {}
 HA_MENU_MSG_ID = {}
 
 # ── Status caches ────────────────────────────────────────────────────
