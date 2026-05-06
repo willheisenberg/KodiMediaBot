@@ -92,13 +92,15 @@ class TestHaMenuMarkup:
             ]
         )
 
-        assert markup.inline_keyboard[4][0].text == "💾 Saved Colors"
-        assert markup.inline_keyboard[5][0].text == "Sunset"
-        assert markup.inline_keyboard[5][0].callback_data == "ha:savedcolor:0"
-        assert markup.inline_keyboard[6][0].text == "Ocean"
-        assert markup.inline_keyboard[6][0].callback_data == "ha:savedcolor:1"
-        assert markup.inline_keyboard[7][0].text == "🗑 Delete Color"
-        assert markup.inline_keyboard[7][0].callback_data == "ha:deletecolor:ask"
+        assert markup.inline_keyboard[4][0].text == "🪩 Disco"
+        assert markup.inline_keyboard[4][0].callback_data == "ha:effect:colorloop"
+        assert markup.inline_keyboard[5][0].text == "💾 Saved Colors"
+        assert markup.inline_keyboard[6][0].text == "Sunset"
+        assert markup.inline_keyboard[6][0].callback_data == "ha:savedcolor:0"
+        assert markup.inline_keyboard[7][0].text == "Ocean"
+        assert markup.inline_keyboard[7][0].callback_data == "ha:savedcolor:1"
+        assert markup.inline_keyboard[8][0].text == "🗑 Delete Color"
+        assert markup.inline_keyboard[8][0].callback_data == "ha:deletecolor:ask"
 
     def test_preset_menu_includes_back_and_cancel(self):
         markup = ui.build_ha_preset_menu_markup([])
