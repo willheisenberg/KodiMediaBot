@@ -386,6 +386,24 @@ async def get_now_playing_text():
             name = qitem.get("title") or None
             link = qitem.get("link")
 
+    # Optimistic early return: the bot just triggered a track change. Skip all
+    # Kodi HTTP calls and show the queue info immediately. Two conditions cover
+    # the two media types:
+    #  • BOT_EXPECTING_WS > 0  → YouTube (plugin is slow, WS hasn't fired yet)
+    #  • within PLAY_INDEX_OPTIMISTIC_WINDOW → SoundCloud / fast plugins where
+    #    the WS event fires before we even reach this function, so
+    #    BOT_EXPECTING_WS is already 0 but we still want the fast display.
+    _optimistic = (
+        queue_state.get_expecting_ws() > 0
+        or (time.time() - queue_state.PLAY_INDEX_TS < queue_state.PLAY_INDEX_OPTIMISTIC_WINDOW)
+    )
+    if _optimistic and name:
+        safe_name = html.escape(name, quote=False)
+        if link:
+            safe_link = html.escape(link, quote=True)
+            return f'▶ <a href="{safe_link}">{safe_name}</a>', None
+        return f"▶ {safe_name}", None
+
     players = await kodi_api.kodi_call_async("Player.GetActivePlayers")
     players = (players or {}).get("result", [])
     if not players:
@@ -418,24 +436,29 @@ async def get_now_playing_text():
         queue_state.EXTERNAL_PLAYBACK = False
         return "⏸ Nothing playing", None
 
-    props = (await kodi_api.kodi_call_async(
-        "Player.GetProperties",
-        {"playerid": pid, "properties": ["time", "totaltime"]}
-    )).get("result", {})
-
+    # Fetch properties and item in parallel to halve the Kodi round-trip time.
+    need_item = bool(qitem or not name)
     item = {}
-    if qitem or not name:
-        item = (await kodi_api.kodi_call_async(
-            "Player.GetItem",
-            {
-                "playerid": pid,
-                "properties": [
-                    "title", "artist", "file", "showtitle", "season",
-                    "episode", "album", "channel", "imdbnumber",
-                    "uniqueid", "year", "originaltitle",
-                ],
-            }
-        )).get("result", {}).get("item", {})
+    if need_item:
+        props_resp, item_resp = await asyncio.gather(
+            kodi_api.kodi_call_async(
+                "Player.GetProperties",
+                {"playerid": pid, "properties": ["time", "totaltime"]},
+            ),
+            kodi_api.kodi_call_async(
+                "Player.GetItem",
+                {
+                    "playerid": pid,
+                    "properties": [
+                        "title", "artist", "file", "showtitle", "season",
+                        "episode", "album", "channel", "imdbnumber",
+                        "uniqueid", "year", "originaltitle",
+                    ],
+                },
+            ),
+        )
+        props = (props_resp or {}).get("result", {})
+        item = (item_resp or {}).get("result", {}).get("item", {})
         kodi_api.maybe_cache_soundcloud_url(item.get("file"))
 
         ws_id = kodi_api.LAST_WS_ITEM.get("id")
@@ -469,6 +492,13 @@ async def get_now_playing_text():
             name, link = kodi_api.external_item_display(item)
         if not name:
             name = "Unknown"
+    else:
+        # Name is known (e.g. external playback already identified), but we
+        # still need time/totaltime for the progress display.
+        props = (await kodi_api.kodi_call_async(
+            "Player.GetProperties",
+            {"playerid": pid, "properties": ["time", "totaltime"]},
+        )).get("result", {})
 
     cur = kodi_api.format_kodi_time(props.get("time"))
     total = kodi_api.format_kodi_time(props.get("totaltime"))
