@@ -26,6 +26,13 @@ REPEAT_MODE = "off"
 EXTERNAL_PLAYBACK = False
 BOT_EXPECTING_WS = 0
 
+# Timestamp of the last bot-initiated play_index() call.  Used by the panel to
+# show queue track info optimistically for a few seconds after a track change,
+# even when BOT_EXPECTING_WS has already dropped to 0 (happens quickly for
+# SoundCloud because the plugin fires WS events faster than YouTube's plugin).
+PLAY_INDEX_TS = 0.0
+PLAY_INDEX_OPTIMISTIC_WINDOW = 8.0  # seconds
+
 LAST_PROGRESS_TS = 0.0
 LAST_PROGRESS_TIME = None
 LAST_PROGRESS_TOTAL = None
@@ -424,8 +431,6 @@ def play_item(item: dict, resume_time=None):
         schedule_playback_refresh()
         if resume_time is not None:
             seek_when_player_ready(resume_time, context="video")
-    players = kodi_api.get_active_players()
-    log.debug("play_item active_players=%s", players)
 
 
 # Start playback and then seek to a saved timestamp.
@@ -454,6 +459,8 @@ def hard_stop_and_clear():
         EXTERNAL_PLAYBACK = False
         BOT_EXPECTING_WS = 0
         RESUME_ATTEMPTS.clear()
+    global PLAY_INDEX_TS
+    PLAY_INDEX_TS = 0.0
     schedule_playback_refresh()
 
 
@@ -918,7 +925,7 @@ def delete_index(i):
 
 # Play a specific queue index and update state.
 def play_index(i):
-    global CURRENT_INDEX, DISPLAY_INDEX, NEXT_INDEX, AUTOPLAY_ENABLED, EXTERNAL_PLAYBACK
+    global CURRENT_INDEX, DISPLAY_INDEX, NEXT_INDEX, AUTOPLAY_ENABLED, EXTERNAL_PLAYBACK, PLAY_INDEX_TS
     with LOCK:
         if i < 0 or i >= len(QUEUE):
             return
@@ -929,6 +936,9 @@ def play_index(i):
         EXTERNAL_PLAYBACK = False
         item = QUEUE[i]
         RESUME_ATTEMPTS.clear()
+    # Record when a bot-initiated track starts so the panel can show queue
+    # info optimistically even after BOT_EXPECTING_WS drops to 0.
+    PLAY_INDEX_TS = time.time()
     mark_list_dirty()
     play_item(item)
 
