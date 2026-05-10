@@ -185,6 +185,17 @@ def build_ha_color_webapp_html(app_base_url: str = "") -> str:
       width: 100%;
       accent-color: var(--button);
     }
+    .wheel-wrap {
+      display: flex;
+      justify-content: center;
+      margin: 14px 0 8px;
+      touch-action: none;
+    }
+    #colorWheel {
+      border-radius: 50%;
+      cursor: crosshair;
+      touch-action: none;
+    }
     .section-title {
       margin: 22px 0 10px;
       font-size: 12px;
@@ -291,17 +302,8 @@ def build_ha_color_webapp_html(app_base_url: str = "") -> str:
         </div>
       </div>
 
-      <div class="slider">
-        <div class="slider-head"><span>Red</span><span class="slider-value" id="valueR">255</span></div>
-        <input id="sliderR" type="range" min="0" max="255" value="255">
-      </div>
-      <div class="slider">
-        <div class="slider-head"><span>Green</span><span class="slider-value" id="valueG">255</span></div>
-        <input id="sliderG" type="range" min="0" max="255" value="255">
-      </div>
-      <div class="slider">
-        <div class="slider-head"><span>Blue</span><span class="slider-value" id="valueB">255</span></div>
-        <input id="sliderB" type="range" min="0" max="255" value="255">
+      <div class="wheel-wrap">
+        <canvas id="colorWheel" width="300" height="300" aria-label="Color wheel"></canvas>
       </div>
       <div class="slider">
         <div class="slider-head"><span>Brightness</span><span class="slider-value" id="valueBrightness">100%</span></div>
@@ -323,7 +325,7 @@ def build_ha_color_webapp_html(app_base_url: str = "") -> str:
   <script>
     const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
     const APP_BASE_URL = __APP_BASE_URL__;
-    const state = { r: 255, g: 255, b: 255, brightnessPct: 100, presets: [] };
+    const state = { r: 255, g: 255, b: 255, brightnessPct: 100, presets: [], hs: { h: 0, s: 0 } };
 
     const preview = document.getElementById("preview");
     const colorPicker = document.getElementById("colorPicker");
@@ -333,14 +335,11 @@ def build_ha_color_webapp_html(app_base_url: str = "") -> str:
     const presetName = document.getElementById("presetName");
     const savePreset = document.getElementById("savePreset");
     const statusEl = document.getElementById("status");
-    const sliderR = document.getElementById("sliderR");
-    const sliderG = document.getElementById("sliderG");
-    const sliderB = document.getElementById("sliderB");
     const sliderBrightness = document.getElementById("sliderBrightness");
-    const valueR = document.getElementById("valueR");
-    const valueG = document.getElementById("valueG");
-    const valueB = document.getElementById("valueB");
     const valueBrightness = document.getElementById("valueBrightness");
+    const wheelCanvas = document.getElementById("colorWheel");
+    const wheelCtx = wheelCanvas.getContext("2d");
+
 
     function setStatus(text, kind) {
       statusEl.textContent = text || "";
@@ -387,22 +386,151 @@ def build_ha_color_webapp_html(app_base_url: str = "") -> str:
       return Math.max(0, Math.min(100, Math.round((raw / 255) * 100)));
     }
 
+    /* ── HS color helpers (no black – this is for light bulbs) ── */
+    function hslToRgb(h, s) {
+      // HS wheel: hue = angle, saturation = distance from center.
+      // Center = white (s=0), edge = full color (s=1). Lightness fixed at 50%
+      // in HSL terms, which gives the brightest pure colors.
+      const c = s, x = c * (1 - Math.abs((h * 6) % 2 - 1)), m = 1 - c;
+      let r, g, b;
+      const i = Math.floor(h * 6) % 6;
+      switch (i) {
+        case 0: r=c; g=x; b=0; break; case 1: r=x; g=c; b=0; break;
+        case 2: r=0; g=c; b=x; break; case 3: r=0; g=x; b=c; break;
+        case 4: r=x; g=0; b=c; break; default: r=c; g=0; b=x;
+      }
+      return [Math.round((r+m)*255), Math.round((g+m)*255), Math.round((b+m)*255)];
+    }
+    function rgbToHs(r, g, b) {
+      r /= 255; g /= 255; b /= 255;
+      const max = Math.max(r,g,b), min = Math.min(r,g,b), d = max - min;
+      let h = 0;
+      if (d) {
+        if (max===r) h = ((g-b)/d + 6) % 6;
+        else if (max===g) h = (b-r)/d + 2;
+        else h = (r-g)/d + 4;
+        h /= 6;
+      }
+      const s = max === 0 ? 0 : 1 - min / max;
+      return { h, s };
+    }
+
+    /* ── Canvas: filled HS disc (like Hue / HA) ────────────────── */
+    const W = wheelCanvas.width, CX = W / 2, CY = W / 2, RADIUS = W / 2 - 2;
+
+    function drawWheel() {
+      const { h, s } = state.hs;
+      // Draw the disc pixel-by-pixel via ImageData for a smooth gradient
+      const imgData = wheelCtx.createImageData(W, W);
+      const data = imgData.data;
+      for (let y = 0; y < W; y++) {
+        for (let x = 0; x < W; x++) {
+          const dx = x - CX, dy = y - CY, dist = Math.hypot(dx, dy);
+          const idx = (y * W + x) * 4;
+          if (dist > RADIUS + 1) {
+            data[idx+3] = 0;
+            continue;
+          }
+          const angle = ((Math.atan2(dy, dx) / (2*Math.PI)) + 1) % 1;
+          const sat = Math.min(dist / RADIUS, 1);
+          const [cr, cg, cb] = hslToRgb(angle, sat);
+          data[idx]   = cr;
+          data[idx+1] = cg;
+          data[idx+2] = cb;
+          data[idx+3] = dist <= RADIUS ? 255 : Math.round(Math.max(0, (RADIUS + 1 - dist)) * 255);
+        }
+      }
+      wheelCtx.putImageData(imgData, 0, 0);
+
+      // Pointer circle at the selected color position
+      const pAngle = h * 2 * Math.PI;
+      const pDist = s * RADIUS;
+      const px = CX + pDist * Math.cos(pAngle);
+      const py = CY + pDist * Math.sin(pAngle);
+      wheelCtx.beginPath();
+      wheelCtx.arc(px, py, 10, 0, 2*Math.PI);
+      wheelCtx.strokeStyle = "#fff";
+      wheelCtx.lineWidth = 3;
+      wheelCtx.stroke();
+      wheelCtx.beginPath();
+      wheelCtx.arc(px, py, 10, 0, 2*Math.PI);
+      wheelCtx.strokeStyle = "rgba(0,0,0,0.3)";
+      wheelCtx.lineWidth = 1;
+      wheelCtx.stroke();
+    }
+
+    // Cache the wheel image so dragging doesn't re-render all pixels
+    let wheelImageCache = null;
+    function drawWheelFast() {
+      const { h, s } = state.hs;
+      if (!wheelImageCache) {
+        // Draw once without pointer
+        const imgData = wheelCtx.createImageData(W, W);
+        const data = imgData.data;
+        for (let y = 0; y < W; y++) {
+          for (let x = 0; x < W; x++) {
+            const dx = x - CX, dy = y - CY, dist = Math.hypot(dx, dy);
+            const idx = (y * W + x) * 4;
+            if (dist > RADIUS + 1) { data[idx+3] = 0; continue; }
+            const angle = ((Math.atan2(dy, dx) / (2*Math.PI)) + 1) % 1;
+            const sat = Math.min(dist / RADIUS, 1);
+            const [cr, cg, cb] = hslToRgb(angle, sat);
+            data[idx] = cr; data[idx+1] = cg; data[idx+2] = cb;
+            data[idx+3] = dist <= RADIUS ? 255 : Math.round(Math.max(0, (RADIUS+1-dist)) * 255);
+          }
+        }
+        wheelImageCache = imgData;
+      }
+      wheelCtx.putImageData(wheelImageCache, 0, 0);
+      // Draw pointer
+      const pAngle = h * 2 * Math.PI;
+      const pDist = s * RADIUS;
+      const px = CX + pDist * Math.cos(pAngle), py = CY + pDist * Math.sin(pAngle);
+      wheelCtx.beginPath();
+      wheelCtx.arc(px, py, 10, 0, 2*Math.PI);
+      wheelCtx.strokeStyle = "#fff"; wheelCtx.lineWidth = 3; wheelCtx.stroke();
+      wheelCtx.beginPath();
+      wheelCtx.arc(px, py, 10, 0, 2*Math.PI);
+      wheelCtx.strokeStyle = "rgba(0,0,0,0.3)"; wheelCtx.lineWidth = 1; wheelCtx.stroke();
+    }
+
+    /* ── Wheel interaction ─────────────────────────────────────── */
+    function wheelEventPos(e) {
+      const rect = wheelCanvas.getBoundingClientRect();
+      const scaleX = W / rect.width, scaleY = W / rect.height;
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      return [(clientX - rect.left) * scaleX, (clientY - rect.top) * scaleY];
+    }
+
+    function handleWheelInput(e) {
+      e.preventDefault();
+      const [px, py] = wheelEventPos(e);
+      const dx = px - CX, dy = py - CY;
+      const dist = Math.min(Math.hypot(dx, dy), RADIUS);
+      state.hs.h = ((Math.atan2(dy, dx) / (2 * Math.PI)) + 1) % 1;
+      state.hs.s = dist / RADIUS;
+      const [nr, ng, nb] = hslToRgb(state.hs.h, state.hs.s);
+      setColor(nr, ng, nb);
+    }
+
+    wheelCanvas.addEventListener("mousedown", handleWheelInput);
+    wheelCanvas.addEventListener("mousemove", (e) => { if (e.buttons) handleWheelInput(e); });
+    wheelCanvas.addEventListener("touchstart", handleWheelInput, { passive: false });
+    wheelCanvas.addEventListener("touchmove", handleWheelInput, { passive: false });
+
     function syncUi() {
       const hex = currentHex();
       preview.style.background = hex;
       preview.style.filter = "brightness(" + (0.25 + (state.brightnessPct / 100) * 0.75).toFixed(2) + ")";
       colorPicker.value = hex;
       hexValue.textContent = hex;
-      sliderR.value = String(state.r);
-      sliderG.value = String(state.g);
-      sliderB.value = String(state.b);
       sliderBrightness.value = String(state.brightnessPct);
-      valueR.textContent = String(state.r);
-      valueG.textContent = String(state.g);
-      valueB.textContent = String(state.b);
       valueBrightness.textContent = String(state.brightnessPct) + "%";
+      state.hs = rgbToHs(state.r, state.g, state.b);
+      drawWheelFast();
       if (tg && tg.MainButton) {
-        tg.MainButton.setText("Apply " + hex + " · " + state.brightnessPct + "%");
+        tg.MainButton.setText("Apply " + hex + " \u00b7 " + state.brightnessPct + "%");
       }
     }
 
@@ -572,9 +700,6 @@ def build_ha_color_webapp_html(app_base_url: str = "") -> str:
       const hex = String(event.target.value || "#FFFFFF").replace("#", "");
       setColor(parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2, 4), 16), parseInt(hex.slice(4, 6), 16));
     });
-    sliderR.addEventListener("input", () => setColor(sliderR.value, sliderG.value, sliderB.value));
-    sliderG.addEventListener("input", () => setColor(sliderR.value, sliderG.value, sliderB.value));
-    sliderB.addEventListener("input", () => setColor(sliderR.value, sliderG.value, sliderB.value));
     sliderBrightness.addEventListener("input", () => setBrightnessPct(sliderBrightness.value));
     savePreset.addEventListener("click", saveCurrentPreset);
 
