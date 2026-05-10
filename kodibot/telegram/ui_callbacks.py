@@ -5,6 +5,25 @@ import time
 from kodibot.telegram import ui as UI
 
 
+async def _refresh_ha_menu(ctx, chat_id, update):
+    """Re-fetch the light state and update the HA menu message in-place."""
+    q = getattr(update, "callback_query", None)
+    msg_id = q.message.message_id if q and q.message else None
+    if not msg_id:
+        return
+    chat_type = getattr(update.effective_chat, "type", "") or ""
+    bot_username = getattr(ctx.bot, "username", "") or ""
+    state = await asyncio.to_thread(UI.ha.get_light_state)
+    await UI.show_ha_menu(
+        ctx,
+        chat_id,
+        chat_type=chat_type,
+        bot_username=bot_username,
+        state=state,
+        edit_message_id=msg_id,
+    )
+
+
 async def on_button(update, ctx):
     q = update.callback_query
     await q.answer()
@@ -405,6 +424,7 @@ async def on_button(update, ctx):
         if ok:
             emoji = "🟢" if new_state == "on" else "🔴"
             await UI.send_and_track(ctx, chat_id, f"{emoji} Light: {new_state}")
+            await _refresh_ha_menu(ctx, chat_id, update)
         else:
             await UI.send_and_track(ctx, chat_id, "⚠ Toggle failed.")
         sent = True
@@ -479,6 +499,7 @@ async def on_button(update, ctx):
                         chat_id,
                         f"🎨 Color \"{color.get('name', '?')}\" applied: #{r:02X}{g:02X}{b:02X}",
                     )
+                    await _refresh_ha_menu(ctx, chat_id, update)
                 else:
                     await UI.send_and_track(ctx, chat_id, "⚠ Color could not be applied.")
             else:
@@ -493,6 +514,7 @@ async def on_button(update, ctx):
             if ok:
                 label = "Disco" if effect_name == "colorloop" else effect_name
                 await UI.send_and_track(ctx, chat_id, f"🪩 Effect enabled: {label}")
+                await _refresh_ha_menu(ctx, chat_id, update)
             else:
                 await UI.send_and_track(ctx, chat_id, "⚠ Effect could not be enabled.")
         sent = True
@@ -504,6 +526,7 @@ async def on_button(update, ctx):
             ok = await asyncio.to_thread(UI.ha.set_light_color, r, g, b)
             if ok:
                 await UI.send_and_track(ctx, chat_id, f"🎨 Color applied: #{hex_part}")
+                await _refresh_ha_menu(ctx, chat_id, update)
             else:
                 await UI.send_and_track(ctx, chat_id, "⚠ Color could not be applied.")
         else:

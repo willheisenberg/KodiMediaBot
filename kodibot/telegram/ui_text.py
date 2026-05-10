@@ -30,6 +30,17 @@ async def handle_text(update, ctx):
                 r, g, b = parsed
                 ok = await asyncio.to_thread(UI.ha.set_light_color, r, g, b)
                 if ok:
+                    menu_message_id = UI.HA_MENU_MSG_ID.get(chat_id)
+                    if menu_message_id:
+                        state = await asyncio.to_thread(UI.ha.get_light_state)
+                        await UI.show_ha_menu(
+                            ctx,
+                            chat_id,
+                            chat_type=getattr(update.effective_chat, "type", "") or "",
+                            bot_username=getattr(ctx.bot, "username", "") or "",
+                            state=state,
+                            edit_message_id=menu_message_id,
+                        )
                     await UI.send_and_track(ctx, chat_id, f"🎨 Color applied: #{r:02X}{g:02X}{b:02X}")
                 else:
                     await UI.send_and_track(ctx, chat_id, "⚠ Color could not be applied.")
