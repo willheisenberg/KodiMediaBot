@@ -34,8 +34,14 @@ async def on_button(update, ctx):
             sent = True
         else:
             UI.schedule_playback_action(ctx, chat_id, UI.queue_state.skip_queue)
-            await UI.send_and_track(ctx, chat_id, "⏭ Next")
+            # Brief yield so the playback thread has time to update DISPLAY_INDEX
+            # and set BOT_EXPECTING_WS, then immediately refresh the panel so the
+            # new track name/link appears before Kodi has even started playing.
+            await asyncio.sleep(0.05)
+            await UI.update_list_message(ctx, chat_id)
+            await UI.update_now_playing_message(ctx, chat_id)
             sent = True
+            skip_cleanup = True
 
     elif cmd == "back":
         with UI.queue_state.LOCK:
@@ -45,8 +51,14 @@ async def on_button(update, ctx):
             sent = True
         else:
             UI.schedule_playback_action(ctx, chat_id, UI.queue_state.back_queue)
-            await UI.send_and_track(ctx, chat_id, "⏮ Back")
+            # Brief yield so the playback thread has time to update DISPLAY_INDEX
+            # and set BOT_EXPECTING_WS, then immediately refresh the panel so the
+            # new track name/link appears before Kodi has even started playing.
+            await asyncio.sleep(0.05)
+            await UI.update_list_message(ctx, chat_id)
+            await UI.update_now_playing_message(ctx, chat_id)
             sent = True
+            skip_cleanup = True
 
     elif cmd == "playpause":
         pid = UI.kodi_api.get_active_playerid()
