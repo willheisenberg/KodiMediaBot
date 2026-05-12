@@ -48,35 +48,29 @@ chmod 600 /storage/docker/partyqueue/id_ed25519
 chmod 644 /storage/docker/partyqueue/id_ed25519.pub
 ```
 
-## Run
-```
-docker run -d --name partyqueue --restart unless-stopped --network host \
-  -e TG_TOKEN="YOUR_TELEGRAM_BOT_TOKEN" \
-  -e KODI_HOST=172.17.0.1 \
-  -e DENON_HOST="DENON_IP" \
-  -e KODI_PORT=8080 \
-  -e KODI_WS_PORT=9090 \
-  -e CEC_HOST=172.17.0.1 \
-  -e DEBUG_WS=1 \
-  -e KODI_USER="USER" \
-  -e KODI_PASS="Password" \
-  -e SC_CLIENT_ID="YOUR_CLIENT_ID" \
-  -e MEDIA_BASE_URL="http://YOUR_HOST_IP:8765" \
-  -e TELEGRAM_LOCAL_MODE="0" \
-  -v /storage/docker/partyqueue:/root/.ssh:ro \
-  -v /storage/docker/partyqueue/playlists:/data/playlists \
-  -v /storage/docker/partyqueue/uploads:/data/uploads \
-  partyqueue
-```
-
 ## Docker Compose
-```bash
+```yaml
 services:
+  telegram-bot-api:
+    image: aiogram/telegram-bot-api:latest
+    container_name: telegram-bot-api
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      TELEGRAM_API_ID: "YOUR_API_ID"
+      TELEGRAM_API_HASH: "YOUR_API_HASH"
+      TELEGRAM_LOCAL: "1"
+      TELEGRAM_HTTP_PORT: "8081"
+    volumes:
+      - telegram-bot-api-data:/var/lib/telegram-bot-api
+
   kodi-media-bot:
     build: .
     container_name: kodi-media-bot
     restart: unless-stopped
     network_mode: host
+    depends_on:
+      - telegram-bot-api
     environment:
       TG_TOKEN: "YOUR_TELEGRAM_BOT_TOKEN"
       KODI_HOST: "172.17.0.1"
@@ -89,46 +83,58 @@ services:
       DEBUG_WS: "1"
       SC_CLIENT_ID: "YOUR_CLIENT_ID"
       MEDIA_BASE_URL: "http://YOUR_HOST_IP:8765"
-      TELEGRAM_LOCAL_MODE: "0"
+      TELEGRAM_LOCAL_MODE: "1"
+      TELEGRAM_BASE_URL: "http://127.0.0.1:8081/bot"
+      TELEGRAM_BASE_FILE_URL: "http://127.0.0.1:8081/file/bot"
+      HA_HOST: "HA_IP"
+      HA_PORT: "8123"
+      HA_TOKEN: "YOUR_HA_TOKEN"
+      HA_LIGHT_ID: "light.living_room"
+      HA_WEBAPP_URL: "https://bot.example.com/app/ha-color"
+      HA_COLORS_FILE: "/data/colors/ha_colors.json"
     volumes:
       - /storage/docker/partyqueue:/root/.ssh:ro
       - /storage/docker/partyqueue/playlists:/data/playlists
       - /storage/docker/partyqueue/uploads:/data/uploads
+      - /storage/docker/partyqueue/colors:/data/colors
+      - telegram-bot-api-data:/var/lib/telegram-bot-api:ro
+
+  caddy-webapp:
+    image: caddy:2-alpine
+    container_name: kodi-media-bot-caddy
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - kodi-media-bot
+    environment:
+      WEBAPP_HOSTNAME: "bot.example.com"
+      ACME_EMAIL: "you@example.com"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  telegram-bot-api-data:
+  caddy-data:
+  caddy-config:
 ```
 
-If you also enable the Home Assistant integration in this minimal compose setup, add the HA environment variables plus a persistent colors mount, for example:
-- `HA_HOST`, `HA_PORT`, `HA_TOKEN`, `HA_LIGHT_ID`, `HA_WEBAPP_URL`
-- `HA_COLORS_FILE=/data/colors/ha_colors.json`
-- `/storage/docker/partyqueue/colors:/data/colors`
+*(Note: To use the local Bot API server for uploads > 20 MB, you need your Telegram `api_id` and `api_hash` from `https://my.telegram.org`.)*
 
-Starten:
-```bash
-docker compose up -d --build
-```
-
-## Docker Compose with local `telegram-bot-api`
-If you want Telegram uploads larger than 20 MB, run the bot against a local Bot API server.
-
-You need your Telegram `api_id` and `api_hash` from `https://my.telegram.org`.
-
-Start with:
+**Start the stack:**
 ```bash
 cp .env.local-bot-api.example .env
 # edit .env
 docker compose -f docker-compose.local-bot-api.yml up -d --build
 ```
 
-The local Bot API server stores downloaded Telegram files under `/var/lib/telegram-bot-api`. The compose file mounts that same volume into `kodi-media-bot` as read-only, otherwise media downloads fail with `Not Found` even for small files.
+### Explanations
+- **`telegram-bot-api`**: Used for large Telegram uploads. It stores files under `/var/lib/telegram-bot-api`. This volume is mounted into `kodi-media-bot` as read-only.
+- **`kodi-media-bot`**: The main bot container.
+- **`caddy-webapp`**: Public HTTPS reverse proxy required for the Telegram Mini App (Home Assistant color picker).
 
-The bundled `docker-compose.local-bot-api.yml` currently includes:
-- `telegram-bot-api` for large Telegram uploads.
-- `kodi-media-bot` itself.
-- `caddy-webapp` as the public HTTPS reverse proxy for the Telegram Mini App.
-
-The same compose file also persists bot data on the host:
-- `/storage/docker/partyqueue/playlists` -> `/data/playlists`
-- `/storage/docker/partyqueue/uploads` -> `/data/uploads`
-- `/storage/docker/partyqueue/colors` -> `/data/colors`
+Bot data is persisted on the host in `/storage/docker/partyqueue/` (playlists, uploads, HA colors, SSH keys).
 
 Important when switching an existing bot from the Telegram cloud Bot API to a local Bot API server:
 ```bash
