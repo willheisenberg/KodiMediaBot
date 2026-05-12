@@ -263,15 +263,21 @@ def movie_list_lines(movies):
         if year:
             title = f"{title} ({year})"
         
-        dateadded_str = movie.get("dateadded")
-        if dateadded_str:
-            try:
-                dateadded_clean = dateadded_str.replace(" ", "T")
-                dt = datetime.fromisoformat(dateadded_clean)
-                if dt > thirty_days_ago:
-                    title = f"🆕 {title}"
-            except Exception:
-                pass
+        ctime = movie.get("ctime")
+        if ctime:
+            dt = datetime.fromtimestamp(ctime)
+            if dt > thirty_days_ago:
+                title = f"🆕 {title}"
+        else:
+            dateadded_str = movie.get("dateadded")
+            if dateadded_str:
+                try:
+                    dateadded_clean = dateadded_str.replace(" ", "T")
+                    dt = datetime.fromisoformat(dateadded_clean[:19])
+                    if dt > thirty_days_ago:
+                        title = f"🆕 {title}"
+                except Exception:
+                    pass
                 
         lines.append(format_link_line(i, title, kodi_api.build_imdb_link(movie)))
     return lines
@@ -286,15 +292,21 @@ def show_list_lines(shows):
         if year:
             title = f"{title} ({year})"
             
-        dateadded_str = show.get("dateadded")
-        if dateadded_str:
-            try:
-                dateadded_clean = dateadded_str.replace(" ", "T")
-                dt = datetime.fromisoformat(dateadded_clean)
-                if dt > thirty_days_ago:
-                    title = f"🆕 {title}"
-            except Exception:
-                pass
+        ctime = show.get("ctime")
+        if ctime:
+            dt = datetime.fromtimestamp(ctime)
+            if dt > thirty_days_ago:
+                title = f"🆕 {title}"
+        else:
+            dateadded_str = show.get("dateadded")
+            if dateadded_str:
+                try:
+                    dateadded_clean = dateadded_str.replace(" ", "T")
+                    dt = datetime.fromisoformat(dateadded_clean[:19])
+                    if dt > thirty_days_ago:
+                        title = f"🆕 {title}"
+                except Exception:
+                    pass
                 
         lines.append(format_link_line(i, title, kodi_api.build_imdb_link(show)))
     return lines
@@ -313,15 +325,21 @@ def episode_list_lines(episodes):
             prefix = f"S{season}E{number} "
         title = f"{prefix}{ep.get('label') or ep.get('title') or 'Unknown'}".strip()
         
-        dateadded_str = ep.get("dateadded")
-        if dateadded_str:
-            try:
-                dateadded_clean = dateadded_str.replace(" ", "T")
-                dt = datetime.fromisoformat(dateadded_clean)
-                if dt > thirty_days_ago:
-                    title = f"🆕 {title}"
-            except Exception:
-                pass
+        ctime = ep.get("ctime")
+        if ctime:
+            dt = datetime.fromtimestamp(ctime)
+            if dt > thirty_days_ago:
+                title = f"🆕 {title}"
+        else:
+            dateadded_str = ep.get("dateadded")
+            if dateadded_str:
+                try:
+                    dateadded_clean = dateadded_str.replace(" ", "T")
+                    dt = datetime.fromisoformat(dateadded_clean[:19])
+                    if dt > thirty_days_ago:
+                        title = f"🆕 {title}"
+                except Exception:
+                    pass
                 
         lines.append(format_link_line(i, title, kodi_api.build_imdb_link(ep)))
     return lines
