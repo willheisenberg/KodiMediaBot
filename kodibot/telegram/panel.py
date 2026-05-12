@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import time
+from datetime import datetime, timedelta
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -255,28 +256,53 @@ async def send_chunked_selection(ctx, chat_id, header, lines, footer=None):
 
 def movie_list_lines(movies):
     lines = []
+    thirty_days_ago = datetime.now() - timedelta(days=30)
     for i, movie in enumerate(movies):
         title = movie.get("label") or movie.get("title") or "Unknown"
         year = movie.get("year")
         if year:
             title = f"{title} ({year})"
+        
+        dateadded_str = movie.get("dateadded")
+        if dateadded_str:
+            try:
+                dateadded_clean = dateadded_str.replace(" ", "T")
+                dt = datetime.fromisoformat(dateadded_clean)
+                if dt > thirty_days_ago:
+                    title = f"🆕 {title}"
+            except Exception:
+                pass
+                
         lines.append(format_link_line(i, title, kodi_api.build_imdb_link(movie)))
     return lines
 
 
 def show_list_lines(shows):
     lines = []
+    thirty_days_ago = datetime.now() - timedelta(days=30)
     for i, show in enumerate(shows):
         title = show.get("label") or show.get("title") or "Unknown"
         year = show.get("year")
         if year:
             title = f"{title} ({year})"
+            
+        dateadded_str = show.get("dateadded")
+        if dateadded_str:
+            try:
+                dateadded_clean = dateadded_str.replace(" ", "T")
+                dt = datetime.fromisoformat(dateadded_clean)
+                if dt > thirty_days_ago:
+                    title = f"🆕 {title}"
+            except Exception:
+                pass
+                
         lines.append(format_link_line(i, title, kodi_api.build_imdb_link(show)))
     return lines
 
 
 def episode_list_lines(episodes):
     lines = []
+    thirty_days_ago = datetime.now() - timedelta(days=30)
     for i, ep in enumerate(episodes):
         season = ep.get("season", "?")
         number = ep.get("episode", "?")
@@ -286,6 +312,17 @@ def episode_list_lines(episodes):
         else:
             prefix = f"S{season}E{number} "
         title = f"{prefix}{ep.get('label') or ep.get('title') or 'Unknown'}".strip()
+        
+        dateadded_str = ep.get("dateadded")
+        if dateadded_str:
+            try:
+                dateadded_clean = dateadded_str.replace(" ", "T")
+                dt = datetime.fromisoformat(dateadded_clean)
+                if dt > thirty_days_ago:
+                    title = f"🆕 {title}"
+            except Exception:
+                pass
+                
         lines.append(format_link_line(i, title, kodi_api.build_imdb_link(ep)))
     return lines
 

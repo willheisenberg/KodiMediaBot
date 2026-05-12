@@ -13,7 +13,7 @@ def scan_video_library():
 def list_movies():
     res = KA.kodi_call(
         "VideoLibrary.GetMovies",
-        {"properties": ["title", "year", "originaltitle", "uniqueid", "imdbnumber"], "sort": {"method": "title"}},
+        {"properties": ["title", "year", "originaltitle", "uniqueid", "imdbnumber", "dateadded"], "sort": {"method": "title"}},
     )
     movies = (res.get("result", {}) or {}).get("movies", []) or []
     return movies
@@ -22,7 +22,7 @@ def list_movies():
 def list_tvshows():
     res = KA.kodi_call(
         "VideoLibrary.GetTVShows",
-        {"properties": ["title", "year", "uniqueid", "imdbnumber"], "sort": {"method": "title"}},
+        {"properties": ["title", "year", "uniqueid", "imdbnumber", "dateadded"], "sort": {"method": "title"}},
     )
     shows = (res.get("result", {}) or {}).get("tvshows", []) or []
     return shows
@@ -34,26 +34,26 @@ def list_tvshow_episodes(tvshowid, showtitle=""):
         attempts.extend([
             {
                 "tvshowid": tvshowid,
-                "properties": ["title", "showtitle", "season", "episode", "uniqueid", "imdbnumber"],
+                "properties": ["title", "showtitle", "season", "episode", "uniqueid", "imdbnumber", "dateadded"],
                 "sort": {"method": "episode"},
             },
             {
                 "tvshowid": tvshowid,
-                "properties": ["title", "showtitle", "season", "episode", "uniqueid", "imdbnumber"],
+                "properties": ["title", "showtitle", "season", "episode", "uniqueid", "imdbnumber", "dateadded"],
             },
             {
                 "tvshowid": tvshowid,
-                "properties": ["title", "showtitle", "season", "episode"],
+                "properties": ["title", "showtitle", "season", "episode", "dateadded"],
             },
         ])
     if showtitle:
         attempts.extend([
             {
-                "properties": ["title", "showtitle", "season", "episode", "uniqueid", "imdbnumber"],
+                "properties": ["title", "showtitle", "season", "episode", "uniqueid", "imdbnumber", "dateadded"],
                 "sort": {"method": "episode"},
             },
             {
-                "properties": ["title", "showtitle", "season", "episode"],
+                "properties": ["title", "showtitle", "season", "episode", "dateadded"],
             },
         ])
 
