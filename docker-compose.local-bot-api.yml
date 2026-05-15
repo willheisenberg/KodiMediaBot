@@ -41,6 +41,7 @@ services:
       HA_WEBAPP_URL: "${HA_WEBAPP_URL}"
       HA_COLORS_FILE: "/data/colors/ha_colors.json"
     volumes:
+      - /storage/docker/partyqueue/data/kodi.m3u:/data/kodi.m3u
       - /storage/docker/partyqueue:/root/.ssh:ro
       - /storage/docker/partyqueue/playlists:/data/playlists
       - /storage/docker/partyqueue/uploads:/data/uploads

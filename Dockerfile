@@ -12,7 +12,6 @@ RUN pip install --no-cache-dir \
 
 COPY main.py /main.py
 COPY kodibot /kodibot
-COPY ./data/kodi.m3u /data/kodi.m3u
 
 HEALTHCHECK --interval=30s --timeout=5s \
     CMD wget -q -O /dev/null http://localhost:8765/health || exit 1
