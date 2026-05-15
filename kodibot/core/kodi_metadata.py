@@ -791,7 +791,26 @@ def external_item_display(item):
             return f"{channel} || {radio_title}", link
     if channel:
         return channel, link
+
+    # FALLBACK: If we have no good title/label yet, check if this file URL is in our favourites
+    if not (artist and title) and not channel and file_url:
+        fav_name = KA.find_favourite_label_by_path(file_url)
+        if fav_name:
+            # Try to fetch current song title from the stream (ICY metadata)
+            radio_title = KA.fetch_icy_title(file_url)
+            if radio_title:
+                # Search for YouTube/SoundCloud links if a song title is found
+                yt_link = KA.radio_title_to_youtube_link(radio_title)
+                if yt_link:
+                    return f"{fav_name} || {radio_title}", yt_link
+                sc_link = KA.radio_title_to_soundcloud_link(radio_title)
+                return f"{fav_name} || {radio_title}", (sc_link or link)
+            
+            return fav_name, link
+
     return label or title or None, link
+
+
 
 
 def kodi_item_matches_queue(item, qitem):

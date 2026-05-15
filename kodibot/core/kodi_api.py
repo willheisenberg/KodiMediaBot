@@ -174,12 +174,82 @@ def favourite_media_target(fav):
     return None
 
 
-def play_favourite_target(target):
+def find_favourite_label_by_path(path):
+    """Search the favorites list for a matching URL and return its name."""
+    if not path:
+        return None
+    favs = get_playable_favourites()
+    for f in favs:
+        # Compare raw URLs
+        if f.get("target") == path:
+            return f.get("title")
+    return None
+
+
+
+def play_favourite_target(target, title=None):
     if not target:
         return False
     stop_player_and_clear_playlists()
+    
+    # We use the simplest item structure as Kodi can be picky about extra properties for raw URLs.
     res = kodi_call("Player.Open", {"item": {"file": target}})
     return "error" not in res
+
+
+
+
+def add_to_favourites(title, path, thumbnail=None):
+    params = {
+        "title": title,
+        "type": "media",
+        "path": path
+    }
+    if thumbnail:
+        if thumbnail.startswith("http"):
+            # Kodi expects image://<url-encoded-url>/
+            encoded_thumb = quote_plus(thumbnail)
+            thumbnail = f"image://{encoded_thumb}/"
+        params["thumbnail"] = thumbnail
+    res = kodi_call("Favourites.AddFavourite", params)
+    return "error" not in res
+
+
+
+def get_favourites():
+    # In Kodi 21 fragen wir explizit nach der 'id'
+    res = kodi_call("Favourites.GetFavourites", {"properties": ["path", "thumbnail"]})
+    return res.get("result", {}).get("favourites", [])
+
+
+def remove_favourite(title):
+    if not title:
+        return False
+    
+    # 1. 'Chirurgischer Eingriff' per SSH: Zeile aus favourites.xml löschen
+    # Wir nutzen den SSH-Key, der in /root/.ssh im Container liegt
+    escaped_title = re.escape(title).replace("/", r"\/")
+    remote_cmd = (
+        "sed -i "
+        + shlex.quote(f'/name="{escaped_title}"/d')
+        + " "
+        + shlex.quote("/storage/.kodi/userdata/favourites.xml")
+    )
+    ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", f"root@{CFG.kodi_host}", remote_cmd]
+    
+    try:
+        log.info(f"Executing SSH cleanup for favorite: {title}")
+        subprocess.run(ssh_cmd, check=True, timeout=5)
+    except Exception as e:
+        log.error(f"SSH cleanup failed: {e}")
+        return False
+
+    # 2. Kodi Reload Trigger (Zwingt Kodi die Datei neu einzulesen)
+    # WICHTIG: Das Profil heißt bei LibreELEC fast immer "Master user"
+    res = kodi_call("Profiles.LoadProfile", {"profile": "Master user"})
+    log.info(f"Profile reload response: {res}")
+    
+    return True
 
 
 def play_picture(file_path):

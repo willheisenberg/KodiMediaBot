@@ -91,6 +91,9 @@ class Config:
     # ── Internal tuning ──────────────────────────────────────────────
     kodi_error_log_interval: float
 
+    # ── Radio Browser API ────────────────────────────────────────────
+    radio_api_url: str
+
     # ── Derived helpers ──────────────────────────────────────────────
 
     @property
@@ -198,6 +201,8 @@ class Config:
             ha_webapp_max_age=int(os.environ.get("HA_WEBAPP_MAX_AGE", "900")),
             # Tuning
             kodi_error_log_interval=float(os.environ.get("KODI_ERROR_LOG_INTERVAL", "10")),
+            # Radio Browser
+            radio_api_url=os.environ.get("RADIO_API_URL", "https://de1.api.radio-browser.info/json").rstrip("/"),
         )
 
 
