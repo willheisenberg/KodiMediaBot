@@ -990,8 +990,30 @@ async def on_button(update, ctx):
             else:
                 await q.answer(text="⚠ Episode could not be played.")
         sent = True
-
-    elif cmd.startswith("play_radio:"):
+    elif cmd == "play_all_episodes":
+        show = ctx.user_data.get("media_show")
+        episodes = ctx.user_data.get("media_episodes", [])
+        if episodes:
+            ok = await asyncio.to_thread(
+                UI.kodi_api.play_all_episodes,
+                [episode.get("episodeid") for episode in episodes],
+            )
+            if ok:
+                UI.queue_state.clear_bot_playback_state()
+                title = show.get("title") if show else "Series"
+                await q.answer(text=f"📺 Playing all episodes: {title}")
+                if q.message:
+                    await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
+                _forget_prompt(
+                    ctx, chat_id, user_id,
+                    "await_episode_index", "await_episode_msg_id",
+                    "media_show", "media_episodes",
+                )
+            else:
+                await q.answer(text="⚠ Episodes could not be played.")
+        else:
+            await q.answer(text="⚠ No episodes found.")
+        sent = True
         idx = int(cmd.split(":")[1])
         stations = ctx.user_data.get("radio_results", [])
         if 0 <= idx < len(stations):

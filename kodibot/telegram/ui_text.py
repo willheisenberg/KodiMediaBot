@@ -455,12 +455,12 @@ async def handle_text(update, ctx):
                     sent = True
                 else:
                     lines = UI.episode_list_lines(episodes)
-                    lines.append(f"{len(episodes) + 1}. Play all episodes")
                     msg_ids = await UI.send_chunked_selection(
                         ctx,
                         chat_id,
                         f"📺 {html.escape(show.get('title') or 'Serie', quote=False)}\n",
                         lines,
+                        extra_buttons=[("▶ Play all episodes", "play_all_episodes")]
                     )
                     ctx.user_data["media_show"] = show
                     ctx.user_data["media_episodes"] = episodes

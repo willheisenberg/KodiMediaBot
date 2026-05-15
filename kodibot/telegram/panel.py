@@ -263,14 +263,23 @@ def chunk_selection_text(header, lines, footer=None, max_len=3800):
     return chunks
 
 
-async def send_chunked_selection(ctx, chat_id, header, lines, footer=None):
+async def send_chunked_selection(ctx, chat_id, header, lines, footer=None, extra_buttons=None):
     """Send chunked selection text and return list of message IDs."""
     chunks = chunk_selection_text(header, lines, footer)
     msg_ids = []
     for i, chunk in enumerate(chunks):
         markup = None
         if i == len(chunks) - 1:
-            markup = cancel_markup()
+            rows = []
+            if extra_buttons:
+                for btn in extra_buttons:
+                    if isinstance(btn, InlineKeyboardButton):
+                        rows.append([btn])
+                    else:
+                        label, callback_data = btn
+                        rows.append([InlineKeyboardButton(label, callback_data=callback_data)])
+            rows.append([InlineKeyboardButton("❌ Cancel", callback_data="prompt:cancel")])
+            markup = InlineKeyboardMarkup(rows)
         msg = await send_and_track(ctx, chat_id, chunk, parse_mode="HTML", reply_markup=markup)
         msg_ids.append(msg.message_id)
     return msg_ids
