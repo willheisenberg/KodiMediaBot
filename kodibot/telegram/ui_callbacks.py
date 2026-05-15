@@ -25,6 +25,67 @@ async def _refresh_ha_menu(ctx, chat_id, update):
     )
 
 
+def _forget_prompt(ctx, chat_id, user_id, state_key, msg_key, *extra_keys):
+    UI.cancel_prompt_timeout(chat_id, user_id, state_key)
+    ctx.user_data[state_key] = False
+    ctx.user_data.pop(msg_key, None)
+    for key in extra_keys:
+        ctx.user_data.pop(key, None)
+
+
+async def _execute_pending_delete(ctx, chat_id, pending_delete):
+    kind = (pending_delete or {}).get("kind")
+
+    if kind == "queue_all":
+        UI.queue_state.clear_queue()
+        return "🗑 Queue cleared", False
+
+    if kind == "queue_index":
+        index = pending_delete.get("index")
+        if not isinstance(index, int):
+            return "Invalid index.", True
+        identity = pending_delete.get("identity")
+        if identity and not UI.queue_delete_target_matches(index, identity):
+            return "⚠ Queue changed. Delete cancelled.", True
+        ok, msg = UI.queue_state.delete_index(index)
+        if ok:
+            return pending_delete.get("success_text") or "🗑 Track deleted.", False
+        return msg or "⚠ Track could not be deleted.", True
+
+    if kind == "playlist_file":
+        filename = pending_delete.get("filename")
+        if not filename:
+            return "⚠ Playlist not found.", True
+        ok, res = await asyncio.to_thread(
+            UI.playlist_store.delete_playlist_from_disk,
+            UI.CFG.playlist_dir,
+            filename,
+        )
+        return (f"🗑 Deleted: {res}" if ok else f"⚠ {res}"), True
+
+    if kind == "favourite":
+        title = pending_delete.get("title")
+        if not title:
+            return "⚠ Favourite not found.", True
+        ok = await asyncio.to_thread(UI.kodi_api.remove_favourite, title)
+        return (f"🗑 Deleted favourite: {title}" if ok else "⚠ Favourite could not be deleted."), True
+
+    if kind == "ha_color":
+        color_name = pending_delete.get("name", "")
+        label = pending_delete.get("label") or color_name or "?"
+        if not color_name:
+            return "⚠ Color not found.", True
+        ok = await asyncio.to_thread(UI.ha.delete_saved_color, color_name)
+        if ok:
+            menu_message_id = UI.HA_MENU_MSG_ID.get(chat_id)
+            if menu_message_id:
+                await UI.show_ha_preset_menu(ctx, chat_id, edit_message_id=menu_message_id)
+            return f"🗑 Color deleted: {label}", True
+        return "⚠ Color could not be deleted.", True
+
+    return "⚠ Nothing to delete.", True
+
+
 async def on_button(update, ctx):
     q = update.callback_query
     # await q.answer()  <-- Moved to individual branches or end
@@ -152,14 +213,21 @@ async def on_button(update, ctx):
         sent = True
 
     elif cmd == "deleteall":
-        UI.queue_state.clear_queue()
-        await q.answer(text="🗑 Queue cleared")
-        sent = True
+        with UI.queue_state.LOCK:
+            queue_count = len(UI.queue_state.QUEUE)
+        if queue_count == 0:
+            await q.answer(text="🗑 Queue empty.")
+            sent = True
+        else:
+            UI.queue_state.clear_queue()
+            await q.answer(text="🗑 Queue cleared")
+            sent = True
 
     elif cmd == "delete:first":
-        ok, msg = UI.queue_state.delete_index(0)
-        if ok:
-            await q.answer(text="🗑 First track deleted.")
+        payload, msg = UI.queue_delete_confirmation_payload(0, "🗑 First track deleted.")
+        if payload:
+            answer_text, _ = await _execute_pending_delete(ctx, chat_id, payload)
+            await q.answer(text=answer_text)
         else:
             await q.answer(text=msg)
         sent = True
@@ -167,9 +235,10 @@ async def on_button(update, ctx):
     elif cmd == "delete:last":
         with UI.queue_state.LOCK:
             last_idx = len(UI.queue_state.QUEUE) - 1
-        ok, msg = UI.queue_state.delete_index(last_idx)
-        if ok:
-            await q.answer(text="🗑 Last track deleted.")
+        payload, msg = UI.queue_delete_confirmation_payload(last_idx, "🗑 Last track deleted.")
+        if payload:
+            answer_text, _ = await _execute_pending_delete(ctx, chat_id, payload)
+            await q.answer(text=answer_text)
         else:
             await q.answer(text=msg)
         sent = True
@@ -734,21 +803,61 @@ async def on_button(update, ctx):
             await q.answer(text="⚠ Playlist not found.")
         sent = True
 
+    elif cmd.startswith("delete_confirm:"):
+        parts = cmd.split(":")
+        if len(parts) == 3:
+            _, token, choice = parts
+        else:
+            token = None
+            choice = parts[1] if len(parts) > 1 else ""
+        pending_delete = ctx.user_data.get("pending_delete")
+        if q.message:
+            await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
+
+        expired = token and pending_delete and pending_delete.get("token") != token
+        if expired:
+            await q.answer(text="⚠ Confirmation expired.")
+            skip_cleanup = True
+        else:
+            UI.cancel_prompt_timeout(chat_id, user_id, "await_delete_confirm")
+            ctx.user_data["await_delete_confirm"] = False
+            ctx.user_data.pop("await_delete_confirm_msg_id", None)
+            pending_delete = ctx.user_data.pop("pending_delete", None)
+            if choice == "no":
+                await q.answer(text="❌ Cancelled")
+                skip_cleanup = True
+            elif not pending_delete:
+                await q.answer(text="⚠ Nothing to delete.")
+                skip_cleanup = True
+            else:
+                answer_text, skip_cleanup = await _execute_pending_delete(ctx, chat_id, pending_delete)
+                await q.answer(text=answer_text)
+        sent = True
+
     elif cmd.startswith("delete_plist:"):
         idx = int(cmd.split(":")[1])
         files = ctx.user_data.get("playlist_load_files", []) or ctx.user_data.get("playlist_delete_files", [])
         if 0 <= idx < len(files):
             filename = files[idx]
-            ok, res = await asyncio.to_thread(UI.playlist_store.delete_playlist_from_disk, UI.CFG.playlist_dir, filename)
-            if ok:
-                await q.answer(text=f"🗑 Deleted: {res}")
-                if q.message:
-                    await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
-                ctx.user_data["await_playlist_delete_index"] = False
-                ctx.user_data.pop("await_playlist_delete_index_msg_id", None)
-                ctx.user_data.pop("playlist_delete_files", None)
-            else:
-                await q.answer(text=f"⚠ {res}")
+            if q.message:
+                await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
+            _forget_prompt(
+                ctx,
+                chat_id,
+                user_id,
+                "await_playlist_delete_index",
+                "await_playlist_delete_msg_id",
+                "playlist_delete_files",
+                "playlist_load_files",
+            )
+            await UI.request_delete_confirmation(
+                ctx,
+                chat_id,
+                user_id,
+                f"Are you sure you want to delete playlist \"{os.path.splitext(filename)[0]}\"?",
+                {"kind": "playlist_file", "filename": filename},
+            )
+            skip_cleanup = True
         else:
             await q.answer(text="⚠ Playlist not found.")
         sent = True
@@ -758,16 +867,25 @@ async def on_button(update, ctx):
         favs = ctx.user_data.get("favourites_delete", [])
         if 0 <= idx < len(favs):
             fav = favs[idx]
-            ok = await asyncio.to_thread(UI.kodi_api.remove_favourite, fav.get("title"))
-            if ok:
-                await q.answer(text=f"🗑 Deleted favourite: {fav['title']}")
-                if q.message:
-                    await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
-                ctx.user_data["await_radio_delete_index"] = False
-                ctx.user_data.pop("await_radio_delete_index_msg_id", None)
-                ctx.user_data.pop("favourites_delete", None)
-            else:
-                await q.answer(text="⚠ Favourite could not be deleted.")
+            title = fav.get("title") or "?"
+            if q.message:
+                await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
+            _forget_prompt(
+                ctx,
+                chat_id,
+                user_id,
+                "await_radio_delete_index",
+                "await_radio_delete_index_msg_id",
+                "favourites_delete",
+            )
+            await UI.request_delete_confirmation(
+                ctx,
+                chat_id,
+                user_id,
+                f"Are you sure you want to delete favourite \"{title}\"?",
+                {"kind": "favourite", "title": fav.get("title")},
+            )
+            skip_cleanup = True
         else:
             await q.answer(text="⚠ Favourite not found.")
         sent = True
@@ -932,20 +1050,24 @@ async def on_button(update, ctx):
         if 0 <= idx < len(colors):
             color = colors[idx]
             color_name = UI.saved_color_name(color, idx)
-            ok = await asyncio.to_thread(UI.ha.delete_saved_color, color.get("name", ""))
-            if ok:
-                await q.answer(text=f"🗑 Color deleted: {color_name}")
-                if q.message:
-                    await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
-                ctx.user_data["await_ha_delete_color_index"] = False
-                ctx.user_data.pop("await_ha_delete_color_msg_id", None)
-                ctx.user_data.pop("ha_delete_colors", None)
-                # Update HA preset menu if open
-                menu_message_id = UI.HA_MENU_MSG_ID.get(chat_id)
-                if menu_message_id:
-                    await UI.show_ha_preset_menu(ctx, chat_id, edit_message_id=menu_message_id)
-            else:
-                await q.answer(text="⚠ Color could not be deleted.")
+            if q.message:
+                await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
+            _forget_prompt(
+                ctx,
+                chat_id,
+                user_id,
+                "await_ha_delete_color_index",
+                "await_ha_delete_color_msg_id",
+                "ha_delete_colors",
+            )
+            await UI.request_delete_confirmation(
+                ctx,
+                chat_id,
+                user_id,
+                f"Are you sure you want to delete color \"{color_name}\"?",
+                {"kind": "ha_color", "name": color.get("name", ""), "label": color_name},
+            )
+            skip_cleanup = True
         else:
             await q.answer(text="⚠ Color not found.")
         sent = True
@@ -1037,7 +1159,7 @@ async def on_button(update, ctx):
                     except ValueError:
                         pass
                 keys_to_clear.append(k)
-            elif k.startswith("await_") or k.endswith("_files") or k == "favourites" or k.startswith("media_") or k.startswith("ha_delete_") or k == "audio_streams" or k == "subtitle_streams" or k == "radio_results":
+            elif k.startswith("await_") or k.endswith("_files") or k == "favourites" or k.startswith("media_") or k.startswith("ha_delete_") or k == "audio_streams" or k == "subtitle_streams" or k == "radio_results" or k == "pending_delete":
                 keys_to_clear.append(k)
                 
         for k in keys_to_clear:

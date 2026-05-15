@@ -207,6 +207,15 @@ def cancel_markup():
     return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="prompt:cancel")]])
 
 
+def delete_confirm_markup(token=None):
+    yes_callback = f"delete_confirm:{token}:yes" if token else "delete_confirm:yes"
+    no_callback = f"delete_confirm:{token}:no" if token else "delete_confirm:no"
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Yes", callback_data=yes_callback),
+        InlineKeyboardButton("❌ No", callback_data=no_callback),
+    ]])
+
+
 # ── Formatting helpers ───────────────────────────────────────────────
 
 def format_item_line(i, it):
@@ -277,6 +286,11 @@ async def send_button_selection(ctx, chat_id, text, items, callback_prefix, item
         rows.append(row)
     rows.append([InlineKeyboardButton("❌ Cancel", callback_data="prompt:cancel")])
     msg = await send_and_track(ctx, chat_id, text, reply_markup=InlineKeyboardMarkup(rows))
+    return msg.message_id
+
+
+async def send_delete_confirmation(ctx, chat_id, text, token=None):
+    msg = await send_and_track(ctx, chat_id, text, reply_markup=delete_confirm_markup(token))
     return msg.message_id
 
 

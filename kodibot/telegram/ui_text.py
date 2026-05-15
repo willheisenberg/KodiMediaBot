@@ -128,14 +128,15 @@ async def handle_text(update, ctx):
             if 0 <= idx < len(colors):
                 color = colors[idx]
                 color_name = UI.saved_color_name(color, idx)
-                ok = await asyncio.to_thread(UI.ha.delete_saved_color, color.get("name", ""))
-                if ok:
-                    menu_message_id = UI.HA_MENU_MSG_ID.get(chat_id)
-                    if menu_message_id:
-                        await UI.show_ha_preset_menu(ctx, chat_id, edit_message_id=menu_message_id)
-                    await UI.send_toast_message(ctx, chat_id, f"🗑 Color \"{color_name}\" deleted.")
-                else:
-                    await UI.send_toast_message(ctx, chat_id, "⚠ Color could not be deleted.")
+                await UI.delete_message_if_present(ctx, chat_id, prompt_id)
+                await UI.request_delete_confirmation(
+                    ctx,
+                    chat_id,
+                    user_id,
+                    f"Are you sure you want to delete color \"{color_name}\"?",
+                    {"kind": "ha_color", "name": color.get("name", ""), "label": color_name},
+                )
+                return
             else:
                 await UI.send_toast_message(ctx, chat_id, "⚠ Invalid color number.")
         else:
@@ -745,11 +746,16 @@ async def handle_text(update, ctx):
         elif txt.isdigit():
             i = int(txt) - 1
             if 0 <= i < len(files):
-                ok, res = UI.playlist_store.delete_playlist_from_disk(UI.CFG.playlist_dir, files[i])
-                if ok:
-                    await UI.send_toast_message(ctx, chat_id, f"🗑 Deleted {res}")
-                else:
-                    await UI.send_toast_message(ctx, chat_id, f"⚠ {res}")
+                filename = files[i]
+                await UI.delete_message_if_present(ctx, chat_id, prompt_id)
+                await UI.request_delete_confirmation(
+                    ctx,
+                    chat_id,
+                    user_id,
+                    f"Are you sure you want to delete playlist \"{os.path.splitext(filename)[0]}\"?",
+                    {"kind": "playlist_file", "filename": filename},
+                )
+                return
             else:
                 await UI.send_toast_message(ctx, chat_id, "That number does not exist.")
         else:
@@ -883,22 +889,27 @@ async def handle_text(update, ctx):
         ctx.user_data["await_radio_delete_index"] = False
         txt = (update.message.text or "").strip()
         prompt_id = ctx.user_data.pop("await_radio_delete_index_msg_id", None)
+        favs = ctx.user_data.pop("favourites_delete", None)
         prev_id = update.message.message_id
         await UI.delete_message_if_present(ctx, chat_id, msg_id)
         if txt.lower() == "q":
             await UI.send_toast_message(ctx, chat_id, "Cancelled.")
         elif txt.isdigit():
             idx = int(txt) - 1
-            favs = await asyncio.to_thread(UI.kodi_api.get_favourites)
+            if favs is None:
+                favs = await asyncio.to_thread(UI.kodi_api.get_favourites)
             if 0 <= idx < len(favs):
                 fav = favs[idx]
-                # Use name to delete (SSH + Reload Trick)
-                ok = await asyncio.to_thread(UI.kodi_api.remove_favourite, fav['title'])
-                
-                if ok:
-                    await UI.send_toast_message(ctx, chat_id, f"🗑 Favourite deleted: {fav['title']}")
-                else:
-                    await UI.send_toast_message(ctx, chat_id, "⚠ Favourite could not be deleted.")
+                title = fav.get("title") or "?"
+                await UI.delete_message_if_present(ctx, chat_id, prompt_id)
+                await UI.request_delete_confirmation(
+                    ctx,
+                    chat_id,
+                    user_id,
+                    f"Are you sure you want to delete favourite \"{title}\"?",
+                    {"kind": "favourite", "title": fav.get("title")},
+                )
+                return
             else:
                 await UI.send_toast_message(ctx, chat_id, "That number does not exist.")
         else:
@@ -981,9 +992,12 @@ async def handle_text(update, ctx):
         if txt_lower == "q":
             await UI.send_toast_message(ctx, chat_id, "Cancelled.")
         elif txt.isdigit():
-            ok, msg = UI.queue_state.delete_index(int(txt) - 1)
-            if ok:
-                await UI.send_toast_message(ctx, chat_id, "🗑 Track deleted.")
+            payload, msg = UI.queue_delete_confirmation_payload(int(txt) - 1)
+            if payload:
+                # Execute immediately as per user request
+                from kodibot.telegram.ui_callbacks import _execute_pending_delete
+                answer_text, _ = await _execute_pending_delete(ctx, chat_id, payload)
+                await UI.send_toast_message(ctx, chat_id, answer_text)
             else:
                 await UI.send_toast_message(ctx, chat_id, msg)
         else:

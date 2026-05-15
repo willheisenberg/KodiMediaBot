@@ -35,6 +35,14 @@ class TestControlPanelMarkup:
         assert markup.inline_keyboard[4][0].callback_data == "plist:save"
         assert markup.inline_keyboard[-1][0].callback_data == "controls:back"
 
+    def test_delete_confirm_markup_uses_yes_no_callbacks(self):
+        markup = panel.delete_confirm_markup("abc")
+
+        assert markup.inline_keyboard[0][0].text == "✅ Yes"
+        assert markup.inline_keyboard[0][0].callback_data == "delete_confirm:abc:yes"
+        assert markup.inline_keyboard[0][1].text == "❌ No"
+        assert markup.inline_keyboard[0][1].callback_data == "delete_confirm:abc:no"
+
 
 class TestNowPlayingText:
     def setup_method(self):

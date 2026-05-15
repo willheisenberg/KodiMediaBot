@@ -31,6 +31,7 @@ from kodibot.telegram.panel import (
     resolve_airplay_status_text,
     control_panel,
     cancel_markup,
+    send_delete_confirmation,
     set_panel_menu_mode,
     save_ui_state,
     load_ui_state,
@@ -188,6 +189,60 @@ def activate_prompt(ctx, chat_id, user_id, state_key, msg_key, message_id, extra
         _expire_prompt_timeout(ctx, chat_id, user_id, state_key, msg_key, extra_keys or (), message_id)
     )
     PROMPT_TIMEOUT_TASKS[_prompt_timeout_key(chat_id, user_id, state_key)] = task
+
+
+async def request_delete_confirmation(ctx, chat_id, user_id, text, payload):
+    old_msg_id = ctx.user_data.get("await_delete_confirm_msg_id")
+    if old_msg_id:
+        cancel_prompt_timeout(chat_id, user_id, "await_delete_confirm")
+        await delete_message_if_present(ctx, chat_id, old_msg_id)
+
+    token = str(int(time.time() * 1000))
+    pending_payload = dict(payload)
+    pending_payload["token"] = token
+    msg_id = await send_delete_confirmation(ctx, chat_id, text, token=token)
+    ctx.user_data["pending_delete"] = pending_payload
+    activate_prompt(
+        ctx,
+        chat_id,
+        user_id,
+        "await_delete_confirm",
+        "await_delete_confirm_msg_id",
+        msg_id,
+        extra_keys=("pending_delete",),
+    )
+    return msg_id
+
+
+def queue_delete_confirmation_payload(index, success_text="🗑 Track deleted."):
+    with queue_state.LOCK:
+        if index < 0 or index >= len(queue_state.QUEUE):
+            return None, "Invalid index."
+        if queue_state.DISPLAY_INDEX is not None and index == queue_state.DISPLAY_INDEX:
+            return None, "You cannot delete the currently playing title. Use /skip or /stop first."
+        item = queue_state.QUEUE[index]
+        title = item.get("title") or f"Track {index + 1}"
+        identity = {
+            "title": item.get("title"),
+            "url": item.get("url"),
+            "link": item.get("link"),
+            "kind": item.get("kind"),
+        }
+    return {
+        "kind": "queue_index",
+        "index": index,
+        "title": title,
+        "identity": identity,
+        "success_text": success_text,
+    }, None
+
+
+def queue_delete_target_matches(index, identity):
+    with queue_state.LOCK:
+        if index < 0 or index >= len(queue_state.QUEUE):
+            return False
+        item = queue_state.QUEUE[index]
+        return all(item.get(key) == value for key, value in (identity or {}).items())
 
 
 def media_prompt_active(user_data):
