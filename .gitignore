@@ -2,3 +2,4 @@ __pycache__
 test.py
 .venv
 wimius_ir_codes.json
+.codex
