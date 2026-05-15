@@ -1014,6 +1014,8 @@ async def on_button(update, ctx):
         else:
             await q.answer(text="⚠ No episodes found.")
         sent = True
+
+    elif cmd.startswith("play_radio:"):
         idx = int(cmd.split(":")[1])
         stations = ctx.user_data.get("radio_results", [])
         if 0 <= idx < len(stations):
