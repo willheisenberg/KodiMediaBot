@@ -4,6 +4,7 @@ import os
 import re
 
 from kodibot.telegram import ui as UI
+from kodibot.core import radio_browser
 
 
 async def handle_text(update, ctx):
@@ -23,7 +24,7 @@ async def handle_text(update, ctx):
         prompt_id = ctx.user_data.pop("await_ha_hex_msg_id", None)
         await UI.delete_message_if_present(ctx, chat_id, msg_id)
         if txt_lower == "q":
-            await UI.send_and_track(ctx, chat_id, "Cancelled.")
+            await UI.send_toast_message(ctx, chat_id, "Cancelled.")
         else:
             parsed = UI.ha.parse_hex_color(txt)
             if parsed:
@@ -41,11 +42,11 @@ async def handle_text(update, ctx):
                             state=state,
                             edit_message_id=menu_message_id,
                         )
-                    await UI.send_and_track(ctx, chat_id, f"🎨 Color applied: #{r:02X}{g:02X}{b:02X}")
+                    await UI.send_toast_message(ctx, chat_id, f"🎨 Color applied: #{r:02X}{g:02X}{b:02X}")
                 else:
-                    await UI.send_and_track(ctx, chat_id, "⚠ Color could not be applied.")
+                    await UI.send_toast_message(ctx, chat_id, "⚠ Color could not be applied.")
             else:
-                await UI.send_and_track(ctx, chat_id, "⚠ Invalid hex code. Use the format #FF5500 or FF5500.")
+                await UI.send_toast_message(ctx, chat_id, "⚠ Invalid hex code. Use #FF5500 or FF5500.")
         sent = True
         await UI.delete_message_if_present(ctx, chat_id, prompt_id)
         if sent:
@@ -59,7 +60,7 @@ async def handle_text(update, ctx):
         prompt_id = ctx.user_data.pop("await_ha_brightness_msg_id", None)
         await UI.delete_message_if_present(ctx, chat_id, msg_id)
         if txt_lower == "q":
-            await UI.send_and_track(ctx, chat_id, "Cancelled.")
+            await UI.send_toast_message(ctx, chat_id, "Cancelled.")
         else:
             try:
                 percent = int(txt)
@@ -79,11 +80,11 @@ async def handle_text(update, ctx):
                             state=state,
                             edit_message_id=menu_message_id,
                         )
-                    await UI.send_and_track(ctx, chat_id, f"🔆 Brightness set: {percent}%")
+                    await UI.send_toast_message(ctx, chat_id, f"🔆 Brightness set: {percent}%")
                 else:
-                    await UI.send_and_track(ctx, chat_id, "⚠ Brightness could not be updated.")
+                    await UI.send_toast_message(ctx, chat_id, "⚠ Brightness could not be updated.")
             else:
-                await UI.send_and_track(ctx, chat_id, "⚠ Enter a brightness percent from 0 to 100.")
+                await UI.send_toast_message(ctx, chat_id, "⚠ Enter a brightness percent from 0 to 100.")
         sent = True
         await UI.delete_message_if_present(ctx, chat_id, prompt_id)
         if sent:
@@ -98,15 +99,15 @@ async def handle_text(update, ctx):
         rgb = ctx.user_data.pop("ha_save_rgb", None)
         await UI.delete_message_if_present(ctx, chat_id, msg_id)
         if txt_lower == "q":
-            await UI.send_and_track(ctx, chat_id, "Cancelled.")
+            await UI.send_toast_message(ctx, chat_id, "Cancelled.")
         elif rgb and len(rgb) == 3:
             ok = await asyncio.to_thread(UI.ha.save_color, txt.strip(), rgb[0], rgb[1], rgb[2])
             if ok:
-                await UI.send_and_track(ctx, chat_id, f"💾 Color \"{txt.strip()}\" saved.")
+                await UI.send_toast_message(ctx, chat_id, f"💾 Color \"{txt.strip()}\" saved.")
             else:
-                await UI.send_and_track(ctx, chat_id, "⚠ Color could not be saved.")
+                await UI.send_toast_message(ctx, chat_id, "⚠ Color could not be saved.")
         else:
-            await UI.send_and_track(ctx, chat_id, "⚠ No color available.")
+            await UI.send_toast_message(ctx, chat_id, "⚠ No color available.")
         sent = True
         await UI.delete_message_if_present(ctx, chat_id, prompt_id)
         if sent:
@@ -121,7 +122,7 @@ async def handle_text(update, ctx):
         colors = ctx.user_data.pop("ha_delete_colors", [])
         await UI.delete_message_if_present(ctx, chat_id, msg_id)
         if txt_lower == "q":
-            await UI.send_and_track(ctx, chat_id, "Cancelled.")
+            await UI.send_toast_message(ctx, chat_id, "Cancelled.")
         elif txt.isdigit():
             idx = int(txt) - 1
             if 0 <= idx < len(colors):
@@ -132,13 +133,13 @@ async def handle_text(update, ctx):
                     menu_message_id = UI.HA_MENU_MSG_ID.get(chat_id)
                     if menu_message_id:
                         await UI.show_ha_preset_menu(ctx, chat_id, edit_message_id=menu_message_id)
-                    await UI.send_and_track(ctx, chat_id, f"🗑 Color \"{color_name}\" deleted.")
+                    await UI.send_toast_message(ctx, chat_id, f"🗑 Color \"{color_name}\" deleted.")
                 else:
-                    await UI.send_and_track(ctx, chat_id, "⚠ Color could not be deleted.")
+                    await UI.send_toast_message(ctx, chat_id, "⚠ Color could not be deleted.")
             else:
-                await UI.send_and_track(ctx, chat_id, "⚠ Invalid color number.")
+                await UI.send_toast_message(ctx, chat_id, "⚠ Invalid color number.")
         else:
-            await UI.send_and_track(ctx, chat_id, "⚠ Enter a valid number or q to cancel.")
+            await UI.send_toast_message(ctx, chat_id, "⚠ Enter a valid number or q to cancel.")
         sent = True
         await UI.delete_message_if_present(ctx, chat_id, prompt_id)
         if sent:
@@ -152,12 +153,12 @@ async def handle_text(update, ctx):
         prompt_id = ctx.user_data.pop("await_media_type_msg_id", None)
         await UI.delete_message_if_present(ctx, chat_id, msg_id)
         if txt_lower == "q":
-            await UI.send_and_track(ctx, chat_id, "Cancelled.")
+            await UI.send_toast_message(ctx, chat_id, "Cancelled.")
             sent = True
         elif txt == "1":
             movies = await asyncio.to_thread(UI.kodi_api.list_movies)
             if not movies:
-                await UI.send_and_track(ctx, chat_id, "🎬 No movies found in Kodi.")
+                await UI.send_toast_message(ctx, chat_id, "🎬 No movies found in Kodi.")
                 sent = True
             else:
                 msg_ids = await UI.send_chunked_selection(
@@ -165,7 +166,6 @@ async def handle_text(update, ctx):
                     chat_id,
                     "🎬 Select movie:",
                     UI.movie_list_lines(movies),
-                    footer="q = cancel",
                 )
                 ctx.user_data["media_movies"] = movies
                 UI.activate_prompt(
@@ -182,7 +182,7 @@ async def handle_text(update, ctx):
         elif txt == "2":
             shows = await asyncio.to_thread(UI.kodi_api.list_tvshows)
             if not shows:
-                await UI.send_and_track(ctx, chat_id, "📺 No series found in Kodi.")
+                await UI.send_toast_message(ctx, chat_id, "📺 No series found in Kodi.")
                 sent = True
             else:
                 msg_ids = await UI.send_chunked_selection(
@@ -190,7 +190,6 @@ async def handle_text(update, ctx):
                     chat_id,
                     "📺 Select series:",
                     UI.show_list_lines(shows),
-                    footer="q = cancel",
                 )
                 ctx.user_data["media_shows"] = shows
                 UI.activate_prompt(
@@ -205,7 +204,7 @@ async def handle_text(update, ctx):
                 sent = True
                 skip_cleanup = True
         else:
-            await UI.send_and_track(ctx, chat_id, "Please enter 1 or 2 (or q to cancel).")
+            await UI.send_toast_message(ctx, chat_id, "Please enter 1 or 2 (or q to cancel).")
             sent = True
             skip_cleanup = True
         await UI.delete_message_if_present(ctx, chat_id, prompt_id)
@@ -220,30 +219,28 @@ async def handle_text(update, ctx):
         prompt_id = ctx.user_data.pop("await_av_action_msg_id", None)
         await UI.delete_message_if_present(ctx, chat_id, msg_id)
         if txt_lower == "q":
-            await UI.send_and_track(ctx, chat_id, "Cancelled.")
+            await UI.send_toast_message(ctx, chat_id, "Cancelled.")
             sent = True
         elif txt == "1":
             av_state = await asyncio.to_thread(UI.kodi_api.get_av_settings)
             audio_streams = av_state.get("audiostreams") or []
             if av_state.get("playerid") is None:
-                await UI.send_and_track(ctx, chat_id, "⚠ Nothing is currently playing.")
+                await UI.send_toast_message(ctx, chat_id, "⚠ Nothing is currently playing.")
                 sent = True
             elif av_state.get("error"):
-                await UI.send_and_track(ctx, chat_id, "⚠ Audio streams could not be loaded.")
+                await UI.send_toast_message(ctx, chat_id, "⚠ Audio streams could not be loaded.")
                 sent = True
             elif not audio_streams:
-                await UI.send_and_track(ctx, chat_id, "⚠ No audio streams available.")
+                await UI.send_toast_message(ctx, chat_id, "⚠ No audio streams available.")
                 sent = True
             else:
-                lines = []
-                current_index = (av_state.get("currentaudiostream") or {}).get("index")
-                for i, stream in enumerate(audio_streams, start=1):
-                    marker = " [active]" if stream.get("index") == current_index else ""
-                    lines.append(f"{i}. {UI.av_stream_label(stream)}{marker}")
-                msg = await UI.send_and_track(
+                button_items = [(f"{UI.av_stream_label(s)}{' [active]' if s.get('index') == (av_state.get('currentaudiostream') or {}).get('index') else ''}", i) for i, s in enumerate(audio_streams)]
+                msg_id = await UI.send_button_selection(
                     ctx,
                     chat_id,
-                    "🗣 Select audio:\n" + "\n".join(lines) + "\nq = cancel",
+                    "🗣 Select audio:",
+                    button_items,
+                    "set_audio"
                 )
                 ctx.user_data["audio_streams"] = audio_streams
                 UI.activate_prompt(
@@ -252,7 +249,7 @@ async def handle_text(update, ctx):
                     user_id,
                     "await_audio_index",
                     "await_audio_msg_id",
-                    msg.message_id,
+                    msg_id,
                     extra_keys=("audio_streams",),
                 )
                 sent = True
@@ -261,22 +258,25 @@ async def handle_text(update, ctx):
             av_state = await asyncio.to_thread(UI.kodi_api.get_av_settings)
             subtitles = av_state.get("subtitles") or []
             if av_state.get("playerid") is None:
-                await UI.send_and_track(ctx, chat_id, "⚠ Nothing is currently playing.")
+                await UI.send_toast_message(ctx, chat_id, "⚠ Nothing is currently playing.")
                 sent = True
             elif av_state.get("error"):
-                await UI.send_and_track(ctx, chat_id, "⚠ Subtitle streams could not be loaded.")
+                await UI.send_toast_message(ctx, chat_id, "⚠ Subtitle streams could not be loaded.")
                 sent = True
             else:
-                lines = ["1. Off"]
+                button_items = [("Off", -1)]
                 current_index = (av_state.get("currentsubtitle") or {}).get("index")
-                for i, stream in enumerate(subtitles, start=2):
-                    active = av_state.get("subtitleenabled") and stream.get("index") == current_index
-                    marker = " [active]" if active else ""
-                    lines.append(f"{i}. {UI.av_stream_label(stream)}{marker}")
-                msg = await UI.send_and_track(
+                for i, s in enumerate(subtitles):
+                    active = av_state.get("subtitleenabled") and s.get("index") == current_index
+                    label = f"{UI.av_stream_label(s)}{' [active]' if active else ''}"
+                    button_items.append((label, i))
+                
+                msg_id = await UI.send_button_selection(
                     ctx,
                     chat_id,
-                    "💬 Select subtitles:\n" + "\n".join(lines) + "\nq = cancel",
+                    "💬 Select subtitles:",
+                    button_items,
+                    "set_subtitle"
                 )
                 ctx.user_data["subtitle_streams"] = subtitles
                 UI.activate_prompt(
@@ -285,13 +285,13 @@ async def handle_text(update, ctx):
                     user_id,
                     "await_subtitle_index",
                     "await_subtitle_msg_id",
-                    msg.message_id,
+                    msg_id,
                     extra_keys=("subtitle_streams",),
                 )
                 sent = True
                 skip_cleanup = True
         else:
-            await UI.send_and_track(ctx, chat_id, "Please enter 1 or 2 (or q to cancel).")
+            await UI.send_toast_message(ctx, chat_id, "Please enter 1 or 2 (or q to cancel).")
             sent = True
             skip_cleanup = True
         await UI.delete_message_if_present(ctx, chat_id, prompt_id)
@@ -308,15 +308,16 @@ async def handle_text(update, ctx):
         movies = ctx.user_data.pop("media_movies", [])
         await UI.delete_message_if_present(ctx, chat_id, msg_id)
         if txt_lower == "q":
-            await UI.send_and_track(ctx, chat_id, "Cancelled.")
+            await UI.send_toast_message(ctx, chat_id, "Cancelled.")
         elif txt.isdigit():
             i = int(txt) - 1
             if 0 <= i < len(movies):
                 movie = movies[i]
-                msg = await UI.send_and_track(
-                    ctx,
-                    chat_id,
-                    "🎬 Start movie\n1. From Beginning\n2. Continue\nq = cancel",
+                button_items = [("▶ From Beginning", "start"), ("⏩ Continue", "resume")]
+                msg_id = await UI.send_button_selection(
+                    ctx, chat_id,
+                    f"🎬 {movie.get('title')}:",
+                    button_items, "movie_start_mode"
                 )
                 ctx.user_data["media_movie"] = movie
                 UI.activate_prompt(
@@ -325,14 +326,14 @@ async def handle_text(update, ctx):
                     user_id,
                     "await_movie_start_mode",
                     "await_movie_start_mode_msg_id",
-                    msg.message_id,
+                    msg_id,
                     extra_keys=("media_movie",),
                 )
                 skip_cleanup = True
             else:
-                await UI.send_and_track(ctx, chat_id, "That number does not exist.")
+                await UI.send_toast_message(ctx, chat_id, "That number does not exist.")
         else:
-            await UI.send_and_track(ctx, chat_id, "Please enter a number only (or q to cancel).")
+            await UI.send_toast_message(ctx, chat_id, "Please enter a number only (or q to cancel).")
         sent = True
         await UI.delete_message_if_present(ctx, chat_id, prompt_id)
         if sent and not skip_cleanup:
@@ -348,17 +349,17 @@ async def handle_text(update, ctx):
         movie = ctx.user_data.pop("media_movie", {})
         await UI.delete_message_if_present(ctx, chat_id, msg_id)
         if txt_lower == "q":
-            await UI.send_and_track(ctx, chat_id, "Cancelled.")
+            await UI.send_toast_message(ctx, chat_id, "Cancelled.")
         elif txt in ("1", "2"):
             resume = txt == "2"
             ok = await asyncio.to_thread(UI.kodi_api.play_movie, movie.get("movieid"), resume)
             if ok:
                 UI.queue_state.clear_bot_playback_state()
-                await UI.send_and_track(ctx, chat_id, f"🎬 Playing: {movie.get('title')}")
+                await UI.send_toast_message(ctx, chat_id, f"🎬 Playing: {movie.get('title')}")
             else:
-                await UI.send_and_track(ctx, chat_id, "⚠ Movie could not be played.")
+                await UI.send_toast_message(ctx, chat_id, "⚠ Movie could not be played.")
         else:
-            await UI.send_and_track(ctx, chat_id, "Please enter 1 or 2 (or q to cancel).")
+            await UI.send_toast_message(ctx, chat_id, "Please enter 1 or 2 (or q to cancel).")
         sent = True
         await UI.delete_message_if_present(ctx, chat_id, prompt_id)
         if sent:
@@ -374,19 +375,19 @@ async def handle_text(update, ctx):
         audio_streams = ctx.user_data.pop("audio_streams", [])
         await UI.delete_message_if_present(ctx, chat_id, msg_id)
         if txt_lower == "q":
-            await UI.send_and_track(ctx, chat_id, "Cancelled.")
+            await UI.send_toast_message(ctx, chat_id, "Cancelled.")
         elif txt.isdigit():
             i = int(txt) - 1
             if 0 <= i < len(audio_streams):
                 ok = await asyncio.to_thread(UI.kodi_api.set_audio_stream, audio_streams[i].get("index"))
                 if ok:
-                    await UI.send_and_track(ctx, chat_id, f"🗣 Audio set: {UI.av_stream_label(audio_streams[i])}")
+                    await UI.send_toast_message(ctx, chat_id, f"🗣 Audio set: {UI.av_stream_label(audio_streams[i])}")
                 else:
-                    await UI.send_and_track(ctx, chat_id, "⚠ Audio could not be changed.")
+                    await UI.send_toast_message(ctx, chat_id, "⚠ Audio could not be changed.")
             else:
-                await UI.send_and_track(ctx, chat_id, "That number does not exist.")
+                await UI.send_toast_message(ctx, chat_id, "That number does not exist.")
         else:
-            await UI.send_and_track(ctx, chat_id, "Please enter a number only (or q to cancel).")
+            await UI.send_toast_message(ctx, chat_id, "Please enter a number only (or q to cancel).")
         sent = True
         await UI.delete_message_if_present(ctx, chat_id, prompt_id)
         if sent:
@@ -402,26 +403,26 @@ async def handle_text(update, ctx):
         subtitles = ctx.user_data.pop("subtitle_streams", [])
         await UI.delete_message_if_present(ctx, chat_id, msg_id)
         if txt_lower == "q":
-            await UI.send_and_track(ctx, chat_id, "Cancelled.")
+            await UI.send_toast_message(ctx, chat_id, "Cancelled.")
         elif txt.isdigit():
             i = int(txt) - 1
             if i == 0:
                 ok = await asyncio.to_thread(UI.kodi_api.disable_subtitles)
                 if ok:
-                    await UI.send_and_track(ctx, chat_id, "💬 Subtitles off.")
+                    await UI.send_toast_message(ctx, chat_id, "💬 Subtitles off.")
                 else:
-                    await UI.send_and_track(ctx, chat_id, "⚠ Subtitles could not be disabled.")
+                    await UI.send_toast_message(ctx, chat_id, "⚠ Subtitles could not be disabled.")
             elif 0 < i <= len(subtitles):
                 selected = subtitles[i - 1]
                 ok = await asyncio.to_thread(UI.kodi_api.set_subtitle_stream, selected.get("index"))
                 if ok:
-                    await UI.send_and_track(ctx, chat_id, f"💬 Subtitles set: {UI.av_stream_label(selected)}")
+                    await UI.send_toast_message(ctx, chat_id, f"💬 Subtitles set: {UI.av_stream_label(selected)}")
                 else:
-                    await UI.send_and_track(ctx, chat_id, "⚠ Subtitles could not be changed.")
+                    await UI.send_toast_message(ctx, chat_id, "⚠ Subtitles could not be changed.")
             else:
-                await UI.send_and_track(ctx, chat_id, "That number does not exist.")
+                await UI.send_toast_message(ctx, chat_id, "That number does not exist.")
         else:
-            await UI.send_and_track(ctx, chat_id, "Please enter a number only (or q to cancel).")
+            await UI.send_toast_message(ctx, chat_id, "Please enter a number only (or q to cancel).")
         sent = True
         await UI.delete_message_if_present(ctx, chat_id, prompt_id)
         if sent:
@@ -437,7 +438,7 @@ async def handle_text(update, ctx):
         shows = ctx.user_data.pop("media_shows", [])
         await UI.delete_message_if_present(ctx, chat_id, msg_id)
         if txt_lower == "q":
-            await UI.send_and_track(ctx, chat_id, "Cancelled.")
+            await UI.send_toast_message(ctx, chat_id, "Cancelled.")
             sent = True
         elif txt.isdigit():
             i = int(txt) - 1
@@ -449,7 +450,7 @@ async def handle_text(update, ctx):
                     show.get("title") or "",
                 )
                 if not episodes:
-                    await UI.send_and_track(ctx, chat_id, "📺 No episodes found for this series.")
+                    await UI.send_toast_message(ctx, chat_id, "📺 No episodes found for this series.")
                     sent = True
                 else:
                     lines = UI.episode_list_lines(episodes)
@@ -474,11 +475,11 @@ async def handle_text(update, ctx):
                     sent = True
                     skip_cleanup = True
             else:
-                await UI.send_and_track(ctx, chat_id, "That number does not exist.")
+                await UI.send_toast_message(ctx, chat_id, "That number does not exist.")
                 sent = True
                 skip_cleanup = True
         else:
-            await UI.send_and_track(ctx, chat_id, "Please enter a number only (or q to cancel).")
+            await UI.send_toast_message(ctx, chat_id, "Please enter a number only (or q to cancel).")
             sent = True
             skip_cleanup = True
         await UI.delete_message_if_present(ctx, chat_id, prompt_id)
@@ -496,15 +497,18 @@ async def handle_text(update, ctx):
         episodes = ctx.user_data.pop("media_episodes", [])
         await UI.delete_message_if_present(ctx, chat_id, msg_id)
         if txt_lower == "q":
-            await UI.send_and_track(ctx, chat_id, "Cancelled.")
+            await UI.send_toast_message(ctx, chat_id, "Cancelled.")
         elif txt.isdigit():
             i = int(txt) - 1
             if 0 <= i < len(episodes):
                 episode = episodes[i]
-                msg = await UI.send_and_track(
+                button_items = [("▶ From Beginning", "start"), ("⏩ Continue", "resume")]
+                msg_id = await UI.send_button_selection(
                     ctx,
                     chat_id,
-                    "📺 Start episode\n1. From Beginning\n2. Continue\nq = cancel",
+                    f"📺 {episode.get('title')}:",
+                    button_items,
+                    "episode_start_mode"
                 )
                 ctx.user_data["media_episode"] = episode
                 UI.activate_prompt(
@@ -513,7 +517,7 @@ async def handle_text(update, ctx):
                     user_id,
                     "await_episode_start_mode",
                     "await_episode_start_mode_msg_id",
-                    msg.message_id,
+                    msg_id,
                     extra_keys=("media_episode",),
                 )
                 skip_cleanup = True
@@ -524,13 +528,13 @@ async def handle_text(update, ctx):
                 )
                 if ok:
                     UI.queue_state.clear_bot_playback_state()
-                    await UI.send_and_track(ctx, chat_id, f"📺 Playing all episodes: {show.get('title')}")
+                    await UI.send_toast_message(ctx, chat_id, f"📺 Playing all episodes: {show.get('title')}")
                 else:
-                    await UI.send_and_track(ctx, chat_id, "⚠ Episodes could not be played.")
+                    await UI.send_toast_message(ctx, chat_id, "⚠ Episodes could not be played.")
             else:
-                await UI.send_and_track(ctx, chat_id, "That number does not exist.")
+                await UI.send_toast_message(ctx, chat_id, "That number does not exist.")
         else:
-            await UI.send_and_track(ctx, chat_id, "Please enter a number only (or q to cancel).")
+            await UI.send_toast_message(ctx, chat_id, "Please enter a number only (or q to cancel).")
         sent = True
         await UI.delete_message_if_present(ctx, chat_id, prompt_id)
         if sent and not skip_cleanup:
@@ -546,17 +550,17 @@ async def handle_text(update, ctx):
         episode = ctx.user_data.pop("media_episode", {})
         await UI.delete_message_if_present(ctx, chat_id, msg_id)
         if txt_lower == "q":
-            await UI.send_and_track(ctx, chat_id, "Cancelled.")
+            await UI.send_toast_message(ctx, chat_id, "Cancelled.")
         elif txt in ("1", "2"):
             resume = txt == "2"
             ok = await asyncio.to_thread(UI.kodi_api.play_episode, episode.get("episodeid"), resume)
             if ok:
                 UI.queue_state.clear_bot_playback_state()
-                await UI.send_and_track(ctx, chat_id, f"📺 Playing: {episode.get('title')}")
+                await UI.send_toast_message(ctx, chat_id, f"📺 Playing: {episode.get('title')}")
             else:
-                await UI.send_and_track(ctx, chat_id, "⚠ Episode could not be played.")
+                await UI.send_toast_message(ctx, chat_id, "⚠ Episode could not be played.")
         else:
-            await UI.send_and_track(ctx, chat_id, "Please enter 1 or 2 (or q to cancel).")
+            await UI.send_toast_message(ctx, chat_id, "Please enter 1 or 2 (or q to cancel).")
         sent = True
         await UI.delete_message_if_present(ctx, chat_id, prompt_id)
         if sent:
@@ -569,8 +573,9 @@ async def handle_text(update, ctx):
         UI.cancel_prompt_timeout(chat_id, user_id, "await_playlist_save_name")
         ctx.user_data["await_playlist_save_name"] = False
         prompt_id = ctx.user_data.pop("await_playlist_save_msg_id", None)
+        await UI.delete_message_if_present(ctx, chat_id, msg_id)
         if txt_lower == "q":
-            await UI.send_and_track(ctx, chat_id, "Cancelled.")
+            await UI.send_toast_message(ctx, chat_id, "Cancelled.")
             sent = True
             if prompt_id:
                 try:
@@ -585,7 +590,14 @@ async def handle_text(update, ctx):
             items = list(UI.queue_state.QUEUE)
         path = UI.playlist_store.playlist_path_for_name(UI.CFG.playlist_dir, txt)
         if os.path.exists(path):
-            msg = await UI.send_and_track(ctx, chat_id, "Playlist already exists. Replace? (y/n, q = cancel)")
+            button_items = [("✅ Yes", "yes"), ("❌ No", "no")]
+            msg_id = await UI.send_button_selection(
+                ctx, 
+                chat_id, 
+                f"Playlist \"{txt}\" already exists. Replace?", 
+                button_items, 
+                "plist_overwrite"
+            )
             ctx.user_data["playlist_overwrite_name"] = txt
             ctx.user_data["playlist_overwrite_items"] = items
             UI.activate_prompt(
@@ -594,21 +606,17 @@ async def handle_text(update, ctx):
                 user_id,
                 "await_playlist_overwrite_confirm",
                 "await_playlist_overwrite_msg_id",
-                msg.message_id,
+                msg_id,
                 extra_keys=("playlist_overwrite_name", "playlist_overwrite_items"),
             )
             sent = True
             skip_cleanup = True
-            try:
-                await UI.telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=msg_id)
-            except Exception:
-                pass
         else:
             ok, res = UI.playlist_store.save_playlist_to_disk(UI.CFG.playlist_dir, txt, items)
             if ok:
-                await UI.send_and_track(ctx, chat_id, f"💾 Saved as {os.path.splitext(res)[0]}")
+                await UI.send_toast_message(ctx, chat_id, f"💾 Saved as {os.path.splitext(res)[0]}")
             else:
-                await UI.send_and_track(ctx, chat_id, f"⚠ {res}")
+                await UI.send_toast_message(ctx, chat_id, f"⚠ {res}")
             sent = True
         if prompt_id:
             try:
@@ -622,6 +630,7 @@ async def handle_text(update, ctx):
 
     if ctx.user_data.get("await_playlist_overwrite_confirm"):
         UI.cancel_prompt_timeout(chat_id, user_id, "await_playlist_overwrite_confirm")
+        await UI.delete_message_if_present(ctx, chat_id, msg_id)
         if txt_lower in ("y", "yes"):
             ctx.user_data["await_playlist_overwrite_confirm"] = False
             prompt_id = ctx.user_data.pop("await_playlist_overwrite_msg_id", None)
@@ -629,9 +638,9 @@ async def handle_text(update, ctx):
             items = ctx.user_data.pop("playlist_overwrite_items", [])
             ok, res = UI.playlist_store.save_playlist_to_disk_overwrite(UI.CFG.playlist_dir, name, items)
             if ok:
-                await UI.send_and_track(ctx, chat_id, f"💾 Saved as {os.path.splitext(res)[0]}")
+                await UI.send_toast_message(ctx, chat_id, f"💾 Saved as {os.path.splitext(res)[0]}")
             else:
-                await UI.send_and_track(ctx, chat_id, f"⚠ {res}")
+                await UI.send_toast_message(ctx, chat_id, f"⚠ {res}")
             sent = True
             if prompt_id:
                 try:
@@ -647,7 +656,7 @@ async def handle_text(update, ctx):
             prompt_id = ctx.user_data.pop("await_playlist_overwrite_msg_id", None)
             ctx.user_data.pop("playlist_overwrite_name", None)
             ctx.user_data.pop("playlist_overwrite_items", None)
-            await UI.send_and_track(ctx, chat_id, "Cancelled.")
+            await UI.send_toast_message(ctx, chat_id, "Cancelled.")
             sent = True
             if prompt_id:
                 try:
@@ -663,7 +672,7 @@ async def handle_text(update, ctx):
             prompt_id = ctx.user_data.pop("await_playlist_overwrite_msg_id", None)
             ctx.user_data.pop("playlist_overwrite_name", None)
             ctx.user_data.pop("playlist_overwrite_items", None)
-            await UI.send_and_track(ctx, chat_id, "Cancelled.")
+            await UI.send_toast_message(ctx, chat_id, "Cancelled.")
             sent = True
             if prompt_id:
                 try:
@@ -685,7 +694,7 @@ async def handle_text(update, ctx):
                 prompt_id,
                 extra_keys=("playlist_overwrite_name", "playlist_overwrite_items"),
             )
-        await UI.send_and_track(ctx, chat_id, "Please answer with y or n (or q to cancel).")
+        await UI.send_toast_message(ctx, chat_id, "Please answer with y or n (or q to cancel).")
         sent = True
         return
 
@@ -694,8 +703,9 @@ async def handle_text(update, ctx):
         ctx.user_data["await_playlist_load_index"] = False
         prompt_id = ctx.user_data.pop("await_playlist_load_msg_id", None)
         files = ctx.user_data.pop("playlist_load_files", [])
+        await UI.delete_message_if_present(ctx, chat_id, msg_id)
         if txt_lower == "q":
-            await UI.send_and_track(ctx, chat_id, "Cancelled.")
+            await UI.send_toast_message(ctx, chat_id, "Cancelled.")
         elif txt.isdigit():
             i = int(txt) - 1
             if 0 <= i < len(files):
@@ -706,13 +716,13 @@ async def handle_text(update, ctx):
                     with UI.queue_state.LOCK:
                         UI.queue_state.QUEUE.extend(items)
                     UI.queue_state.mark_list_dirty()
-                    await UI.send_and_track(ctx, chat_id, f"📂 Loaded {os.path.splitext(files[i])[0]}")
+                    await UI.send_toast_message(ctx, chat_id, f"📂 Loaded {os.path.splitext(files[i])[0]}")
                 else:
-                    await UI.send_and_track(ctx, chat_id, f"⚠ {items}")
+                    await UI.send_toast_message(ctx, chat_id, f"⚠ {items}")
             else:
-                await UI.send_and_track(ctx, chat_id, "That number does not exist.")
+                await UI.send_toast_message(ctx, chat_id, "That number does not exist.")
         else:
-            await UI.send_and_track(ctx, chat_id, "Please enter a number only (or q to cancel).")
+            await UI.send_toast_message(ctx, chat_id, "Please enter a number only (or q to cancel).")
         sent = True
         if prompt_id:
             try:
@@ -729,20 +739,21 @@ async def handle_text(update, ctx):
         ctx.user_data["await_playlist_delete_index"] = False
         prompt_id = ctx.user_data.pop("await_playlist_delete_msg_id", None)
         files = ctx.user_data.pop("playlist_delete_files", [])
+        await UI.delete_message_if_present(ctx, chat_id, msg_id)
         if txt_lower == "q":
-            await UI.send_and_track(ctx, chat_id, "Cancelled.")
+            await UI.send_toast_message(ctx, chat_id, "Cancelled.")
         elif txt.isdigit():
             i = int(txt) - 1
             if 0 <= i < len(files):
                 ok, res = UI.playlist_store.delete_playlist_from_disk(UI.CFG.playlist_dir, files[i])
                 if ok:
-                    await UI.send_and_track(ctx, chat_id, f"🗑 Deleted {res}")
+                    await UI.send_toast_message(ctx, chat_id, f"🗑 Deleted {res}")
                 else:
-                    await UI.send_and_track(ctx, chat_id, f"⚠ {res}")
+                    await UI.send_toast_message(ctx, chat_id, f"⚠ {res}")
             else:
-                await UI.send_and_track(ctx, chat_id, "That number does not exist.")
+                await UI.send_toast_message(ctx, chat_id, "That number does not exist.")
         else:
-            await UI.send_and_track(ctx, chat_id, "Please enter a number only (or q to cancel).")
+            await UI.send_toast_message(ctx, chat_id, "Please enter a number only (or q to cancel).")
         sent = True
         if prompt_id:
             try:
@@ -758,21 +769,22 @@ async def handle_text(update, ctx):
         UI.cancel_prompt_timeout(chat_id, user_id, "await_play_index")
         ctx.user_data["await_play_index"] = False
         prompt_id = ctx.user_data.pop("await_play_msg_id", None)
+        await UI.delete_message_if_present(ctx, chat_id, msg_id)
         if txt_lower == "q":
-            await UI.send_and_track(ctx, chat_id, "Cancelled.")
+            await UI.send_toast_message(ctx, chat_id, "Cancelled.")
         elif txt.isdigit():
             i = int(txt) - 1
             with UI.queue_state.LOCK:
                 in_range = 0 <= i < len(UI.queue_state.QUEUE)
             if not in_range:
-                await UI.send_and_track(ctx, chat_id, "That number does not exist.")
+                await UI.send_toast_message(ctx, chat_id, "That number does not exist.")
             elif UI.queue_state.is_requested_track_already_playing(i):
-                await UI.send_and_track(ctx, chat_id, "▶ This track is already playing.")
+                await UI.send_toast_message(ctx, chat_id, "▶ This track is already playing.")
             else:
                 UI.queue_state.play_index(i)
-                await UI.send_and_track(ctx, chat_id, f"▶ Playing track {txt}.")
+                await UI.send_toast_message(ctx, chat_id, f"▶ Playing track {txt}.")
         else:
-            await UI.send_and_track(ctx, chat_id, "Please enter a number only (or q to cancel).")
+            await UI.send_toast_message(ctx, chat_id, "Please enter a number only (or q to cancel).")
         sent = True
         if prompt_id:
             try:
@@ -783,27 +795,146 @@ async def handle_text(update, ctx):
             UI.schedule_cleanup(ctx, chat_id, prev_id)
             await UI.update_list_message(ctx, chat_id)
         return
+    if ctx.user_data.get("await_radio_search"):
+        UI.cancel_prompt_timeout(chat_id, user_id, "await_radio_search")
+        ctx.user_data["await_radio_search"] = False
+        prompt_id = ctx.user_data.pop("await_radio_search_msg_id", None)
+        await UI.delete_message_if_present(ctx, chat_id, msg_id)
+        if txt_lower == "q":
+            await UI.send_toast_message(ctx, chat_id, "Cancelled.")
+        else:
+            stations = await asyncio.to_thread(radio_browser.search_stations, txt)
+            if not stations:
+                await UI.send_toast_message(ctx, chat_id, f"📻 No stations found for \"{txt}\".")
+            else:
+                button_items = [(s['name'], i) for i, s in enumerate(stations)]
+                msg_id = await UI.send_button_selection(
+                    ctx,
+                    chat_id,
+                    f"📻 Results for \"{txt}\":",
+                    button_items,
+                    "play_radio"
+                )
+                ctx.user_data["radio_results"] = stations
+                UI.activate_prompt(
+                    ctx,
+                    chat_id,
+                    user_id,
+                    "await_radio_index",
+                    "await_radio_index_msg_id",
+                    msg_id,
+                    extra_keys=("radio_results",),
+                )
+                sent = True
+                skip_cleanup = True
+        if prompt_id:
+            try:
+                await UI.telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=prompt_id)
+            except Exception:
+                pass
+        if sent and not skip_cleanup:
+            UI.schedule_cleanup(ctx, chat_id, prev_id)
+            await UI.update_list_message(ctx, chat_id)
+        return
+
+    if ctx.user_data.get("await_radio_index"):
+        UI.cancel_prompt_timeout(chat_id, user_id, "await_radio_index")
+        ctx.user_data["await_radio_index"] = False
+        prompt_id = ctx.user_data.pop("await_radio_index_msg_id", None)
+        stations = ctx.user_data.pop("radio_results", [])
+        await UI.delete_message_if_present(ctx, chat_id, msg_id)
+        if txt_lower == "q":
+            await UI.send_toast_message(ctx, chat_id, "Cancelled.")
+        elif txt.isdigit():
+            i = int(txt) - 1
+            if 0 <= i < len(stations):
+                selected = stations[i]
+                name = selected.get("name")
+                url = selected.get("url_resolved") or selected.get("url")
+                logo = selected.get("favicon")
+                
+                # Report click
+                await asyncio.to_thread(radio_browser.report_click, selected.get("stationuuid"))
+                
+                # Play in Kodi
+                ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, url, name)
+                if ok:
+                    UI.queue_state.clear_bot_playback_state()
+                    await UI.send_toast_message(ctx, chat_id, f"📻 Playing: {name}")
+                else:
+                    await UI.send_toast_message(ctx, chat_id, "⚠ Station could not be played.")
+            else:
+                await UI.send_toast_message(ctx, chat_id, "That number does not exist.")
+        else:
+            await UI.send_toast_message(ctx, chat_id, "Please enter a number only (or q to cancel).")
+        sent = True
+        if prompt_id:
+            try:
+                await UI.telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=prompt_id)
+            except Exception:
+                pass
+        if sent:
+            UI.schedule_cleanup(ctx, chat_id, prev_id)
+            await UI.update_list_message(ctx, chat_id)
+        return
+
+    if ctx.user_data.get("await_radio_delete_index"):
+        UI.cancel_prompt_timeout(chat_id, user_id, "await_radio_delete_index")
+        ctx.user_data["await_radio_delete_index"] = False
+        txt = (update.message.text or "").strip()
+        prompt_id = ctx.user_data.pop("await_radio_delete_index_msg_id", None)
+        prev_id = update.message.message_id
+        await UI.delete_message_if_present(ctx, chat_id, msg_id)
+        if txt.lower() == "q":
+            await UI.send_toast_message(ctx, chat_id, "Cancelled.")
+        elif txt.isdigit():
+            idx = int(txt) - 1
+            favs = await asyncio.to_thread(UI.kodi_api.get_favourites)
+            if 0 <= idx < len(favs):
+                fav = favs[idx]
+                # Use name to delete (SSH + Reload Trick)
+                ok = await asyncio.to_thread(UI.kodi_api.remove_favourite, fav['title'])
+                
+                if ok:
+                    await UI.send_toast_message(ctx, chat_id, f"🗑 Favourite deleted: {fav['title']}")
+                else:
+                    await UI.send_toast_message(ctx, chat_id, "⚠ Favourite could not be deleted.")
+            else:
+                await UI.send_toast_message(ctx, chat_id, "That number does not exist.")
+        else:
+            await UI.send_toast_message(ctx, chat_id, "Please enter a number only (or q to cancel).")
+        
+        if prompt_id:
+            try:
+                await UI.telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=prompt_id)
+            except Exception:
+                pass
+        UI.schedule_cleanup(ctx, chat_id, prev_id)
+        await UI.update_list_message(ctx, chat_id)
+        return
+
     if ctx.user_data.get("await_favourite_index"):
         UI.cancel_prompt_timeout(chat_id, user_id, "await_favourite_index")
         ctx.user_data["await_favourite_index"] = False
         prompt_id = ctx.user_data.pop("await_favourite_msg_id", None)
         favourites = ctx.user_data.pop("favourites", [])
+        await UI.delete_message_if_present(ctx, chat_id, msg_id)
         if txt_lower == "q":
-            await UI.send_and_track(ctx, chat_id, "Cancelled.")
+            await UI.send_toast_message(ctx, chat_id, "Cancelled.")
         elif txt.isdigit():
             i = int(txt) - 1
             if 0 <= i < len(favourites):
                 selected = favourites[i]
-                ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, selected.get("target"))
+                ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, selected.get("target"), selected.get("title"))
                 if ok:
                     UI.queue_state.clear_bot_playback_state()
-                    await UI.send_and_track(ctx, chat_id, f"⭐ Playing favourite: {selected.get('title')}")
+                    await UI.send_toast_message(ctx, chat_id, f"⭐ Playing favourite: {selected.get('title')}")
                 else:
-                    await UI.send_and_track(ctx, chat_id, "⚠ Favourite could not be played.")
+                    await UI.send_toast_message(ctx, chat_id, "⚠ Favourite could not be played.")
             else:
-                await UI.send_and_track(ctx, chat_id, "That number does not exist.")
+                await UI.send_toast_message(ctx, chat_id, "That number does not exist.")
         else:
-            await UI.send_and_track(ctx, chat_id, "Please enter a number only (or q to cancel).")
+            await UI.send_toast_message(ctx, chat_id, "Please enter a number only (or q to cancel).")
         sent = True
         if prompt_id:
             try:
@@ -819,18 +950,19 @@ async def handle_text(update, ctx):
         UI.cancel_prompt_timeout(chat_id, user_id, "await_seek_percent")
         ctx.user_data["await_seek_percent"] = False
         prompt_id = ctx.user_data.pop("await_seek_percent_msg_id", None)
+        await UI.delete_message_if_present(ctx, chat_id, msg_id)
         m = re.match(r"^\s*(\d{1,3})\s*%?\s*$", txt)
         if txt_lower == "q":
-            await UI.send_and_track(ctx, chat_id, "Cancelled.")
+            await UI.send_toast_message(ctx, chat_id, "Cancelled.")
         elif m:
             val = int(m.group(1))
             if 0 <= val <= 100:
                 ok = UI.queue_state.seek_percent(val)
-                await UI.send_and_track(ctx, chat_id, "⏩ Seeked." if ok else "⚠ Seek failed.")
+                await UI.send_toast_message(ctx, chat_id, "⏩ Seeked." if ok else "⚠ Seek failed.")
             else:
-                await UI.send_and_track(ctx, chat_id, "Please enter a percentage from 0 to 100 (or q to cancel).")
+                await UI.send_toast_message(ctx, chat_id, "Please enter a percentage from 0 to 100 (or q to cancel).")
         else:
-            await UI.send_and_track(ctx, chat_id, "Please enter a percentage from 0 to 100 (or q to cancel).")
+            await UI.send_toast_message(ctx, chat_id, "Please enter a percentage from 0 to 100 (or q to cancel).")
         sent = True
         if prompt_id:
             try:
@@ -845,16 +977,17 @@ async def handle_text(update, ctx):
         UI.cancel_prompt_timeout(chat_id, user_id, "await_delete_index")
         ctx.user_data["await_delete_index"] = False
         prompt_id = ctx.user_data.pop("await_delete_msg_id", None)
+        await UI.delete_message_if_present(ctx, chat_id, msg_id)
         if txt_lower == "q":
-            await UI.send_and_track(ctx, chat_id, "Cancelled.")
+            await UI.send_toast_message(ctx, chat_id, "Cancelled.")
         elif txt.isdigit():
             ok, msg = UI.queue_state.delete_index(int(txt) - 1)
             if ok:
-                await UI.send_and_track(ctx, chat_id, "🗑 Track deleted.")
+                await UI.send_toast_message(ctx, chat_id, "🗑 Track deleted.")
             else:
-                await UI.send_and_track(ctx, chat_id, msg)
+                await UI.send_toast_message(ctx, chat_id, msg)
         else:
-            await UI.send_and_track(ctx, chat_id, "Please enter a number only (or q to cancel).")
+            await UI.send_toast_message(ctx, chat_id, "Please enter a number only (or q to cancel).")
         sent = True
         if prompt_id:
             try:
@@ -871,19 +1004,20 @@ async def handle_text(update, ctx):
 
     if uid in UI.pending:
         UI.cancel_pending_timeout(uid)
+        await UI.delete_message_if_present(ctx, chat_id, msg_id)
         if txt.lower() == "1":
             await UI.queue_state.queue_video_async(UI.pending[uid]["video"])
-            await UI.send_and_track(ctx, chat_id, "✔ Track added to the queue.")
+            await UI.send_toast_message(ctx, chat_id, "✔ Track added to the queue.")
             UI.pending.pop(uid)
         elif txt.lower() == "l":
             count = await UI.queue_state.queue_playlist_async(UI.pending[uid]["list"])
-            await UI.send_and_track(ctx, chat_id, f"✔ Playlist with {count} tracks added.")
+            await UI.send_toast_message(ctx, chat_id, f"✔ Playlist with {count} tracks added.")
             UI.pending.pop(uid)
         elif txt_lower == "q":
             UI.pending.pop(uid, None)
-            await UI.send_and_track(ctx, chat_id, "Cancelled.")
+            await UI.send_toast_message(ctx, chat_id, "Cancelled.")
         else:
-            await UI.send_and_track(ctx, chat_id, "Please reply with 1, l or q.")
+            await UI.send_toast_message(ctx, chat_id, "Please reply with 1, l or q.")
         sent = True
         if sent:
             UI.schedule_cleanup(ctx, chat_id, prev_id)
@@ -894,9 +1028,9 @@ async def handle_text(update, ctx):
     if sc_set and UI.queue_state.is_sc_set_url(sc_set.group(0)):
         count = await UI.queue_state.queue_soundcloud_set_async(sc_set.group(0))
         if count > 0:
-            await UI.send_and_track(ctx, chat_id, f"✔ SoundCloud set with {count} tracks added.")
+            await UI.send_toast_message(ctx, chat_id, f"✔ SoundCloud set with {count} tracks added.")
         else:
-            await UI.send_and_track(ctx, chat_id, "⚠ This SoundCloud set could not be added.")
+            await UI.send_toast_message(ctx, chat_id, "⚠ This SoundCloud set could not be added.")
         sent = True
         if sent:
             UI.schedule_cleanup(ctx, chat_id, prev_id)
@@ -913,9 +1047,9 @@ async def handle_text(update, ctx):
             if resolved and UI.queue_state.is_sc_set_url(resolved):
                 count = await UI.queue_state.queue_soundcloud_set_async(resolved)
                 if count > 0:
-                    await UI.send_and_track(ctx, chat_id, f"✔ SoundCloud set with {count} tracks added.")
+                    await UI.send_toast_message(ctx, chat_id, f"✔ SoundCloud set with {count} tracks added.")
                 else:
-                    await UI.send_and_track(ctx, chat_id, "⚠ This SoundCloud set could not be added.")
+                    await UI.send_toast_message(ctx, chat_id, "⚠ This SoundCloud set could not be added.")
                 sent = True
                 if sent:
                     UI.schedule_cleanup(ctx, chat_id, prev_id)
@@ -942,9 +1076,9 @@ async def handle_text(update, ctx):
         try:
             item = UI.queue_state.make_soundcloud(sc.group(0))
             UI.queue_state.queue_item(item)
-            await UI.send_and_track(ctx, chat_id, "✔ SoundCloud track added to the queue.")
+            await UI.send_toast_message(ctx, chat_id, "✔ SoundCloud track added to the queue.")
         except Exception:
-            await UI.send_and_track(ctx, chat_id, "⚠ This SoundCloud link is not playable.")
+            await UI.send_toast_message(ctx, chat_id, "⚠ This SoundCloud link is not playable.")
         sent = True
         if sent:
             UI.schedule_cleanup(ctx, chat_id, prev_id)
@@ -955,16 +1089,16 @@ async def handle_text(update, ctx):
     pl = UI.kodi_api.PL.search(txt)
 
     if vid and pl:
-        msg = await UI.send_and_track(ctx, chat_id, "1 = Track, L = Playlist, q = cancel")
+        msg = await UI.send_and_track(ctx, chat_id, "1 = Track, L = Playlist", reply_markup=UI.cancel_markup())
         UI.activate_pending_choice(ctx, chat_id, uid, msg.message_id, vid.group(1), pl.group(1))
         sent = True
     elif vid:
         await UI.queue_state.queue_video_async(vid.group(1))
-        await UI.send_and_track(ctx, chat_id, "✔ Track added to the queue.")
+        await UI.send_toast_message(ctx, chat_id, "✔ Track added to the queue.")
         sent = True
     elif pl:
         count = await UI.queue_state.queue_playlist_async(pl.group(1))
-        await UI.send_and_track(ctx, chat_id, f"✔ Playlist with {count} tracks added.")
+        await UI.send_toast_message(ctx, chat_id, f"✔ Playlist with {count} tracks added.")
         sent = True
 
     if not sent:
@@ -972,7 +1106,7 @@ async def handle_text(update, ctx):
             item = await UI.media.download_social_video_item(txt)
         except Exception as e:
             UI.log.info("SOCIAL VIDEO DOWNLOAD FAIL chat_id=%s message_id=%s err=%s", chat_id, msg_id, e)
-            await UI.send_and_track(ctx, chat_id, "⚠ Video link could not be downloaded.")
+            await UI.send_toast_message(ctx, chat_id, "⚠ Video link could not be downloaded.")
             UI.schedule_cleanup(ctx, chat_id, prev_id)
             return
         if item is not None:
@@ -982,7 +1116,7 @@ async def handle_text(update, ctx):
             except Exception as e:
                 UI.log.info("SOCIAL VIDEO PLAY FAIL chat_id=%s message_id=%s err=%s", chat_id, msg_id, e)
                 UI.media.cleanup_temp_media(item.get("url"))
-                await UI.send_and_track(ctx, chat_id, "⚠ Video link could not be played.")
+                await UI.send_toast_message(ctx, chat_id, "⚠ Video link could not be played.")
                 UI.schedule_cleanup(ctx, chat_id, prev_id)
                 return
             try:

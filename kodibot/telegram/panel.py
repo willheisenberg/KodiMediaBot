@@ -21,6 +21,7 @@ from kodibot.config import CFG
 from kodibot.telegram import state as S
 from kodibot.telegram.rate import (
     telegram_request,
+    telegram_request_delete,
     send_and_track,
 )
 
@@ -179,9 +180,14 @@ def build_controls_panel():
             InlineKeyboardButton("🗑 All", callback_data="deleteall"),
         ],
         [
-            InlineKeyboardButton("💾 Save", callback_data="plist:save"),
-            InlineKeyboardButton("🎵 Delete", callback_data="plist:delete"),
-            InlineKeyboardButton("📂 Load", callback_data="plist:load"),
+            InlineKeyboardButton("🎶 💾", callback_data="plist:save"),
+            InlineKeyboardButton("🎶 - 🗑", callback_data="plist:delete"),
+            InlineKeyboardButton("🎶 📂", callback_data="plist:load"),
+        ],
+        [
+            InlineKeyboardButton("📻 🔍", callback_data="radio:ask"),
+            InlineKeyboardButton("📻+⭐", callback_data="radio:favorite"),
+            InlineKeyboardButton("⭐ - 🗑", callback_data="radio:delete:ask"),
         ],
         [
             InlineKeyboardButton("⬅ Back", callback_data="controls:back"),
@@ -195,6 +201,10 @@ def control_panel(chat_id=None, *, mode=None):
     resolved_mode = mode or panel_menu_mode(chat_id)
     rows = build_controls_panel() if resolved_mode == "controls" else build_main_control_panel(play_label)
     return InlineKeyboardMarkup(rows)
+
+
+def cancel_markup():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="prompt:cancel")]])
 
 
 # ── Formatting helpers ───────────────────────────────────────────────
@@ -248,10 +258,49 @@ async def send_chunked_selection(ctx, chat_id, header, lines, footer=None):
     """Send chunked selection text and return list of message IDs."""
     chunks = chunk_selection_text(header, lines, footer)
     msg_ids = []
-    for chunk in chunks:
-        msg = await send_and_track(ctx, chat_id, chunk, parse_mode="HTML")
+    for i, chunk in enumerate(chunks):
+        markup = None
+        if i == len(chunks) - 1:
+            markup = cancel_markup()
+        msg = await send_and_track(ctx, chat_id, chunk, parse_mode="HTML", reply_markup=markup)
         msg_ids.append(msg.message_id)
     return msg_ids
+
+
+async def send_button_selection(ctx, chat_id, text, items, callback_prefix, items_per_row=1):
+    """Send a message with items as buttons. items is a list of (label, data_suffix)."""
+    rows = []
+    for i in range(0, len(items), items_per_row):
+        row = []
+        for label, suffix in items[i:i + items_per_row]:
+            row.append(InlineKeyboardButton(label, callback_data=f"{callback_prefix}:{suffix}"))
+        rows.append(row)
+    rows.append([InlineKeyboardButton("❌ Cancel", callback_data="prompt:cancel")])
+    msg = await send_and_track(ctx, chat_id, text, reply_markup=InlineKeyboardMarkup(rows))
+    return msg.message_id
+
+
+async def send_toast_message(ctx, chat_id, text, delay=2):
+    """Send a short-lived message that auto-deletes after `delay` seconds (fake toast for text flows)."""
+    msg = await telegram_request(
+        ctx.bot.send_message,
+        chat_id=chat_id,
+        text=text,
+        disable_web_page_preview=True,
+    )
+
+    async def _auto_delete():
+        await asyncio.sleep(delay)
+        try:
+            await telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=msg.message_id)
+        except Exception as e:
+            log.info("TOAST DELETE FAIL chat_id=%s message_id=%s err=%s", chat_id, msg.message_id, e)
+
+    if hasattr(ctx, "application"):
+        ctx.application.create_task(_auto_delete())
+    else:
+        asyncio.get_running_loop().create_task(_auto_delete())
+    return msg
 
 
 def movie_list_lines(movies):

@@ -63,7 +63,7 @@ LIST_REFRESH_TASK = None
 WS_LISTENER_TASK = None
 
 # ── Prompt state ─────────────────────────────────────────────────────
-PROMPT_TIMEOUT_SECONDS = 120
+PROMPT_TIMEOUT_SECONDS = 300
 PROMPT_TIMEOUT_TASKS = {}
 PENDING_TIMEOUT_TASKS = {}
 HA_MENU_TIMEOUT_SECONDS = 300
