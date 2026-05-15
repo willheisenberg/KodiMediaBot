@@ -115,6 +115,7 @@ async def on_button(update, ctx):
             sent = True
         else:
             UI.schedule_playback_action(ctx, chat_id, UI.queue_state.skip_queue)
+            await q.answer(text="⏭ Next")
             # Brief yield so the playback thread has time to update DISPLAY_INDEX
             # and set BOT_EXPECTING_WS, then immediately refresh the panel so the
             # new track name/link appears before Kodi has even started playing.
@@ -132,6 +133,7 @@ async def on_button(update, ctx):
             sent = True
         else:
             UI.schedule_playback_action(ctx, chat_id, UI.queue_state.back_queue)
+            await q.answer(text="⏮ Back")
             # Brief yield so the playback thread has time to update DISPLAY_INDEX
             # and set BOT_EXPECTING_WS, then immediately refresh the panel so the
             # new track name/link appears before Kodi has even started playing.
