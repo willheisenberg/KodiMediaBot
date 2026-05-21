@@ -26,6 +26,12 @@ REPEAT_MODE = "off"
 EXTERNAL_PLAYBACK = False
 BOT_EXPECTING_WS = 0
 
+# Radio unexpected stop and reconnect tracking
+LAST_PLAYED_RADIO = None
+EXPECTED_STOP = False
+ON_UNEXPECTED_RADIO_STOP = None
+CANCEL_RECONNECT_CB = None
+
 # Timestamp of the last bot-initiated play_index() call.  Used by the panel to
 # show queue track info optimistically for a few seconds after a track change,
 # even when BOT_EXPECTING_WS has already dropped to 0 (happens quickly for
@@ -80,9 +86,29 @@ def cache_youtube_title(vid: str, title: str):
         YT_TITLE_CACHE[vid] = (title, time.time())
 
 
-def set_ui_callbacks(schedule_now_playing_refresh):
-    global _SCHEDULE_NOW_PLAYING_REFRESH
+def set_ui_callbacks(schedule_now_playing_refresh, on_unexpected_radio_stop=None, cancel_reconnect_cb=None):
+    global _SCHEDULE_NOW_PLAYING_REFRESH, ON_UNEXPECTED_RADIO_STOP, CANCEL_RECONNECT_CB
     _SCHEDULE_NOW_PLAYING_REFRESH = schedule_now_playing_refresh
+    if on_unexpected_radio_stop is not None:
+        ON_UNEXPECTED_RADIO_STOP = on_unexpected_radio_stop
+    if cancel_reconnect_cb is not None:
+        CANCEL_RECONNECT_CB = cancel_reconnect_cb
+
+
+def set_last_played_radio(url, title):
+    global LAST_PLAYED_RADIO, EXPECTED_STOP
+    with LOCK:
+        LAST_PLAYED_RADIO = {"url": url, "title": title}
+        EXPECTED_STOP = False
+    log.info("Radio state registered: '%s' (%s)", title, url)
+
+
+def clear_radio_reconnect_state():
+    global LAST_PLAYED_RADIO, EXPECTED_STOP
+    with LOCK:
+        LAST_PLAYED_RADIO = None
+        EXPECTED_STOP = True
+    log.info("Radio reconnect state cleared")
 
 
 def schedule_now_playing_refresh():
@@ -153,7 +179,25 @@ def _handle_ws_resume():
 
 
 def _handle_ws_stop():
+    global EXPECTED_STOP, LAST_PLAYED_RADIO
     schedule_now_playing_refresh()
+    
+    with LOCK:
+        unexpected = not EXPECTED_STOP
+        radio_info = LAST_PLAYED_RADIO
+        EXPECTED_STOP = True
+        
+    if unexpected and radio_info and ON_UNEXPECTED_RADIO_STOP:
+        log.info("Unexpected stop detected for radio: %s. Triggering reconnect...", radio_info)
+        try:
+            loop = asyncio.get_running_loop()
+            import inspect
+            if inspect.iscoroutinefunction(ON_UNEXPECTED_RADIO_STOP):
+                loop.create_task(ON_UNEXPECTED_RADIO_STOP(radio_info["url"], radio_info["title"]))
+            else:
+                ON_UNEXPECTED_RADIO_STOP(radio_info["url"], radio_info["title"])
+        except RuntimeError:
+            log.warning("No running asyncio event loop, cannot trigger unexpected stop callback.")
 
 
 def _handle_ws_playback_refresh():
@@ -385,8 +429,16 @@ def schedule_soundcloud_plugin_fallback(item: dict, source_link: str, resume_tim
     threading.Thread(target=_run, daemon=True).start()
 
 
-# Start playback of a queue item via Kodi.
 def play_item(item: dict, resume_time=None):
+    global EXPECTED_STOP, LAST_PLAYED_RADIO
+    if CANCEL_RECONNECT_CB:
+        try:
+            CANCEL_RECONNECT_CB()
+        except Exception as e:
+            log.warning("Failed to cancel reconnect callback: %s", e)
+    with LOCK:
+        EXPECTED_STOP = True
+        LAST_PLAYED_RADIO = None
     media.cleanup_active_image_session()
     kodi_api.stop_all_players()
     kodi_api.kodi_clear_all_playlists()
@@ -441,9 +493,14 @@ def resume_item_at_time(item: dict, t):
     play_item(item, resume_time=t)
 
 
-# Stop playback and reset bot playback state.
 def hard_stop_and_clear():
     global AUTOPLAY_ENABLED, CURRENT_INDEX, DISPLAY_INDEX, NEXT_INDEX, LAST_PROGRESS_TS, LAST_PROGRESS_TIME, LAST_PROGRESS_TOTAL, LAST_PROGRESS_INDEX, EXTERNAL_PLAYBACK
+    global EXPECTED_STOP, LAST_PLAYED_RADIO
+    if CANCEL_RECONNECT_CB:
+        try:
+            CANCEL_RECONNECT_CB()
+        except Exception as e:
+            log.warning("Failed to cancel reconnect callback: %s", e)
     media.cleanup_active_image_session()
     kodi_api.stop_all_players()
     kodi_api.kodi_clear_all_playlists()
@@ -459,6 +516,8 @@ def hard_stop_and_clear():
         EXTERNAL_PLAYBACK = False
         BOT_EXPECTING_WS = 0
         RESUME_ATTEMPTS.clear()
+        EXPECTED_STOP = True
+        LAST_PLAYED_RADIO = None
     global PLAY_INDEX_TS
     PLAY_INDEX_TS = 0.0
     schedule_playback_refresh()

@@ -152,6 +152,113 @@ def schedule_now_playing_refresh():
             _refresh_playback_ui(CFG.startup_chat_id),
             S.MAIN_LOOP,
         )
+
+
+RECONNECT_TASK = None
+
+
+async def handle_unexpected_radio_stop(url, title):
+    global RECONNECT_TASK
+    chat_id = CFG.startup_chat_id
+    if RECONNECT_TASK and not RECONNECT_TASK.done():
+        log.info("Cancelling existing reconnect task to start a new one.")
+        RECONNECT_TASK.cancel()
+    
+    RECONNECT_TASK = asyncio.create_task(run_reconnect_loop(chat_id, url, title))
+
+
+async def run_reconnect_loop(chat_id, url, title):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    
+    log.info("Starting reconnect loop for '%s' (%s) in chat %s", title, url, chat_id)
+    
+    keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="cancel_reconnect")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    msg = None
+    try:
+        # Step 1: Countdown warning (5 seconds)
+        msg_text = f"📻 Connection to *{html.escape(title)}* lost.\nReconnecting in 5s..."
+        msg = await send_and_track(S.APP_INSTANCE, chat_id, msg_text, reply_markup=reply_markup)
+        
+        for i in range(4, 0, -1):
+            await asyncio.sleep(1)
+            countdown_text = f"📻 Connection to *{html.escape(title)}* lost.\nReconnecting in {i}s..."
+            await S.APP_INSTANCE.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=msg.message_id,
+                text=countdown_text,
+                parse_mode="Markdown",
+                reply_markup=reply_markup
+            )
+            
+        await asyncio.sleep(1)
+        
+        # Step 2: Retry attempts (3 retries)
+        max_retries = 3
+        for retry in range(1, max_retries + 1):
+            retry_text = f"📻 Connection to *{html.escape(title)}* lost.\nReconnecting (attempt {retry}/{max_retries})..."
+            await S.APP_INSTANCE.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=msg.message_id,
+                text=retry_text,
+                parse_mode="Markdown",
+                reply_markup=reply_markup
+            )
+            
+            ok = await asyncio.to_thread(kodi_api.play_favourite_target, url, title)
+            if ok:
+                log.info("Successfully reconnected to '%s'", title)
+                queue_state.set_last_played_radio(url, title)
+                
+                success_text = f"📻 *{html.escape(title)}* successfully reconnected! 🎉"
+                await S.APP_INSTANCE.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=msg.message_id,
+                    text=success_text,
+                    parse_mode="Markdown"
+                )
+                await asyncio.sleep(3)
+                await delete_message_if_present(S.APP_INSTANCE, chat_id, msg.message_id)
+                return
+                
+            if retry < max_retries:
+                await asyncio.sleep(3)
+                
+        fail_text = f"⚠ Reconnection to *{html.escape(title)}* failed."
+        await S.APP_INSTANCE.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=msg.message_id,
+            text=fail_text,
+            parse_mode="Markdown"
+        )
+        await asyncio.sleep(5)
+        await delete_message_if_present(S.APP_INSTANCE, chat_id, msg.message_id)
+        
+    except asyncio.CancelledError:
+        log.info("Reconnect task cancelled for '%s'", title)
+        if msg:
+            try:
+                await delete_message_if_present(S.APP_INSTANCE, chat_id, msg.message_id)
+            except Exception:
+                pass
+        raise
+    except Exception as e:
+        log.error("Error in reconnect loop: %s", e, exc_info=True)
+        if msg:
+            try:
+                await delete_message_if_present(S.APP_INSTANCE, chat_id, msg.message_id)
+            except Exception:
+                pass
+
+
+def cancel_reconnect_action(chat_id):
+    global RECONNECT_TASK
+    if RECONNECT_TASK and not RECONNECT_TASK.done():
+        log.info("User requested to cancel reconnect.")
+        RECONNECT_TASK.cancel()
+        RECONNECT_TASK = None
+    queue_state.clear_radio_reconnect_state()
 def _prompt_timeout_key(chat_id, user_id, state_key):
     return (chat_id, user_id, state_key)
 
@@ -565,7 +672,11 @@ def run(token: str):
     app = builder.build()
     load_ui_state()
 
-    queue_state.set_ui_callbacks(schedule_now_playing_refresh)
+    queue_state.set_ui_callbacks(
+        schedule_now_playing_refresh,
+        on_unexpected_radio_stop=handle_unexpected_radio_stop,
+        cancel_reconnect_cb=lambda: cancel_reconnect_action(CFG.startup_chat_id)
+    )
     queue_state.register_ws_callbacks()
     queue_state.start_autoplay_thread()
     app.add_handler(CallbackQueryHandler(on_button))
@@ -596,6 +707,11 @@ def run(token: str):
     app.post_init = _post_init
 
     async def _post_shutdown(app):
+        global RECONNECT_TASK
+        if RECONNECT_TASK and not RECONNECT_TASK.done():
+            RECONNECT_TASK.cancel()
+        RECONNECT_TASK = None
+
         for task in list(S.PROMPT_TIMEOUT_TASKS.values()):
             if task is not None and not task.done():
                 task.cancel()

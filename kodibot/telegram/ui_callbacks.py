@@ -143,6 +143,12 @@ async def on_button(update, ctx):
             sent = True
             skip_cleanup = True
 
+    elif cmd == "cancel_reconnect":
+        UI.cancel_reconnect_action(chat_id)
+        await q.answer(text="Reconnection cancelled.")
+        sent = True
+        skip_cleanup = True
+
     elif cmd == "playpause":
         pid = UI.kodi_api.get_active_playerid()
         if pid is not None:
@@ -769,6 +775,7 @@ async def on_button(update, ctx):
             fav = favourites[idx]
             ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, fav.get("target"), fav.get("title"))
             if ok:
+                UI.queue_state.set_last_played_radio(fav.get("target"), fav.get("title"))
                 await q.answer(text=f"⭐ Playing favourite: {fav['title']}")
                 if q.message:
                     await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
@@ -1024,6 +1031,7 @@ async def on_button(update, ctx):
             url = selected.get("url_resolved") or selected.get("url")
             ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, url, name)
             if ok:
+                UI.queue_state.set_last_played_radio(url, name)
                 await q.answer(text=f"📻 Playing: {name}")
                 if q.message:
                     await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)

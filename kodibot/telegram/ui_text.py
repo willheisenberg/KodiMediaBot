@@ -865,6 +865,7 @@ async def handle_text(update, ctx):
                 # Play in Kodi
                 ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, url, name)
                 if ok:
+                    UI.queue_state.set_last_played_radio(url, name)
                     UI.queue_state.clear_bot_playback_state()
                     await UI.send_toast_message(ctx, chat_id, f"📻 Playing: {name}")
                 else:
@@ -938,6 +939,7 @@ async def handle_text(update, ctx):
                 selected = favourites[i]
                 ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, selected.get("target"), selected.get("title"))
                 if ok:
+                    UI.queue_state.set_last_played_radio(selected.get("target"), selected.get("title"))
                     UI.queue_state.clear_bot_playback_state()
                     await UI.send_toast_message(ctx, chat_id, f"⭐ Playing favourite: {selected.get('title')}")
                 else:
