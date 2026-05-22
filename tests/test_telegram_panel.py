@@ -199,3 +199,73 @@ class TestNowPlayingText:
         assert "soundcloud.com/artist/track" not in text
         assert progress == "00:12 / 1:30:00"
         assert queue_state.EXTERNAL_PLAYBACK is True
+
+
+class TestAvStreamLabel:
+    def test_language_only(self):
+        stream = {"language": "deu", "index": 1}
+        label = panel.av_stream_label(stream)
+        assert label == "1. 🇩🇪 Deutsch"
+
+    def test_technical_only(self):
+        stream = {"name": "DD+5.1", "codec": "eac3", "channels": 6, "index": 2}
+        label = panel.av_stream_label(stream)
+        assert label == "2. DD+5.1 · eac3 · 6ch"
+
+    def test_language_and_technical(self):
+        stream = {"language": "deu", "name": "DD+5.1(sinde)", "codec": "eac3", "channels": 6, "index": 3}
+        label = panel.av_stream_label(stream)
+        assert label == "3. 🇩🇪 Deutsch · DD+5.1(sinde) · eac3 · 6ch"
+
+    def test_redundant_language_in_name(self):
+        stream = {"language": "eng", "name": "English", "codec": "eac3", "channels": 6, "index": 4}
+        label = panel.av_stream_label(stream)
+        assert label == "4. 🇬🇧 English · eac3 · 6ch"
+
+    def test_language_extraction_from_name(self):
+        stream = {"name": "DD+5.1(ger)", "codec": "eac3", "channels": 6, "index": 5}
+        label = panel.av_stream_label(stream)
+        assert label == "5. 🇩🇪 Deutsch · DD+5.1(ger) · eac3 · 6ch"
+
+    def test_unknown_language_code(self):
+        stream = {"language": "xyz", "index": 6}
+        label = panel.av_stream_label(stream)
+        assert label == "6. 🏳 XYZ"
+
+    def test_combined_languages(self):
+        stream = {"language": "deu/eng", "index": 7}
+        label = panel.av_stream_label(stream)
+        assert label == "7. 🇩🇪 Deutsch / 🇬🇧 English"
+
+    def test_region_explicit(self):
+        stream = {"language": "de-ch", "index": 8}
+        label = panel.av_stream_label(stream)
+        assert label == "8. 🇨🇭 Deutsch (CH)"
+
+    def test_region_fallback(self):
+        stream = {"language": "en-ca", "index": 9}
+        label = panel.av_stream_label(stream)
+        assert label == "9. 🇬🇧 English"
+
+
+class TestCurrentSubtitleLabel:
+    def test_subtitle_off_when_disabled(self):
+        av_state = {
+            "subtitleenabled": False,
+            "currentsubtitle": {"index": 0, "name": "German Forced", "language": "deu"}
+        }
+        assert panel.current_subtitle_label(av_state) == "Off"
+
+    def test_subtitle_off_when_no_index(self):
+        av_state = {
+            "subtitleenabled": True,
+            "currentsubtitle": {"name": "German Forced", "language": "deu"}
+        }
+        assert panel.current_subtitle_label(av_state) == "Off"
+
+    def test_subtitle_on_when_enabled(self):
+        av_state = {
+            "subtitleenabled": True,
+            "currentsubtitle": {"index": 1, "name": "German Forced", "language": "deu"}
+        }
+        assert panel.current_subtitle_label(av_state) == "🇩🇪 Deutsch · German Forced"
