@@ -79,8 +79,6 @@ services:
       KODI_WS_PORT: "9090"
       KODI_USER: "USER"
       KODI_PASS: "Password"
-      PIGPIO_HOST: "127.0.0.1"
-      PIGPIO_PORT: "8888"
       PROJECTOR_GPIO: "17"
       PROJECTOR_ADDRESS: "0x08"
       PROJECTOR_POWER_ON_CODE: "0x03"
@@ -240,12 +238,9 @@ Notes:
 
 The bot supports "Power On" and "Power Off" controls for an infrared-controlled projector (such as the WiMiUS). 
 
-It uses a dual-mode communication architecture designed to work seamlessly on both older Raspberry Pi models and modern systems like the **Raspberry Pi 5** (running LibreELEC or Raspberry Pi OS):
+It uses a highly efficient, **100% native kernel-level LIRC architecture** which works seamlessly on all Raspberry Pi generations (including **Pi 3, 4, 5 and Zero**) running LibreELEC or Raspberry Pi OS. The bot writes pulse timings directly to `/dev/lirc0` with hardware-precision timing. **No external libraries, network ports, or background daemons (like `pigpiod`) are required!**
 
-1. **Native Kernel LIRC Mode (Preferred / Raspberry Pi 5)**: Uses the modern Linux kernel `gpio-ir-tx` driver. The bot writes pulse timings directly to `/dev/lirc0` with hardware-precision timing. No user-space daemons are required!
-2. **pigpio Mode (Fallback)**: Connects to a `pigpiod` daemon on the local host to send modulated NEC wave pulses.
-
-### Setup for Raspberry Pi 5 (LibreELEC)
+### Setup (LibreELEC)
 
 To enable the native kernel IR transmitter on GPIO 17:
 
@@ -257,7 +252,7 @@ mount -o remount,ro /flash
 reboot
 ```
 
-2) Ensure the `kodi-media-bot` container is running in `privileged: true` mode in your `docker-compose.yml` so it can access `/dev/lirc0`:
+2) Ensure the `kodi-media-bot` container is running in `privileged: true` mode in your `docker-compose.yml` so it has direct hardware access to `/dev/lirc0`:
 ```yaml
   kodi-media-bot:
     # ...
@@ -267,8 +262,6 @@ reboot
 3) Set the following environment variables in your `.env` file:
 ```env
 # Projector (Beamer) Infrared Configuration
-PIGPIO_HOST=127.0.0.1
-PIGPIO_PORT=8888
 PROJECTOR_GPIO=17
 PROJECTOR_PROTOCOL=NEC
 PROJECTOR_ADDRESS=0x08

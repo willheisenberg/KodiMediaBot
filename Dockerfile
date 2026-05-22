@@ -1,7 +1,6 @@
 FROM python:3.12-alpine
 
-RUN apk add --no-cache ffmpeg nano openssh-client && \
-    apk add --no-cache --repository=http://dl-cdn.alpinelinux.org/alpine/edge/testing pigpio
+RUN apk add --no-cache ffmpeg nano openssh-client
 
 RUN python -m pip install --upgrade pip
 
@@ -9,8 +8,7 @@ RUN pip install --no-cache-dir \
     python-telegram-bot \
     requests \
     yt-dlp \
-    websockets \
-    pigpio
+    websockets
 
 COPY main.py /main.py
 COPY kodibot /kodibot
