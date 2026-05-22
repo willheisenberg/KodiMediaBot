@@ -88,6 +88,15 @@ class Config:
     ha_webapp_url: str
     ha_webapp_max_age: int
 
+    # ── Projector (Beamer) ────────────────────────────────────────────
+    pigpio_host: str | None
+    pigpio_port: int
+    projector_gpio: int
+    projector_protocol: str
+    projector_address: int
+    projector_power_on_code: int
+    projector_power_off_code: int
+
     # ── Internal tuning ──────────────────────────────────────────────
     kodi_error_log_interval: float
 
@@ -199,6 +208,14 @@ class Config:
             ha_colors_file=os.environ.get("HA_COLORS_FILE", "/data/ha_colors.json"),
             ha_webapp_url=(os.environ.get("HA_WEBAPP_URL") or "").strip(),
             ha_webapp_max_age=int(os.environ.get("HA_WEBAPP_MAX_AGE", "900")),
+            # Projector (Beamer)
+            pigpio_host=os.environ.get("PIGPIO_HOST", "127.0.0.1") or None,
+            pigpio_port=int(os.environ.get("PIGPIO_PORT", "8888")),
+            projector_gpio=int(os.environ.get("PROJECTOR_GPIO", "17")),
+            projector_protocol=os.environ.get("PROJECTOR_PROTOCOL", "NEC"),
+            projector_address=int(os.environ.get("PROJECTOR_ADDRESS", "0x08"), 16),
+            projector_power_on_code=int(os.environ.get("PROJECTOR_POWER_ON_CODE", "0x03"), 16),
+            projector_power_off_code=int(os.environ.get("PROJECTOR_POWER_OFF_CODE", "0x00"), 16),
             # Tuning
             kodi_error_log_interval=float(os.environ.get("KODI_ERROR_LOG_INTERVAL", "10")),
             # Radio Browser

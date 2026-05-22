@@ -69,6 +69,7 @@ services:
     container_name: kodi-media-bot
     restart: unless-stopped
     network_mode: host
+    privileged: true
     depends_on:
       - telegram-bot-api
     environment:
@@ -78,6 +79,12 @@ services:
       KODI_WS_PORT: "9090"
       KODI_USER: "USER"
       KODI_PASS: "Password"
+      PIGPIO_HOST: "127.0.0.1"
+      PIGPIO_PORT: "8888"
+      PROJECTOR_GPIO: "17"
+      PROJECTOR_ADDRESS: "0x08"
+      PROJECTOR_POWER_ON_CODE: "0x03"
+      PROJECTOR_POWER_OFF_CODE: "0x00"
       CEC_HOST: "172.17.0.1"
       DENON_HOST: "DENON_IP"
       DEBUG_WS: "1"
@@ -228,3 +235,44 @@ Notes:
 - `Host key verification failed`: the bot uses SSH options to skip host key checks.
 - `Permission denied`: key not mounted or permissions too open; re-check SSH setup.
 - `MEDIA DOWNLOAD FAIL ... File is too big`: this is the Telegram Bot API download limit. Normal cloud Bot API downloads stop at 20 MB. For large uploads, run a local `telegram-bot-api` server and set `TELEGRAM_LOCAL_MODE=1`, `TELEGRAM_BASE_URL`, and `TELEGRAM_BASE_FILE_URL`.
+
+## Projector (Beamer) Infrared Controls
+
+The bot supports "Power On" and "Power Off" controls for an infrared-controlled projector (such as the WiMiUS). 
+
+It uses a dual-mode communication architecture designed to work seamlessly on both older Raspberry Pi models and modern systems like the **Raspberry Pi 5** (running LibreELEC or Raspberry Pi OS):
+
+1. **Native Kernel LIRC Mode (Preferred / Raspberry Pi 5)**: Uses the modern Linux kernel `gpio-ir-tx` driver. The bot writes pulse timings directly to `/dev/lirc0` with hardware-precision timing. No user-space daemons are required!
+2. **pigpio Mode (Fallback)**: Connects to a `pigpiod` daemon on the local host to send modulated NEC wave pulses.
+
+### Setup for Raspberry Pi 5 (LibreELEC)
+
+To enable the native kernel IR transmitter on GPIO 17:
+
+1) Remount the boot partition as read-write, add the `gpio-ir-tx` overlay to `/flash/config.txt`, and reboot the Pi:
+```bash
+mount -o remount,rw /flash
+echo "dtoverlay=gpio-ir-tx,gpio_pin=17" >> /flash/config.txt
+mount -o remount,ro /flash
+reboot
+```
+
+2) Ensure the `kodi-media-bot` container is running in `privileged: true` mode in your `docker-compose.yml` so it can access `/dev/lirc0`:
+```yaml
+  kodi-media-bot:
+    # ...
+    privileged: true
+```
+
+3) Set the following environment variables in your `.env` file:
+```env
+# Projector (Beamer) Infrared Configuration
+PIGPIO_HOST=127.0.0.1
+PIGPIO_PORT=8888
+PROJECTOR_GPIO=17
+PROJECTOR_PROTOCOL=NEC
+PROJECTOR_ADDRESS=0x08
+PROJECTOR_POWER_ON_CODE=0x03
+PROJECTOR_POWER_OFF_CODE=0x00
+```
+*(Hex values can be provided in `0x` format and will be automatically parsed).*

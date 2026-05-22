@@ -17,6 +17,7 @@ services:
     container_name: kodi-media-bot
     restart: unless-stopped
     network_mode: host
+    privileged: true
     depends_on:
       - telegram-bot-api
     environment:
@@ -40,6 +41,13 @@ services:
       HA_LIGHT_ID: "${HA_LIGHT_ID}"
       HA_WEBAPP_URL: "${HA_WEBAPP_URL}"
       HA_COLORS_FILE: "/data/colors/ha_colors.json"
+      PIGPIO_HOST: "${PIGPIO_HOST}"
+      PIGPIO_PORT: "${PIGPIO_PORT}"
+      PROJECTOR_GPIO: "${PROJECTOR_GPIO}"
+      PROJECTOR_PROTOCOL: "${PROJECTOR_PROTOCOL}"
+      PROJECTOR_ADDRESS: "${PROJECTOR_ADDRESS}"
+      PROJECTOR_POWER_ON_CODE: "${PROJECTOR_POWER_ON_CODE}"
+      PROJECTOR_POWER_OFF_CODE: "${PROJECTOR_POWER_OFF_CODE}"
     volumes:
       - /storage/docker/partyqueue/data/kodi.m3u:/data/kodi.m3u
       - /storage/docker/partyqueue:/root/.ssh:ro

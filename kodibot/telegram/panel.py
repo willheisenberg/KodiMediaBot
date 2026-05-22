@@ -144,6 +144,10 @@ def build_main_control_panel(play_label):
             InlineKeyboardButton("🔌 Hifi On", callback_data="hifi:on"),
             InlineKeyboardButton("🔌 Hifi Off", callback_data="hifi:off"),
         ],
+        [
+            InlineKeyboardButton("📽 Beamer On", callback_data="beamer:on"),
+            InlineKeyboardButton("📽 Beamer Off", callback_data="beamer:off"),
+        ],
     ]
     if ha.ha_available():
         rows.append([

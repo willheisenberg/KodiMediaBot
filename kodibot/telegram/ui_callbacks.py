@@ -560,6 +560,16 @@ async def on_button(update, ctx):
         await UI.refresh_hifi_status_cache(force=True)
         await UI.update_now_playing_message(ctx, chat_id)
         sent = True
+    elif cmd == "beamer:on":
+        from kodibot.core.projector import projector
+        ok = await asyncio.to_thread(projector.power_on)
+        await q.answer(text="📽 Beamer On" if ok else "⚠ Beamer On failed")
+        sent = True
+    elif cmd == "beamer:off":
+        from kodibot.core.projector import projector
+        ok = await asyncio.to_thread(projector.power_off)
+        await q.answer(text="📽 Beamer Off" if ok else "⚠ Beamer Off failed")
+        sent = True
     elif cmd == "airplay:kill":
         ok = await asyncio.to_thread(UI.kodi_api.run_airplay_kill)
         status = await asyncio.to_thread(UI.kodi_api.get_airplay_status)
