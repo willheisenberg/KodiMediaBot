@@ -94,6 +94,7 @@ async def kodi_ws_listener():
                         KA.WS_LAST_EVENT_TS = time.time()
                         data = msg.get("params", {}).get("data", {}) or {}
                         item_params = data.get("item", {}) or {}
+                        player_params = data.get("player", {}) or {}
                         stopped_file = item_params.get("file") or KA.LAST_WS_PLAYING_FILE
                         if KA.media.is_active_image_session_media(stopped_file):
                             asyncio.create_task(cleanup_image_session_after_stop_delay(stopped_file))
@@ -101,7 +102,7 @@ async def kodi_ws_listener():
                             KA.media.cleanup_temp_media(stopped_file)
                         KA.LAST_WS_PLAYING_FILE = ""
                         if KA._ws_on_stop:
-                            KA._ws_on_stop()
+                            KA._ws_on_stop(item_params=item_params, player_params=player_params)
         except Exception as e:
             KA.WS_CONNECTED = False
             KA.WS_STATE = "unknown"

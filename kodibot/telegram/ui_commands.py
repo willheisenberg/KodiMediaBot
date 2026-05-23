@@ -11,6 +11,24 @@ async def handle_nontext(update, ctx):
     chat_id = update.effective_chat.id
     media_group_id = getattr(msg, "media_group_id", None)
 
+    # Delete immediately from the chat in the background to make the bot feel instant!
+    ctx.application.create_task(
+        UI.telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=msg.message_id)
+    )
+
+    # Fast check if it's a media type we debounce (image, video, audio) before downloading
+    media_info = UI.media.classify_message(msg)
+    if media_info and media_info.get("kind") in ("image", "video", "audio"):
+        group_key = chat_id
+        bucket = UI.IMAGE_GROUPS.setdefault(group_key, {"messages": [], "message_ids": []})
+        bucket["messages"].append(msg)
+        bucket["message_ids"].append(msg.message_id)
+        task = UI.IMAGE_GROUP_TASKS.pop(group_key, None)
+        if task is not None and not task.done():
+            task.cancel()
+        UI.IMAGE_GROUP_TASKS[group_key] = ctx.application.create_task(UI._flush_image_group(ctx, chat_id, group_key))
+        return
+
     try:
         item = await UI.media.download_media_item(ctx.bot, msg)
     except Exception as e:
@@ -23,20 +41,6 @@ async def handle_nontext(update, ctx):
         await UI.warn_and_cleanup_chat(ctx, chat_id, msg.message_id)
         return
 
-    if item.get("kind") == "image":
-        if media_group_id:
-            group_key = (chat_id, media_group_id)
-            bucket = UI.IMAGE_GROUPS.setdefault(group_key, {"items": [], "message_ids": []})
-            bucket["items"].append(item)
-            bucket["message_ids"].append(msg.message_id)
-            task = UI.IMAGE_GROUP_TASKS.pop(group_key, None)
-            if task is not None and not task.done():
-                task.cancel()
-            UI.IMAGE_GROUP_TASKS[group_key] = ctx.application.create_task(UI._flush_image_group(ctx, chat_id, group_key))
-            return
-        await UI.play_image_items(ctx, chat_id, [msg.message_id], [item])
-        return
-
     try:
         await asyncio.to_thread(UI.queue_state.clear_bot_playback_state)
         await asyncio.to_thread(UI.queue_state.play_item, item)
@@ -47,10 +51,6 @@ async def handle_nontext(update, ctx):
         UI.schedule_cleanup(ctx, chat_id, UI.LAST_BOT_ID.get(chat_id))
         return
 
-    try:
-        await UI.telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=msg.message_id)
-    except Exception:
-        pass
     await UI.update_now_playing_message(ctx, chat_id)
 
 

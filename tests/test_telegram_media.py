@@ -78,3 +78,27 @@ class TestChooseExtension:
     def test_fallback(self):
         ext = media.choose_extension(None, None, ".bin")
         assert ext == ".bin"
+
+
+class TestMaybeCompressImage:
+    def test_non_image_extension(self):
+        assert media.maybe_compress_image("test.txt") == "test.txt"
+
+    def test_ffmpeg_not_found(self, monkeypatch):
+        import subprocess
+        def fake_run(*args, **kwargs):
+            raise FileNotFoundError()
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert media.maybe_compress_image("test.jpg") == "test.jpg"
+
+
+class TestBuildStorageName:
+    def test_uniqueness_concurrent(self):
+        names = set()
+        for _ in range(100):
+            name = media.build_storage_name("photo", None, "image/jpeg", ".jpg")
+            assert name not in names
+            names.add(name)
+        assert len(names) == 100
+
+

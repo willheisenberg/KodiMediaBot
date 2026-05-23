@@ -116,3 +116,48 @@ class TestRadioReconnectState:
         await asyncio.sleep(0.05)
 
         assert not triggered
+
+    @pytest.mark.asyncio
+    async def test_handle_ws_stop_picture_player_does_not_trigger(self):
+        triggered = False
+
+        async def fake_on_stop(url, title):
+            nonlocal triggered
+            triggered = True
+
+        queue_state.set_last_played_radio("http://radio.stream", "Awesome Radio")
+        queue_state.EXPECTED_STOP = False
+        queue_state.set_ui_callbacks(lambda: None, on_unexpected_radio_stop=fake_on_stop)
+
+        # Trigger ws stop with non-audio player params (playerid=2 is picture, 1 is video)
+        queue_state._handle_ws_stop(item_params={"type": "picture"}, player_params={"playerid": 2})
+        await asyncio.sleep(0.05)
+
+        assert not triggered
+        assert queue_state.EXPECTED_STOP is False  # State was not overwritten/reset
+
+    def test_hard_stop_and_clear_context_aware(self, monkeypatch):
+        # Mock active players showing both audio and picture
+        monkeypatch.setattr(
+            queue_state.kodi_api,
+            "get_active_players",
+            lambda: [{"playerid": 0, "type": "audio"}, {"playerid": 2, "type": "picture"}]
+        )
+        called_stops = []
+        monkeypatch.setattr(
+            queue_state.kodi_api,
+            "kodi_call",
+            lambda m, p=None: called_stops.append((m, p)) or {}
+        )
+        monkeypatch.setattr(queue_state.media, "cleanup_active_image_session", lambda: None)
+        monkeypatch.setattr(queue_state, "schedule_playback_refresh", lambda: None)
+
+        queue_state.EXPECTED_STOP = False
+        queue_state.hard_stop_and_clear()
+
+        # Should only stop picture (playerid=2)
+        assert len(called_stops) == 1
+        assert called_stops[0] == ("Player.Stop", {"playerid": 2})
+        assert queue_state.EXPECTED_STOP is False  # Audio state is untouched!
+
+

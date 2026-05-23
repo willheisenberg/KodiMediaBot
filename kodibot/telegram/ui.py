@@ -602,17 +602,62 @@ async def play_image_items(ctx, chat_id, message_ids, items):
         await send_and_track(ctx, chat_id, "⚠ Image upload could not be displayed.")
         schedule_cleanup(ctx, chat_id, LAST_BOT_ID.get(chat_id))
         return
-    await delete_message_if_present(ctx, chat_id, message_ids)
     await update_now_playing_message(ctx, chat_id)
 
 
 async def _flush_image_group(ctx, chat_id, group_key):
     try:
         await asyncio.sleep(IMAGE_GROUP_DELAY_SECONDS)
+        # Pop the task immediately so that subsequent images do not cancel this active download loop
+        IMAGE_GROUP_TASKS.pop(group_key, None)
+
         bucket = IMAGE_GROUPS.pop(group_key, None)
         if not bucket:
             return
-        await play_image_items(ctx, chat_id, bucket["message_ids"], bucket["items"])
+
+        total_sent = len(bucket["messages"])
+        log.info("Processing media batch for chat_id=%s with %d items", chat_id, total_sent)
+
+        async def download_one(msg):
+            try:
+                return await media.download_media_item(ctx.bot, msg)
+            except Exception as e:
+                log.warning("Failed to download media message_id=%s in batch: %s", msg.message_id, e)
+                return None
+
+        tasks = [download_one(msg) for msg in bucket["messages"]]
+        downloaded_items = await asyncio.gather(*tasks)
+        items = [item for item in downloaded_items if item is not None]
+
+        images = [it for it in items if it.get("kind") == "image"]
+        others = [it for it in items if it.get("kind") in ("video", "audio")]
+
+        log.info(
+            "Media batch chat_id=%s: successfully downloaded %d/%d items (images=%d, others=%d)",
+            chat_id,
+            len(items),
+            total_sent,
+            len(images),
+            len(others),
+        )
+
+        if images:
+            # Play slideshow of images
+            await play_image_items(ctx, chat_id, bucket["message_ids"], images)
+            # Enqueue the other items so they don't interrupt the slideshow, but are added to the queue!
+            for other_item in others:
+                await asyncio.to_thread(queue_state.queue_item, other_item)
+        elif others:
+            # No images, only videos/audio: play the first one immediately, and queue the rest!
+            await asyncio.to_thread(queue_state.clear_bot_playback_state)
+            await asyncio.to_thread(queue_state.play_item, others[0])
+            for other_item in others[1:]:
+                await asyncio.to_thread(queue_state.queue_item, other_item)
+        else:
+            await send_and_track(ctx, chat_id, "⚠ Alle Medien aus dieser Sendung konnten nicht heruntergeladen werden.")
+            schedule_cleanup(ctx, chat_id, LAST_BOT_ID.get(chat_id))
+    except Exception as e:
+        log.exception("Error flushing media group chat_id=%s: %s", chat_id, e)
     finally:
         current = asyncio.current_task()
         if IMAGE_GROUP_TASKS.get(group_key) is current:

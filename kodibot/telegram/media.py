@@ -118,7 +118,9 @@ def build_storage_name(prefix: str, file_name: str | None, mime_type: str | None
     stem = sanitize_stem(prefix)
     ext = choose_extension(file_name, mime_type, fallback_ext)
     ts = int(time.time() * 1000)
-    return f"{stem}_{ts}{ext}"
+    import uuid
+    rand = uuid.uuid4().hex[:8]
+    return f"{stem}_{ts}_{rand}{ext}"
 
 
 def register_temp_media(path: str, title: str):
@@ -428,8 +430,76 @@ def classify_message(msg):
     return None
 
 
+_DOWNLOAD_SEMAPHORE = None
+
+
+def get_download_semaphore():
+    global _DOWNLOAD_SEMAPHORE
+    if _DOWNLOAD_SEMAPHORE is None:
+        import asyncio
+        _DOWNLOAD_SEMAPHORE = asyncio.Semaphore(3)
+    return _DOWNLOAD_SEMAPHORE
+
+
+def maybe_compress_image(path: str):
+    if not path.lower().endswith((".jpg", ".jpeg", ".png")):
+        return path
+    compressed_path = f"{path}.compressed.jpg"
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        path,
+        "-vf",
+        "scale='min(1920,iw)':-1",
+        "-q:v",
+        "4",
+        compressed_path,
+    ]
+    try:
+        res = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except FileNotFoundError:
+        log.debug("image compression skipped: ffmpeg not found")
+        return path
+    except Exception as e:
+        log.debug("image compression skipped path=%s err=%s", path, e)
+        return path
+
+    if res.returncode != 0 or not os.path.exists(compressed_path):
+        log.info(
+            "Image compression failed path=%s rc=%s stderr=%s",
+            path,
+            res.returncode,
+            (res.stderr or "").strip(),
+        )
+        try:
+            if os.path.exists(compressed_path):
+                os.remove(compressed_path)
+        except Exception:
+            pass
+        return path
+
+    try:
+        os.replace(compressed_path, path)
+        log.debug("image compression ok path=%s", path)
+    except Exception as e:
+        log.warning("image compression replace failed path=%s err=%s", path, e)
+        try:
+            os.remove(compressed_path)
+        except Exception:
+            pass
+    return path
+
+
 async def download_media_item(bot, msg):
-    media = classify_message(msg)
+    async with get_download_semaphore():
+        media = classify_message(msg)
     if not media:
         return None
     file_size = media.get("file_size")
@@ -481,6 +551,7 @@ async def download_media_item(bot, msg):
         raise
     target_path = await to_thread(maybe_faststart_mp4, target_path, media["kind"])
     if media["kind"] == "image":
+        target_path = await to_thread(maybe_compress_image, target_path)
         return {
             "title": media["title"],
             "kind": "image",

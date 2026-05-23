@@ -255,7 +255,7 @@ def remove_favourite(title):
 def play_picture(file_path):
     if not file_path:
         return False
-    stop_player_and_clear_playlists()
+    stop_video_players()
     res = kodi_call("Player.Open", {"item": {"file": file_path}})
     return "error" not in res
 
@@ -263,7 +263,7 @@ def play_picture(file_path):
 def play_picture_slideshow(directory_path):
     if not directory_path:
         return False
-    stop_player_and_clear_playlists()
+    stop_video_players()
     res = kodi_call(
         "Player.Open",
         {"item": {"directory": directory_path, "media": "pictures", "recursive": False}},
@@ -385,6 +385,16 @@ def stop_all_players():
         pid = p.get("playerid")
         if pid is not None:
             kodi_call("Player.Stop", {"playerid": pid})
+
+
+# Stop only active video players (useful for running picture slideshows alongside music).
+def stop_video_players():
+    for p in get_active_players():
+        if p.get("type") == "video":
+            pid = p.get("playerid")
+            if pid is not None:
+                kodi_call("Player.Stop", {"playerid": pid})
+    kodi_call("Playlist.Clear", {"playlistid": 1})
 
 
 # Stop playback and clear Kodi playlists.

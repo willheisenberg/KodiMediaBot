@@ -178,14 +178,24 @@ def _handle_ws_resume():
     schedule_now_playing_refresh()
 
 
-def _handle_ws_stop():
+def _handle_ws_stop(item_params=None, player_params=None):
     global EXPECTED_STOP, LAST_PLAYED_RADIO
     schedule_now_playing_refresh()
     
+    player_id = (player_params or {}).get("playerid")
+    stopped_type = (item_params or {}).get("type")
+    
+    is_audio_stop = True
+    if player_id is not None and player_id != 0:
+        is_audio_stop = False
+    elif stopped_type == "picture":
+        is_audio_stop = False
+        
     with LOCK:
-        unexpected = not EXPECTED_STOP
+        unexpected = not EXPECTED_STOP and is_audio_stop
         radio_info = LAST_PLAYED_RADIO
-        EXPECTED_STOP = True
+        if is_audio_stop:
+            EXPECTED_STOP = True
         
     if unexpected and radio_info and ON_UNEXPECTED_RADIO_STOP:
         log.info("Unexpected stop detected for radio: %s. Triggering reconnect...", radio_info)
@@ -496,6 +506,23 @@ def resume_item_at_time(item: dict, t):
 def hard_stop_and_clear():
     global AUTOPLAY_ENABLED, CURRENT_INDEX, DISPLAY_INDEX, NEXT_INDEX, LAST_PROGRESS_TS, LAST_PROGRESS_TIME, LAST_PROGRESS_TOTAL, LAST_PROGRESS_INDEX, EXTERNAL_PLAYBACK
     global EXPECTED_STOP, LAST_PLAYED_RADIO
+    
+    # Check if both picture and audio players are active concurrently
+    active = kodi_api.get_active_players()
+    has_picture = any(p.get("type") == "picture" for p in active)
+    has_audio = any(p.get("type") == "audio" for p in active)
+    
+    if has_picture and has_audio:
+        # Stop only the picture player and preserve background music
+        for p in active:
+            if p.get("type") == "picture":
+                pid = p.get("playerid")
+                if pid is not None:
+                    kodi_api.kodi_call("Player.Stop", {"playerid": pid})
+        media.cleanup_active_image_session()
+        schedule_playback_refresh()
+        return
+
     if CANCEL_RECONNECT_CB:
         try:
             CANCEL_RECONNECT_CB()
