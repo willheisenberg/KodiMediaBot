@@ -17,6 +17,7 @@ os.environ.setdefault("PROJECTOR_PROTOCOL", "NEC")
 os.environ.setdefault("PROJECTOR_ADDRESS", "0x08")
 os.environ.setdefault("PROJECTOR_POWER_ON_CODE", "0x03")
 os.environ.setdefault("PROJECTOR_POWER_OFF_CODE", "0x00")
+os.environ.setdefault("PROJECTOR_POWER_ON_REPEATS", "4")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -32,6 +33,7 @@ def test_projector_config_loading():
     assert CFG.projector_address == 0x08
     assert CFG.projector_power_on_code == 0x03
     assert CFG.projector_power_off_code == 0x00
+    assert CFG.projector_power_on_repeats == 4
 
 
 def test_projector_connect_missing_device():
@@ -110,7 +112,8 @@ def test_power_on(monkeypatch):
     assert len(sent_commands) == 1
     assert sent_commands[0]["address"] == 0x08
     assert sent_commands[0]["command"] == 0x03
-    assert sent_commands[0]["repeat_count"] == 4
+    from kodibot.config import CFG
+    assert sent_commands[0]["repeat_count"] == CFG.projector_power_on_repeats
     assert sent_commands[0]["delay_ms"] == 40
 
 

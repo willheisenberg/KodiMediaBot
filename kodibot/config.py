@@ -96,6 +96,7 @@ class Config:
     projector_address: int
     projector_power_on_code: int
     projector_power_off_code: int
+    projector_power_on_repeats: int
 
     # ── Internal tuning ──────────────────────────────────────────────
     kodi_error_log_interval: float
@@ -216,6 +217,7 @@ class Config:
             projector_address=int(os.environ.get("PROJECTOR_ADDRESS", "0x08"), 16),
             projector_power_on_code=int(os.environ.get("PROJECTOR_POWER_ON_CODE", "0x03"), 16),
             projector_power_off_code=int(os.environ.get("PROJECTOR_POWER_OFF_CODE", "0x00"), 16),
+            projector_power_on_repeats=int(os.environ.get("PROJECTOR_POWER_ON_REPEATS", "4")),
             # Tuning
             kodi_error_log_interval=float(os.environ.get("KODI_ERROR_LOG_INTERVAL", "10")),
             # Radio Browser

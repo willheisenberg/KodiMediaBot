@@ -90,13 +90,13 @@ class ProjectorController:
         """Transmits the POWER_ON command.
 
         NEC protocol, Address 0x08, Command 0x03.
-        Sends a rapid burst of 4 transmissions with 40ms gaps to ensure wake up.
+        Sends a rapid burst of repeated transmissions to wake up from standby.
         """
         log.info("Sending Projector POWER_ON...")
         return self.send_command(
             CFG.projector_address,
             CFG.projector_power_on_code,
-            repeat_count=4,
+            repeat_count=CFG.projector_power_on_repeats,
             delay_ms=40,
         )
 

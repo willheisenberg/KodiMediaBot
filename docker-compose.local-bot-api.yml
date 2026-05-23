@@ -48,6 +48,7 @@ services:
       PROJECTOR_ADDRESS: "${PROJECTOR_ADDRESS}"
       PROJECTOR_POWER_ON_CODE: "${PROJECTOR_POWER_ON_CODE}"
       PROJECTOR_POWER_OFF_CODE: "${PROJECTOR_POWER_OFF_CODE}"
+      PROJECTOR_POWER_ON_REPEATS: "${PROJECTOR_POWER_ON_REPEATS:-4}"
     volumes:
       - /storage/docker/partyqueue/data/kodi.m3u:/data/kodi.m3u
       - /storage/docker/partyqueue:/root/.ssh:ro
