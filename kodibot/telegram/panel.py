@@ -195,6 +195,9 @@ def build_controls_panel():
             InlineKeyboardButton("⭐ - 🗑", callback_data="radio:delete:ask"),
         ],
         [
+            InlineKeyboardButton("📺 🔍", callback_data="tv:ask"),
+        ],
+        [
             InlineKeyboardButton("⬅ Back", callback_data="controls:back"),
         ],
     ]

@@ -98,6 +98,8 @@ services:
       HA_LIGHT_ID: "light.living_room"
       HA_WEBAPP_URL: "https://bot.example.com/app/ha-color"
       HA_COLORS_FILE: "/data/colors/ha_colors.json"
+      IPTV_M3U_URL: "https://raw.githubusercontent.com/jnk22/kodinerds-iptv/master/iptv/clean/kodi_tv.m3u,https://iptv-org.github.io/iptv/countries/de.m3u"
+      RADIO_API_URL: "https://de1.api.radio-browser.info/json"
     volumes:
       - /storage/docker/partyqueue:/root/.ssh:ro
       - /storage/docker/partyqueue/playlists:/data/playlists
@@ -198,6 +200,8 @@ Notes:
 - The image includes `ffmpeg` so Telegram MP4 uploads can be remuxed with `+faststart` before playback.
 - `kodi.m3u` is copied into the image as `/data/kodi.m3u` and is used to map channel names to stream URLs for ICY now-playing title lookup.
 - `RADIO_M3U_PATH` optionally overrides the M3U path (default: `/data/kodi.m3u`).
+- `RADIO_API_URL` configures the community-driven Radio Browser API mirror (default: `https://de1.api.radio-browser.info/json`).
+- `IPTV_M3U_URL` configures a comma-separated list of M3U stream playlists for the live TV search (default: Kodinerds clean list + iptv-org Germany list).
 - `RADIO_STREAM_MAP` is optional and overrides entries from `kodi.m3u`. Example: `{"Radioactive Sifnos":"https://streamyourdream.org:8050/radioactive"}`.
 - `ICY_TITLE_TTL` (seconds, default `15`) configures how long ICY titles are cached.
 - `ICY_TIMEOUT` (seconds, default `6`) configures the ICY metadata fetch timeout.

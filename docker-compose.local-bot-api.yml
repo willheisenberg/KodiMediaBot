@@ -49,6 +49,8 @@ services:
       PROJECTOR_POWER_ON_CODE: "${PROJECTOR_POWER_ON_CODE}"
       PROJECTOR_POWER_OFF_CODE: "${PROJECTOR_POWER_OFF_CODE}"
       PROJECTOR_POWER_ON_REPEATS: "${PROJECTOR_POWER_ON_REPEATS:-4}"
+      IPTV_M3U_URL: "${IPTV_M3U_URL}"
+      RADIO_API_URL: "${RADIO_API_URL}"
     volumes:
       - /storage/docker/partyqueue/data/kodi.m3u:/data/kodi.m3u
       - /storage/docker/partyqueue:/root/.ssh:ro

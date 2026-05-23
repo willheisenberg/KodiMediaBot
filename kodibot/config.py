@@ -104,6 +104,9 @@ class Config:
     # ── Radio Browser API ────────────────────────────────────────────
     radio_api_url: str
 
+    # ── IPTV / TV configuration ───────────────────────────────────────
+    iptv_m3u_url: str
+
     # ── Derived helpers ──────────────────────────────────────────────
 
     @property
@@ -222,6 +225,11 @@ class Config:
             kodi_error_log_interval=float(os.environ.get("KODI_ERROR_LOG_INTERVAL", "10")),
             # Radio Browser
             radio_api_url=os.environ.get("RADIO_API_URL", "https://de1.api.radio-browser.info/json").rstrip("/"),
+            # IPTV
+            iptv_m3u_url=os.environ.get(
+                "IPTV_M3U_URL",
+                "https://raw.githubusercontent.com/jnk22/kodinerds-iptv/master/iptv/clean/kodi_tv.m3u,https://iptv-org.github.io/iptv/countries/de.m3u",
+            ),
         )
 
 

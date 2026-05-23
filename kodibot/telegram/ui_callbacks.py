@@ -416,6 +416,14 @@ async def on_button(update, ctx):
         UI.activate_prompt(ctx, chat_id, user_id, "await_radio_search", "await_radio_search_msg_id", msg.message_id)
         sent = True
         skip_cleanup = True
+    elif cmd == "tv:ask":
+        if ctx.user_data.get("await_tv_search"):
+            await q.answer()
+            return
+        msg = await UI.send_and_track(ctx, chat_id, "📺 Which TV channel do you want to search for?", reply_markup=UI.cancel_markup())
+        UI.activate_prompt(ctx, chat_id, user_id, "await_tv_search", "await_tv_search_msg_id", msg.message_id)
+        sent = True
+        skip_cleanup = True
     elif cmd == "radio:favorite":
         # Get currently playing item
         pid = await asyncio.to_thread(UI.kodi_api.get_active_playerid)
@@ -796,6 +804,28 @@ async def on_button(update, ctx):
                 await q.answer(text="⚠ Favourite could not be played.")
         else:
             await q.answer(text="⚠ Favourite not found.")
+        sent = True
+
+    elif cmd.startswith("play_tv:"):
+        idx = int(cmd.split(":")[1])
+        tv_results = ctx.user_data.get("tv_results", [])
+        if 0 <= idx < len(tv_results):
+            channel = tv_results[idx]
+            name = channel.get("name")
+            url = channel.get("url")
+            ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, url, name)
+            if ok:
+                UI.queue_state.set_last_played_radio(url, name)
+                await q.answer(text=f"📺 Playing channel: {name}")
+                if q.message:
+                    await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
+                ctx.user_data["await_tv_search"] = False
+                ctx.user_data.pop("await_tv_search_msg_id", None)
+                ctx.user_data.pop("tv_results", None)
+            else:
+                await q.answer(text="⚠ Channel could not be played.")
+        else:
+            await q.answer(text="⚠ Channel not found.")
         sent = True
 
     elif cmd.startswith("load_plist:"):
