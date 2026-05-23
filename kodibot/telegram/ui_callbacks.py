@@ -791,6 +791,7 @@ async def on_button(update, ctx):
         favourites = ctx.user_data.get("favourites", [])
         if 0 <= idx < len(favourites):
             fav = favourites[idx]
+            UI.queue_state.clear_radio_reconnect_state()
             ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, fav.get("target"), fav.get("title"))
             if ok:
                 UI.queue_state.set_last_played_radio(fav.get("target"), fav.get("title"))
@@ -813,6 +814,7 @@ async def on_button(update, ctx):
             channel = tv_results[idx]
             name = channel.get("name")
             url = channel.get("url")
+            UI.queue_state.clear_radio_reconnect_state()
             ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, url, name)
             if ok:
                 UI.queue_state.set_last_played_radio(url, name)
@@ -1069,6 +1071,7 @@ async def on_button(update, ctx):
             selected = stations[idx]
             name = selected.get("name")
             url = selected.get("url_resolved") or selected.get("url")
+            UI.queue_state.clear_radio_reconnect_state()
             ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, url, name)
             if ok:
                 UI.queue_state.set_last_played_radio(url, name)

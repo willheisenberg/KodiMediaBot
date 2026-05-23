@@ -863,6 +863,7 @@ async def handle_text(update, ctx):
                 await asyncio.to_thread(radio_browser.report_click, selected.get("stationuuid"))
                 
                 # Play in Kodi
+                UI.queue_state.clear_radio_reconnect_state()
                 ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, url, name)
                 if ok:
                     UI.queue_state.set_last_played_radio(url, name)
@@ -944,6 +945,7 @@ async def handle_text(update, ctx):
                 url = selected.get("url")
                 
                 # Play in Kodi
+                UI.queue_state.clear_radio_reconnect_state()
                 ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, url, name)
                 if ok:
                     UI.queue_state.set_last_played_radio(url, name)
@@ -1018,6 +1020,7 @@ async def handle_text(update, ctx):
             i = int(txt) - 1
             if 0 <= i < len(favourites):
                 selected = favourites[i]
+                UI.queue_state.clear_radio_reconnect_state()
                 ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, selected.get("target"), selected.get("title"))
                 if ok:
                     UI.queue_state.set_last_played_radio(selected.get("target"), selected.get("title"))

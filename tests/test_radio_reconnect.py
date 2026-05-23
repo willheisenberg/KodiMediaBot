@@ -34,6 +34,15 @@ class TestRadioReconnectState:
         assert queue_state.LAST_PLAYED_RADIO is None
         assert queue_state.EXPECTED_STOP is True
 
+    def test_clear_radio_reconnect_state_cancels_cb(self):
+        cancel_called = False
+        def fake_cancel():
+            nonlocal cancel_called
+            cancel_called = True
+        queue_state.CANCEL_RECONNECT_CB = fake_cancel
+        queue_state.clear_radio_reconnect_state()
+        assert cancel_called is True
+
     def test_play_item_resets_state_and_cancels(self, monkeypatch):
         monkeypatch.setattr(queue_state.media, "cleanup_active_image_session", lambda: None)
         monkeypatch.setattr(queue_state.kodi_api, "stop_all_players", lambda: None)

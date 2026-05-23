@@ -105,6 +105,11 @@ def set_last_played_radio(url, title):
 
 def clear_radio_reconnect_state():
     global LAST_PLAYED_RADIO, EXPECTED_STOP
+    if CANCEL_RECONNECT_CB:
+        try:
+            CANCEL_RECONNECT_CB()
+        except Exception as e:
+            log.warning("Failed to cancel reconnect callback: %s", e)
     with LOCK:
         LAST_PLAYED_RADIO = None
         EXPECTED_STOP = True
