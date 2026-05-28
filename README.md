@@ -1,5 +1,9 @@
 # Kodi Media Bot for Telegram
 
+<p align="center">
+  <img src="assets/kodimediabot_banner.png" alt="Kodi Media Bot Banner" width="100%">
+</p>
+
 This bot controls Kodi and a CEC device (HiFi/TV) via Telegram.
 
 Besides YouTube and SoundCloud queue links, the bot can also play Telegram
