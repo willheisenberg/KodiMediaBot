@@ -7,11 +7,10 @@ voice/video uploads and selected social-media video URLs directly once.
 Those temporary media files are deleted again after playback stops.
 
 ## Structure
-- `main.py`: Entrypoint.
-- `kodibot/config.py`: Central configuration.
-- `kodibot/core/`: Kodi JSON-RPC, queue state, and playlist storage.
-- `kodibot/telegram/`: Telegram handlers, UI panel rendering, and integrated media server.
-- `tests/`: Pytest unit tests.
+- `cmd/kodibot/main.go`: Entrypoint.
+- `internal/config/config.go`: Central configuration.
+- `internal/core/`: Kodi JSON-RPC, queue state, playlist storage, Home Assistant, etc.
+- `internal/telegram/`: Telegram handlers, UI panel rendering, and integrated media server.
 - `Dockerfile`: Builds the image.
 
 ## Build

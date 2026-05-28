@@ -38,16 +38,12 @@ scp -r \
   "${LOCAL_ROOT}/Caddyfile" \
   "${LOCAL_ROOT}/Dockerfile" \
   "${LOCAL_ROOT}/README.md" \
-  "${LOCAL_ROOT}/main.py" \
-  "${LOCAL_ROOT}/kodibot" \
+  "${LOCAL_ROOT}/go.mod" \
+  "${LOCAL_ROOT}/go.sum" \
+  "${LOCAL_ROOT}/cmd" \
+  "${LOCAL_ROOT}/internal" \
   "${SSH_TARGET}:${REMOTE_DIR}/"
 
-log "Entferne Python-Bytecode und pycache aus ${REMOTE_DIR}"
-remote_run "REMOTE_DIR='${REMOTE_DIR}' sh -s" <<'REMOTE_SCRIPT'
-set -eu
-find "$REMOTE_DIR" -type d -name 'pycache' -prune -exec rm -rf {} +
-find "$REMOTE_DIR" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
-REMOTE_SCRIPT
 
 log "Entferne vorhandenen Container/Image und starte ${REMOTE_COMPOSE_CMD} up -d --build in ${REMOTE_HOME}"
 remote_run "REMOTE_DIR='${REMOTE_DIR}' REMOTE_HOME='${REMOTE_HOME}' REMOTE_CONTAINER_NAME='${REMOTE_CONTAINER_NAME}' REMOTE_IMAGE_NAME='${REMOTE_IMAGE_NAME}' REMOTE_COMPOSE_CMD='${REMOTE_COMPOSE_CMD}' sh -s" <<'REMOTE_SCRIPT'
