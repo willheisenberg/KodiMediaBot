@@ -1192,6 +1192,7 @@ async def handle_text(update, ctx):
         msg = await UI.send_and_track(ctx, chat_id, "1 = Track, L = Playlist", reply_markup=UI.cancel_markup())
         UI.activate_pending_choice(ctx, chat_id, uid, msg.message_id, vid.group(1), pl.group(1))
         sent = True
+        skip_cleanup = True
     elif vid:
         await UI.queue_state.queue_video_async(vid.group(1))
         await UI.send_toast_message(ctx, chat_id, "✔ Track added to the queue.")
@@ -1227,7 +1228,8 @@ async def handle_text(update, ctx):
             return
 
     if sent:
-        UI.schedule_cleanup(ctx, chat_id, prev_id)
+        if not skip_cleanup:
+            UI.schedule_cleanup(ctx, chat_id, prev_id)
         await UI.update_list_message(ctx, chat_id)
         return
 

@@ -73,3 +73,41 @@ async def test_handle_text_playlist_delete_index_still_requests_confirmation(moc
     
     mock_ui.request_delete_confirmation.assert_called_once()
     assert "fav.m3u" in mock_ui.request_delete_confirmation.call_args[0][4]["filename"]
+
+
+@pytest.mark.asyncio
+async def test_handle_text_youtube_playlist_and_video_skips_cleanup(mock_ui):
+    update = MagicMock()
+    update.message.text = "https://www.youtube.com/watch?v=ABC123abc45&list=PL12345"
+    update.message.message_id = 999
+    update.effective_chat.id = 123
+    update.effective_user.id = 789
+
+    ctx = MagicMock()
+    ctx.user_data = {}
+
+    mock_vid = MagicMock()
+    mock_vid.group.return_value = "ABC123abc45"
+    mock_pl = MagicMock()
+    mock_pl.group.return_value = "PL12345"
+
+    mock_ui.kodi_api.YT.search.return_value = mock_vid
+    mock_ui.kodi_api.PL.search.return_value = mock_pl
+    mock_ui.kodi_api.SC_SET.search.return_value = None
+    mock_ui.kodi_api.SC.search.return_value = None
+    mock_ui.kodi_api.SC_SHORT.search.return_value = None
+
+    mock_ui.send_and_track = AsyncMock()
+    dummy_msg = MagicMock()
+    dummy_msg.message_id = 1001
+    mock_ui.send_and_track.return_value = dummy_msg
+
+    await ui_text.handle_text(update, ctx)
+
+    mock_ui.send_and_track.assert_called_once()
+    mock_ui.activate_pending_choice.assert_called_once_with(
+        ctx, 123, 789, 1001, "ABC123abc45", "PL12345"
+    )
+
+    assert not mock_ui.schedule_cleanup.called
+
