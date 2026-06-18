@@ -437,14 +437,37 @@ async def on_button(update, ctx):
             channel = item.get("channel") or item.get("label") or "Unknown station"
             logo = item.get("thumbnail") or ""
             
-            # Versuche einen besseren Namen und Logo via Radio-Browser API zu finden
-            if file_url.startswith("http"):
+            # Normalize URLs for comparison
+            def clean_url(u):
+                if not u:
+                    return ""
+                return u.split('|')[0].strip().rstrip('/').replace("https://", "http://").replace("://www.", "://")
+
+            # 1. Optimistic match against the last played station via the bot
+            lp = UI.queue_state.LAST_PLAYED_RADIO
+            lp_matched = False
+            if lp and lp.get("url") and lp.get("title"):
+                if clean_url(lp["url"]) == clean_url(file_url):
+                    channel = lp["title"]
+                    lp_matched = True
+
+            # 2. Try to resolve via Radio-Browser API (for radio streams)
+            if not lp_matched and file_url.startswith("http"):
                 info = await asyncio.to_thread(radio_browser.get_station_info_by_url, file_url)
                 if info:
                     if info.get("name"):
                         channel = info["name"]
                     if info.get("favicon"):
                         logo = info["favicon"]
+                else:
+                    # 3. Try to resolve via IPTV M3U list (for TV streams)
+                    from kodibot.core import tv_browser
+                    tv_info = await asyncio.to_thread(tv_browser.get_tv_channel_info_by_url, file_url)
+                    if tv_info:
+                        if tv_info.get("name"):
+                            channel = tv_info["name"]
+                        if tv_info.get("logo"):
+                            logo = tv_info["logo"]
             
             if not file_url.startswith("http"):
                 await q.answer(text="⚠ This doesn't seem to be a radio stream.")
