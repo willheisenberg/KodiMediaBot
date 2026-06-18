@@ -10,6 +10,13 @@ Besides YouTube and SoundCloud queue links, the bot can also play Telegram
 voice/video uploads and selected social-media video URLs directly once.
 Those temporary media files are deleted again after playback stops.
 
+## Screenshots
+<p align="center">
+  <img src="assets/panel_main.png" alt="Main Panel" width="32%">
+  <img src="assets/panel_controls.png" alt="Controls Menu" width="32%">
+  <img src="assets/panel_ha_light.png" alt="Home Assistant Menu" width="32%">
+</p>
+
 ## Structure
 - `main.py`: Entrypoint.
 - `kodibot/config.py`: Central configuration.
