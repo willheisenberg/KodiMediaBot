@@ -143,6 +143,12 @@ async def on_button(update, ctx):
             sent = True
             skip_cleanup = True
 
+    elif cmd == "cancel_reconnect":
+        UI.cancel_reconnect_action(chat_id)
+        await q.answer(text="Reconnection cancelled.")
+        sent = True
+        skip_cleanup = True
+
     elif cmd == "playpause":
         pid = UI.kodi_api.get_active_playerid()
         if pid is not None:
@@ -410,6 +416,14 @@ async def on_button(update, ctx):
         UI.activate_prompt(ctx, chat_id, user_id, "await_radio_search", "await_radio_search_msg_id", msg.message_id)
         sent = True
         skip_cleanup = True
+    elif cmd == "tv:ask":
+        if ctx.user_data.get("await_tv_search"):
+            await q.answer()
+            return
+        msg = await UI.send_and_track(ctx, chat_id, "📺 Which TV channel do you want to search for?", reply_markup=UI.cancel_markup())
+        UI.activate_prompt(ctx, chat_id, user_id, "await_tv_search", "await_tv_search_msg_id", msg.message_id)
+        sent = True
+        skip_cleanup = True
     elif cmd == "radio:favorite":
         # Get currently playing item
         pid = await asyncio.to_thread(UI.kodi_api.get_active_playerid)
@@ -423,14 +437,37 @@ async def on_button(update, ctx):
             channel = item.get("channel") or item.get("label") or "Unknown station"
             logo = item.get("thumbnail") or ""
             
-            # Versuche einen besseren Namen und Logo via Radio-Browser API zu finden
-            if file_url.startswith("http"):
+            # Normalize URLs for comparison
+            def clean_url(u):
+                if not u:
+                    return ""
+                return u.split('|')[0].strip().rstrip('/').replace("https://", "http://").replace("://www.", "://")
+
+            # 1. Optimistic match against the last played station via the bot
+            lp = UI.queue_state.LAST_PLAYED_RADIO
+            lp_matched = False
+            if lp and lp.get("url") and lp.get("title"):
+                if clean_url(lp["url"]) == clean_url(file_url):
+                    channel = lp["title"]
+                    lp_matched = True
+
+            # 2. Try to resolve via Radio-Browser API (for radio streams)
+            if not lp_matched and file_url.startswith("http"):
                 info = await asyncio.to_thread(radio_browser.get_station_info_by_url, file_url)
                 if info:
                     if info.get("name"):
                         channel = info["name"]
                     if info.get("favicon"):
                         logo = info["favicon"]
+                else:
+                    # 3. Try to resolve via IPTV M3U list (for TV streams)
+                    from kodibot.core import tv_browser
+                    tv_info = await asyncio.to_thread(tv_browser.get_tv_channel_info_by_url, file_url)
+                    if tv_info:
+                        if tv_info.get("name"):
+                            channel = tv_info["name"]
+                        if tv_info.get("logo"):
+                            logo = tv_info["logo"]
             
             if not file_url.startswith("http"):
                 await q.answer(text="⚠ This doesn't seem to be a radio stream.")
@@ -553,6 +590,16 @@ async def on_button(update, ctx):
             await asyncio.sleep(10)
         await UI.refresh_hifi_status_cache(force=True)
         await UI.update_now_playing_message(ctx, chat_id)
+        sent = True
+    elif cmd == "beamer:on":
+        from kodibot.core.projector import projector
+        ok = await asyncio.to_thread(projector.power_on)
+        await q.answer(text="📽 Beamer On" if ok else "⚠ Beamer On failed")
+        sent = True
+    elif cmd == "beamer:off":
+        from kodibot.core.projector import projector
+        ok = await asyncio.to_thread(projector.power_off)
+        await q.answer(text="📽 Beamer Off" if ok else "⚠ Beamer Off failed")
         sent = True
     elif cmd == "airplay:kill":
         ok = await asyncio.to_thread(UI.kodi_api.run_airplay_kill)
@@ -767,8 +814,10 @@ async def on_button(update, ctx):
         favourites = ctx.user_data.get("favourites", [])
         if 0 <= idx < len(favourites):
             fav = favourites[idx]
+            UI.queue_state.clear_radio_reconnect_state()
             ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, fav.get("target"), fav.get("title"))
             if ok:
+                UI.queue_state.set_last_played_radio(fav.get("target"), fav.get("title"))
                 await q.answer(text=f"⭐ Playing favourite: {fav['title']}")
                 if q.message:
                     await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
@@ -779,6 +828,29 @@ async def on_button(update, ctx):
                 await q.answer(text="⚠ Favourite could not be played.")
         else:
             await q.answer(text="⚠ Favourite not found.")
+        sent = True
+
+    elif cmd.startswith("play_tv:"):
+        idx = int(cmd.split(":")[1])
+        tv_results = ctx.user_data.get("tv_results", [])
+        if 0 <= idx < len(tv_results):
+            channel = tv_results[idx]
+            name = channel.get("name")
+            url = channel.get("url")
+            UI.queue_state.clear_radio_reconnect_state()
+            ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, url, name)
+            if ok:
+                UI.queue_state.set_last_played_radio(url, name)
+                await q.answer(text=f"📺 Playing channel: {name}")
+                if q.message:
+                    await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
+                ctx.user_data["await_tv_search"] = False
+                ctx.user_data.pop("await_tv_search_msg_id", None)
+                ctx.user_data.pop("tv_results", None)
+            else:
+                await q.answer(text="⚠ Channel could not be played.")
+        else:
+            await q.answer(text="⚠ Channel not found.")
         sent = True
 
     elif cmd.startswith("load_plist:"):
@@ -1022,8 +1094,10 @@ async def on_button(update, ctx):
             selected = stations[idx]
             name = selected.get("name")
             url = selected.get("url_resolved") or selected.get("url")
+            UI.queue_state.clear_radio_reconnect_state()
             ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, url, name)
             if ok:
+                UI.queue_state.set_last_played_radio(url, name)
                 await q.answer(text=f"📻 Playing: {name}")
                 if q.message:
                     await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)

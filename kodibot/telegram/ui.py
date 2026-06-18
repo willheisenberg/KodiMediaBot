@@ -152,6 +152,113 @@ def schedule_now_playing_refresh():
             _refresh_playback_ui(CFG.startup_chat_id),
             S.MAIN_LOOP,
         )
+
+
+RECONNECT_TASK = None
+
+
+async def handle_unexpected_radio_stop(url, title):
+    global RECONNECT_TASK
+    chat_id = CFG.startup_chat_id
+    if RECONNECT_TASK and not RECONNECT_TASK.done():
+        log.info("Cancelling existing reconnect task to start a new one.")
+        RECONNECT_TASK.cancel()
+    
+    RECONNECT_TASK = asyncio.create_task(run_reconnect_loop(chat_id, url, title))
+
+
+async def run_reconnect_loop(chat_id, url, title):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    
+    log.info("Starting reconnect loop for '%s' (%s) in chat %s", title, url, chat_id)
+    
+    keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="cancel_reconnect")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    msg = None
+    try:
+        # Step 1: Countdown warning (5 seconds)
+        msg_text = f"📻 Connection to *{html.escape(title)}* lost.\nReconnecting in 5s..."
+        msg = await send_and_track(S.APP_INSTANCE, chat_id, msg_text, reply_markup=reply_markup)
+        
+        for i in range(4, 0, -1):
+            await asyncio.sleep(1)
+            countdown_text = f"📻 Connection to *{html.escape(title)}* lost.\nReconnecting in {i}s..."
+            await S.APP_INSTANCE.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=msg.message_id,
+                text=countdown_text,
+                parse_mode="Markdown",
+                reply_markup=reply_markup
+            )
+            
+        await asyncio.sleep(1)
+        
+        # Step 2: Retry attempts (3 retries)
+        max_retries = 3
+        for retry in range(1, max_retries + 1):
+            retry_text = f"📻 Connection to *{html.escape(title)}* lost.\nReconnecting (attempt {retry}/{max_retries})..."
+            await S.APP_INSTANCE.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=msg.message_id,
+                text=retry_text,
+                parse_mode="Markdown",
+                reply_markup=reply_markup
+            )
+            
+            ok = await asyncio.to_thread(kodi_api.play_favourite_target, url, title)
+            if ok:
+                log.info("Successfully reconnected to '%s'", title)
+                queue_state.set_last_played_radio(url, title)
+                
+                success_text = f"📻 *{html.escape(title)}* successfully reconnected! 🎉"
+                await S.APP_INSTANCE.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=msg.message_id,
+                    text=success_text,
+                    parse_mode="Markdown"
+                )
+                await asyncio.sleep(3)
+                await delete_message_if_present(S.APP_INSTANCE, chat_id, msg.message_id)
+                return
+                
+            if retry < max_retries:
+                await asyncio.sleep(3)
+                
+        fail_text = f"⚠ Reconnection to *{html.escape(title)}* failed."
+        await S.APP_INSTANCE.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=msg.message_id,
+            text=fail_text,
+            parse_mode="Markdown"
+        )
+        await asyncio.sleep(5)
+        await delete_message_if_present(S.APP_INSTANCE, chat_id, msg.message_id)
+        
+    except asyncio.CancelledError:
+        log.info("Reconnect task cancelled for '%s'", title)
+        if msg:
+            try:
+                await delete_message_if_present(S.APP_INSTANCE, chat_id, msg.message_id)
+            except Exception:
+                pass
+        raise
+    except Exception as e:
+        log.error("Error in reconnect loop: %s", e, exc_info=True)
+        if msg:
+            try:
+                await delete_message_if_present(S.APP_INSTANCE, chat_id, msg.message_id)
+            except Exception:
+                pass
+
+
+def cancel_reconnect_action(chat_id):
+    global RECONNECT_TASK
+    if RECONNECT_TASK and not RECONNECT_TASK.done():
+        log.info("User requested to cancel reconnect.")
+        RECONNECT_TASK.cancel()
+        RECONNECT_TASK = None
+    queue_state.clear_radio_reconnect_state()
 def _prompt_timeout_key(chat_id, user_id, state_key):
     return (chat_id, user_id, state_key)
 
@@ -495,17 +602,62 @@ async def play_image_items(ctx, chat_id, message_ids, items):
         await send_and_track(ctx, chat_id, "⚠ Image upload could not be displayed.")
         schedule_cleanup(ctx, chat_id, LAST_BOT_ID.get(chat_id))
         return
-    await delete_message_if_present(ctx, chat_id, message_ids)
     await update_now_playing_message(ctx, chat_id)
 
 
 async def _flush_image_group(ctx, chat_id, group_key):
     try:
         await asyncio.sleep(IMAGE_GROUP_DELAY_SECONDS)
+        # Pop the task immediately so that subsequent images do not cancel this active download loop
+        IMAGE_GROUP_TASKS.pop(group_key, None)
+
         bucket = IMAGE_GROUPS.pop(group_key, None)
         if not bucket:
             return
-        await play_image_items(ctx, chat_id, bucket["message_ids"], bucket["items"])
+
+        total_sent = len(bucket["messages"])
+        log.info("Processing media batch for chat_id=%s with %d items", chat_id, total_sent)
+
+        async def download_one(msg):
+            try:
+                return await media.download_media_item(ctx.bot, msg)
+            except Exception as e:
+                log.warning("Failed to download media message_id=%s in batch: %s", msg.message_id, e)
+                return None
+
+        tasks = [download_one(msg) for msg in bucket["messages"]]
+        downloaded_items = await asyncio.gather(*tasks)
+        items = [item for item in downloaded_items if item is not None]
+
+        images = [it for it in items if it.get("kind") == "image"]
+        others = [it for it in items if it.get("kind") in ("video", "audio")]
+
+        log.info(
+            "Media batch chat_id=%s: successfully downloaded %d/%d items (images=%d, others=%d)",
+            chat_id,
+            len(items),
+            total_sent,
+            len(images),
+            len(others),
+        )
+
+        if images:
+            # Play slideshow of images
+            await play_image_items(ctx, chat_id, bucket["message_ids"], images)
+            # Enqueue the other items so they don't interrupt the slideshow, but are added to the queue!
+            for other_item in others:
+                await asyncio.to_thread(queue_state.queue_item, other_item)
+        elif others:
+            # No images, only videos/audio: play the first one immediately, and queue the rest!
+            await asyncio.to_thread(queue_state.clear_bot_playback_state)
+            await asyncio.to_thread(queue_state.play_item, others[0])
+            for other_item in others[1:]:
+                await asyncio.to_thread(queue_state.queue_item, other_item)
+        else:
+            await send_and_track(ctx, chat_id, "⚠ Alle Medien aus dieser Sendung konnten nicht heruntergeladen werden.")
+            schedule_cleanup(ctx, chat_id, LAST_BOT_ID.get(chat_id))
+    except Exception as e:
+        log.exception("Error flushing media group chat_id=%s: %s", chat_id, e)
     finally:
         current = asyncio.current_task()
         if IMAGE_GROUP_TASKS.get(group_key) is current:
@@ -565,7 +717,11 @@ def run(token: str):
     app = builder.build()
     load_ui_state()
 
-    queue_state.set_ui_callbacks(schedule_now_playing_refresh)
+    queue_state.set_ui_callbacks(
+        schedule_now_playing_refresh,
+        on_unexpected_radio_stop=handle_unexpected_radio_stop,
+        cancel_reconnect_cb=lambda: cancel_reconnect_action(CFG.startup_chat_id)
+    )
     queue_state.register_ws_callbacks()
     queue_state.start_autoplay_thread()
     app.add_handler(CallbackQueryHandler(on_button))
@@ -596,6 +752,11 @@ def run(token: str):
     app.post_init = _post_init
 
     async def _post_shutdown(app):
+        global RECONNECT_TASK
+        if RECONNECT_TASK and not RECONNECT_TASK.done():
+            RECONNECT_TASK.cancel()
+        RECONNECT_TASK = None
+
         for task in list(S.PROMPT_TIMEOUT_TASKS.values()):
             if task is not None and not task.done():
                 task.cancel()

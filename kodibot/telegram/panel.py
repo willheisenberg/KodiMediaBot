@@ -9,6 +9,7 @@ import html
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timedelta
 
@@ -144,6 +145,10 @@ def build_main_control_panel(play_label):
             InlineKeyboardButton("🔌 Hifi On", callback_data="hifi:on"),
             InlineKeyboardButton("🔌 Hifi Off", callback_data="hifi:off"),
         ],
+        [
+            InlineKeyboardButton("📽 Beamer On", callback_data="beamer:on"),
+            InlineKeyboardButton("📽 Beamer Off", callback_data="beamer:off"),
+        ],
     ]
     if ha.ha_available():
         rows.append([
@@ -188,6 +193,9 @@ def build_controls_panel():
             InlineKeyboardButton("📻 🔍", callback_data="radio:ask"),
             InlineKeyboardButton("📻+⭐", callback_data="radio:favorite"),
             InlineKeyboardButton("⭐ - 🗑", callback_data="radio:delete:ask"),
+        ],
+        [
+            InlineKeyboardButton("📺 🔍", callback_data="tv:ask"),
         ],
         [
             InlineKeyboardButton("⬅ Back", callback_data="controls:back"),
@@ -417,30 +425,104 @@ def episode_list_lines(episodes):
     return lines
 
 
-def av_stream_label(stream):
-    """Format an audio/subtitle stream for display."""
-    name = stream.get("name") or stream.get("language") or ""
-    codec = stream.get("codec") or ""
-    channels = stream.get("channels")
-    idx = stream.get("index")
+from kodibot.telegram.languages import LANG_MAP
+
+
+def resolve_single_lang(code):
+    """Resolve a single language code to its flag and friendly name."""
+    code = code.strip().lower()
+    if code in LANG_MAP:
+        return LANG_MAP[code]
+    # Try splitting by - or _ for sub-tags (e.g. en-ca -> en)
+    subparts = re.split(r'[-_]', code)
+    if subparts and subparts[0] in LANG_MAP:
+        return LANG_MAP[subparts[0]]
+    return None
+
+
+def format_av_track(idx, name, lang, codec=None, channels=None):
+    """Format an audio or subtitle track with flag and clear language name."""
+    name = (name or "").strip()
+    lang = (lang or "").strip()
+    
+    # Try to extract language from name if empty (e.g. "DD+5.1(ger)")
+    if not lang and name:
+        match = re.search(r'[([（]([a-zA-Z]{2,3})[)\]）]', name)
+        if match:
+            lang = match.group(1)
+            
+    lang_display = ""
+    lang_names = []
+    if lang:
+        # Split by / or + or | (multiple language audio tracks)
+        parts = re.split(r'[/+|]', lang)
+        resolved_parts = []
+        for p in parts:
+            p = p.strip()
+            if not p:
+                continue
+            res = resolve_single_lang(p)
+            if res:
+                resolved_parts.append(res)
+            else:
+                resolved_parts.append(("🏳", p.upper()))
+                
+        # Deduplicate identical adjacent languages (e.g. de-de -> Deutsch)
+        unique_resolved = []
+        for flag, lang_name in resolved_parts:
+            if not unique_resolved or unique_resolved[-1] != (flag, lang_name):
+                unique_resolved.append((flag, lang_name))
+                
+        if unique_resolved:
+            lang_display = " / ".join(f"{flag} {lang_name}" for flag, lang_name in unique_resolved)
+            lang_names = [lang_name for _, lang_name in unique_resolved]
+            
+    display_name = name
+    if display_name and lang_display:
+        lower_name = display_name.lower()
+        # Redundant if the track name is just the language code or name
+        is_redundant = (
+            lower_name == lang.lower() or 
+            any(lower_name == ln.lower() for ln in lang_names)
+        )
+        if is_redundant:
+            display_name = ""
+            
     parts = []
-    if name:
-        parts.append(name)
+    if lang_display:
+        parts.append(lang_display)
+    if display_name:
+        parts.append(display_name)
     if codec:
         parts.append(codec)
     if channels:
         parts.append(f"{channels}ch")
+        
     label = " · ".join(parts) or f"Track {idx}"
+    return label
+
+
+def av_stream_label(stream):
+    """Format an audio/subtitle stream for display."""
+    idx = stream.get("index")
+    label = format_av_track(
+        idx,
+        stream.get("name"),
+        stream.get("language"),
+        stream.get("codec"),
+        stream.get("channels")
+    )
     return f"{idx}. {label}"
 
 
 def current_subtitle_label(av_state):
-    idx = av_state.get("currentsubtitle", {}).get("index")
+    if not av_state.get("subtitleenabled"):
+        return "Off"
+    sub = av_state.get("currentsubtitle") or {}
+    idx = sub.get("index")
     if idx is None:
         return "Off"
-    name = av_state.get("currentsubtitle", {}).get("name") or ""
-    lang = av_state.get("currentsubtitle", {}).get("language") or ""
-    return name or lang or f"Track {idx}"
+    return format_av_track(idx, sub.get("name"), sub.get("language"))
 
 
 # ── List/panel update ────────────────────────────────────────────────

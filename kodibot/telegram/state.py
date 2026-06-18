@@ -11,7 +11,7 @@ import threading
 pending = {}
 IMAGE_GROUPS = {}
 IMAGE_GROUP_TASKS = {}
-IMAGE_GROUP_DELAY_SECONDS = 1.2
+IMAGE_GROUP_DELAY_SECONDS = 2.0
 
 LAST_BOT_ID = {}
 PREV_BOT_ID = {}

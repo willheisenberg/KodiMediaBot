@@ -1,10 +1,21 @@
 # Kodi Media Bot for Telegram
 
+<p align="center">
+  <img src="assets/kodimediabot_banner.png" alt="Kodi Media Bot Banner" width="100%">
+</p>
+
 This bot controls Kodi and a CEC device (HiFi/TV) via Telegram.
 
 Besides YouTube and SoundCloud queue links, the bot can also play Telegram
 voice/video uploads and selected social-media video URLs directly once.
 Those temporary media files are deleted again after playback stops.
+
+## Screenshots
+<p align="center">
+  <img src="assets/panel_main.png" alt="Main Panel" width="32%">
+  <img src="assets/panel_controls.png" alt="Controls Menu" width="32%">
+  <img src="assets/panel_ha_light.png" alt="Home Assistant Menu" width="32%">
+</p>
 
 ## Structure
 - `main.py`: Entrypoint.
@@ -69,6 +80,7 @@ services:
     container_name: kodi-media-bot
     restart: unless-stopped
     network_mode: host
+    privileged: true
     depends_on:
       - telegram-bot-api
     environment:
@@ -78,6 +90,11 @@ services:
       KODI_WS_PORT: "9090"
       KODI_USER: "USER"
       KODI_PASS: "Password"
+      PROJECTOR_GPIO: "17"
+      PROJECTOR_ADDRESS: "0x08"
+      PROJECTOR_POWER_ON_CODE: "0x03"
+      PROJECTOR_POWER_OFF_CODE: "0x00"
+      PROJECTOR_POWER_ON_REPEATS: "4"
       CEC_HOST: "172.17.0.1"
       DENON_HOST: "DENON_IP"
       DEBUG_WS: "1"
@@ -92,6 +109,8 @@ services:
       HA_LIGHT_ID: "light.living_room"
       HA_WEBAPP_URL: "https://bot.example.com/app/ha-color"
       HA_COLORS_FILE: "/data/colors/ha_colors.json"
+      IPTV_M3U_URL: "https://raw.githubusercontent.com/jnk22/kodinerds-iptv/master/iptv/clean/kodi_tv.m3u,https://iptv-org.github.io/iptv/countries/de.m3u"
+      RADIO_API_URL: "https://de1.api.radio-browser.info/json"
     volumes:
       - /storage/docker/partyqueue:/root/.ssh:ro
       - /storage/docker/partyqueue/playlists:/data/playlists
@@ -192,6 +211,8 @@ Notes:
 - The image includes `ffmpeg` so Telegram MP4 uploads can be remuxed with `+faststart` before playback.
 - `kodi.m3u` is copied into the image as `/data/kodi.m3u` and is used to map channel names to stream URLs for ICY now-playing title lookup.
 - `RADIO_M3U_PATH` optionally overrides the M3U path (default: `/data/kodi.m3u`).
+- `RADIO_API_URL` configures the community-driven Radio Browser API mirror (default: `https://de1.api.radio-browser.info/json`).
+- `IPTV_M3U_URL` configures a comma-separated list of M3U stream playlists for the live TV search (default: Kodinerds clean list + iptv-org Germany list).
 - `RADIO_STREAM_MAP` is optional and overrides entries from `kodi.m3u`. Example: `{"Radioactive Sifnos":"https://streamyourdream.org:8050/radioactive"}`.
 - `ICY_TITLE_TTL` (seconds, default `15`) configures how long ICY titles are cached.
 - `ICY_TIMEOUT` (seconds, default `6`) configures the ICY metadata fetch timeout.
@@ -228,3 +249,40 @@ Notes:
 - `Host key verification failed`: the bot uses SSH options to skip host key checks.
 - `Permission denied`: key not mounted or permissions too open; re-check SSH setup.
 - `MEDIA DOWNLOAD FAIL ... File is too big`: this is the Telegram Bot API download limit. Normal cloud Bot API downloads stop at 20 MB. For large uploads, run a local `telegram-bot-api` server and set `TELEGRAM_LOCAL_MODE=1`, `TELEGRAM_BASE_URL`, and `TELEGRAM_BASE_FILE_URL`.
+
+## Projector (Beamer) Infrared Controls
+
+The bot supports "Power On" and "Power Off" controls for an infrared-controlled projector (such as the WiMiUS). 
+
+It uses a highly efficient, **100% native kernel-level LIRC architecture** which works seamlessly on all Raspberry Pi generations (including **Pi 3, 4, 5 and Zero**) running LibreELEC or Raspberry Pi OS. The bot writes pulse timings directly to `/dev/lirc0` with hardware-precision timing. **No external libraries, network ports, or background daemons (like `pigpiod`) are required!**
+
+### Setup (LibreELEC)
+
+To enable the native kernel IR transmitter on GPIO 17:
+
+1) Remount the boot partition as read-write, add the `gpio-ir-tx` overlay to `/flash/config.txt`, and reboot the Pi:
+```bash
+mount -o remount,rw /flash
+echo "dtoverlay=gpio-ir-tx,gpio_pin=17" >> /flash/config.txt
+mount -o remount,ro /flash
+reboot
+```
+
+2) Ensure the `kodi-media-bot` container is running in `privileged: true` mode in your `docker-compose.yml` so it has direct hardware access to `/dev/lirc0`:
+```yaml
+  kodi-media-bot:
+    # ...
+    privileged: true
+```
+
+3) Set the following environment variables in your `.env` file:
+```env
+# Projector (Beamer) Infrared Configuration
+PROJECTOR_GPIO=17
+PROJECTOR_PROTOCOL=NEC
+PROJECTOR_ADDRESS=0x08
+PROJECTOR_POWER_ON_CODE=0x03
+PROJECTOR_POWER_OFF_CODE=0x00
+PROJECTOR_POWER_ON_REPEATS=4
+```
+*(Hex values can be provided in `0x` format and will be automatically parsed).*

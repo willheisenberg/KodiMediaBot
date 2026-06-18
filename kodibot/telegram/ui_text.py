@@ -863,12 +863,96 @@ async def handle_text(update, ctx):
                 await asyncio.to_thread(radio_browser.report_click, selected.get("stationuuid"))
                 
                 # Play in Kodi
+                UI.queue_state.clear_radio_reconnect_state()
                 ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, url, name)
                 if ok:
+                    UI.queue_state.set_last_played_radio(url, name)
                     UI.queue_state.clear_bot_playback_state()
                     await UI.send_toast_message(ctx, chat_id, f"📻 Playing: {name}")
                 else:
                     await UI.send_toast_message(ctx, chat_id, "⚠ Station could not be played.")
+            else:
+                await UI.send_toast_message(ctx, chat_id, "That number does not exist.")
+        else:
+            await UI.send_toast_message(ctx, chat_id, "Please enter a number only (or q to cancel).")
+        sent = True
+        if prompt_id:
+            try:
+                await UI.telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=prompt_id)
+            except Exception:
+                pass
+        if sent:
+            UI.schedule_cleanup(ctx, chat_id, prev_id)
+            await UI.update_list_message(ctx, chat_id)
+        return
+
+    if ctx.user_data.get("await_tv_search"):
+        UI.cancel_prompt_timeout(chat_id, user_id, "await_tv_search")
+        ctx.user_data["await_tv_search"] = False
+        prompt_id = ctx.user_data.pop("await_tv_search_msg_id", None)
+        await UI.delete_message_if_present(ctx, chat_id, msg_id)
+        if txt_lower == "q":
+            await UI.send_toast_message(ctx, chat_id, "Cancelled.")
+        else:
+            from kodibot.core import tv_browser
+            channels = await asyncio.to_thread(tv_browser.search_tv_channels, txt)
+            if not channels:
+                await UI.send_toast_message(ctx, chat_id, f"📺 No channels found for \"{txt}\".")
+            else:
+                button_items = [(ch['name'], i) for i, ch in enumerate(channels)]
+                msg_id = await UI.send_button_selection(
+                    ctx,
+                    chat_id,
+                    f"📺 Results for \"{txt}\":",
+                    button_items,
+                    "play_tv"
+                )
+                ctx.user_data["tv_results"] = channels
+                UI.activate_prompt(
+                    ctx,
+                    chat_id,
+                    user_id,
+                    "await_tv_index",
+                    "await_tv_index_msg_id",
+                    msg_id,
+                    extra_keys=("tv_results",),
+                )
+                sent = True
+                skip_cleanup = True
+        if prompt_id:
+            try:
+                await UI.telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=prompt_id)
+            except Exception:
+                pass
+        if sent and not skip_cleanup:
+            UI.schedule_cleanup(ctx, chat_id, prev_id)
+            await UI.update_list_message(ctx, chat_id)
+        return
+
+    if ctx.user_data.get("await_tv_index"):
+        UI.cancel_prompt_timeout(chat_id, user_id, "await_tv_index")
+        ctx.user_data["await_tv_index"] = False
+        prompt_id = ctx.user_data.pop("await_tv_index_msg_id", None)
+        channels = ctx.user_data.pop("tv_results", [])
+        await UI.delete_message_if_present(ctx, chat_id, msg_id)
+        if txt_lower == "q":
+            await UI.send_toast_message(ctx, chat_id, "Cancelled.")
+        elif txt.isdigit():
+            i = int(txt) - 1
+            if 0 <= i < len(channels):
+                selected = channels[i]
+                name = selected.get("name")
+                url = selected.get("url")
+                
+                # Play in Kodi
+                UI.queue_state.clear_radio_reconnect_state()
+                ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, url, name)
+                if ok:
+                    UI.queue_state.set_last_played_radio(url, name)
+                    UI.queue_state.clear_bot_playback_state()
+                    await UI.send_toast_message(ctx, chat_id, f"📺 Playing: {name}")
+                else:
+                    await UI.send_toast_message(ctx, chat_id, "⚠ Channel could not be played.")
             else:
                 await UI.send_toast_message(ctx, chat_id, "That number does not exist.")
         else:
@@ -936,8 +1020,10 @@ async def handle_text(update, ctx):
             i = int(txt) - 1
             if 0 <= i < len(favourites):
                 selected = favourites[i]
+                UI.queue_state.clear_radio_reconnect_state()
                 ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, selected.get("target"), selected.get("title"))
                 if ok:
+                    UI.queue_state.set_last_played_radio(selected.get("target"), selected.get("title"))
                     UI.queue_state.clear_bot_playback_state()
                     await UI.send_toast_message(ctx, chat_id, f"⭐ Playing favourite: {selected.get('title')}")
                 else:
@@ -1106,6 +1192,7 @@ async def handle_text(update, ctx):
         msg = await UI.send_and_track(ctx, chat_id, "1 = Track, L = Playlist", reply_markup=UI.cancel_markup())
         UI.activate_pending_choice(ctx, chat_id, uid, msg.message_id, vid.group(1), pl.group(1))
         sent = True
+        skip_cleanup = True
     elif vid:
         await UI.queue_state.queue_video_async(vid.group(1))
         await UI.send_toast_message(ctx, chat_id, "✔ Track added to the queue.")
@@ -1141,7 +1228,8 @@ async def handle_text(update, ctx):
             return
 
     if sent:
-        UI.schedule_cleanup(ctx, chat_id, prev_id)
+        if not skip_cleanup:
+            UI.schedule_cleanup(ctx, chat_id, prev_id)
         await UI.update_list_message(ctx, chat_id)
         return
 
