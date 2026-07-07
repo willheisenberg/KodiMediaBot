@@ -222,13 +222,18 @@ def get_favourites():
     return res.get("result", {}).get("favourites", [])
 
 
+def _sed_escape_bre(s: str) -> str:
+    # Escape for sed BRE between / / delimiters: only . \ ^ $ * [ / are special.
+    # ( and ) are literal in BRE — do NOT escape them (re.escape wrongly does).
+    return "".join("\\" + c if c in r"\.^$*[/" else c for c in s)
+
+
 def remove_favourite(title):
     if not title:
         return False
-    
+
     # 1. 'Chirurgischer Eingriff' per SSH: Zeile aus favourites.xml löschen
-    # Wir nutzen den SSH-Key, der in /root/.ssh im Container liegt
-    escaped_title = re.escape(title).replace("/", r"\/")
+    escaped_title = _sed_escape_bre(title)
     remote_cmd = (
         "sed -i "
         + shlex.quote(f'/name="{escaped_title}"/d')

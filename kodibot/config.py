@@ -228,7 +228,7 @@ class Config:
             # IPTV
             iptv_m3u_url=os.environ.get(
                 "IPTV_M3U_URL",
-                "https://raw.githubusercontent.com/jnk22/kodinerds-iptv/master/iptv/clean/kodi_tv.m3u,https://iptv-org.github.io/iptv/countries/de.m3u",
+                "/data/kodi.m3u,https://raw.githubusercontent.com/jnk22/kodinerds-iptv/master/iptv/clean/clean_tv.m3u,https://iptv-org.github.io/iptv/countries/de.m3u",
             ),
         )
 
