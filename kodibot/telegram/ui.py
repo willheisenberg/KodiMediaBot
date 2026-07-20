@@ -253,12 +253,23 @@ async def run_reconnect_loop(chat_id, url, title):
 
 
 def cancel_reconnect_action(chat_id):
+    # Cancel the running reconnect task ONLY. Clearing the radio reconnect
+    # state (LAST_PLAYED_RADIO/EXPECTED_STOP) is the caller's job via
+    # queue_state.clear_radio_reconnect_state(); doing it here would recurse,
+    # because that function calls back into this one through CANCEL_RECONNECT_CB.
     global RECONNECT_TASK
-    if RECONNECT_TASK and not RECONNECT_TASK.done():
-        log.info("User requested to cancel reconnect.")
-        RECONNECT_TASK.cancel()
-        RECONNECT_TASK = None
-    queue_state.clear_radio_reconnect_state()
+    task = RECONNECT_TASK
+    RECONNECT_TASK = None
+    if task and not task.done():
+        log.info("Cancelling reconnect task.")
+        # This may run from a worker thread (hard_stop_and_clear / play_item run
+        # via asyncio.to_thread). Task.cancel() is not thread-safe, so hop onto
+        # the main loop to deliver the cancellation reliably.
+        loop = S.MAIN_LOOP
+        if loop is not None:
+            loop.call_soon_threadsafe(task.cancel)
+        else:
+            task.cancel()
 def _prompt_timeout_key(chat_id, user_id, state_key):
     return (chat_id, user_id, state_key)
 

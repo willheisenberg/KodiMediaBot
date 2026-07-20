@@ -170,3 +170,67 @@ class TestRadioReconnectState:
         assert queue_state.EXPECTED_STOP is False  # Audio state is untouched!
 
 
+class TestCancelReconnectAction:
+    def setup_method(self):
+        from kodibot.telegram import ui
+        from kodibot.telegram import state as S
+        self.ui = ui
+        self.S = S
+        ui.RECONNECT_TASK = None
+        S.MAIN_LOOP = None
+
+    def teardown_method(self):
+        self.ui.RECONNECT_TASK = None
+        self.S.MAIN_LOOP = None
+
+    def test_cancel_does_not_recurse_via_clear_state(self):
+        # clear_radio_reconnect_state -> CANCEL_RECONNECT_CB -> cancel_reconnect_action
+        # must NOT call back into clear_radio_reconnect_state (infinite recursion).
+        calls = {"clear": 0}
+        real_clear = queue_state.clear_radio_reconnect_state
+
+        def counting_clear():
+            calls["clear"] += 1
+            real_clear()
+
+        queue_state.CANCEL_RECONNECT_CB = lambda: self.ui.cancel_reconnect_action(1)
+        try:
+            queue_state.clear_radio_reconnect_state = counting_clear
+            queue_state.clear_radio_reconnect_state()
+        finally:
+            queue_state.clear_radio_reconnect_state = real_clear
+            queue_state.CANCEL_RECONNECT_CB = None
+
+        assert calls["clear"] == 1  # exactly once, no recursion
+
+    def test_cancel_uses_main_loop_threadsafe(self):
+        # From a worker thread the cancellation must be marshalled onto the
+        # main loop via call_soon_threadsafe rather than calling task.cancel()
+        # directly (which is not thread-safe).
+        scheduled = []
+
+        class FakeLoop:
+            def call_soon_threadsafe(self, cb, *a):
+                scheduled.append((cb, a))
+
+        class FakeTask:
+            def __init__(self):
+                self.cancelled = False
+
+            def done(self):
+                return False
+
+            def cancel(self):
+                self.cancelled = True
+
+        task = FakeTask()
+        self.S.MAIN_LOOP = FakeLoop()
+        self.ui.RECONNECT_TASK = task
+
+        self.ui.cancel_reconnect_action(1)
+
+        assert self.ui.RECONNECT_TASK is None
+        assert task.cancelled is False  # not cancelled directly
+        assert len(scheduled) == 1 and scheduled[0][0] == task.cancel
+
+
