@@ -145,6 +145,13 @@ async def reset_panel_command(update, ctx):
                 except Exception as e:
                     UI.log.info("DELETE FAIL chat_id=%s message_id=%s err=%s", chat_id, mid, e)
 
+            cleanup_task = UI.CLEANUP_TASKS.pop(chat_id, None)
+            if cleanup_task is not None and not cleanup_task.done():
+                cleanup_task.cancel()
+            UI.CLEANUP_PENDING.pop(chat_id, None)
+            UI.CLEANUP_DEFERRED.pop(chat_id, None)
+            UI.CLEANUP_FAILED.pop(chat_id, None)
+
             UI.LAST_BOT_ID.pop(chat_id, None)
             UI.PREV_BOT_ID.pop(chat_id, None)
             UI.LAST_SEEN_ID.pop(chat_id, None)

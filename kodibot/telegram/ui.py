@@ -8,7 +8,7 @@ import time
 import traceback
 
 from telegram.ext import Application, MessageHandler, filters, CallbackQueryHandler, CommandHandler
-from telegram.error import RetryAfter, TimedOut, NetworkError, BadRequest
+from telegram.error import RetryAfter, TimedOut, NetworkError, BadRequest, Forbidden
 
 from kodibot.core import kodi_api
 from kodibot.core import playlist_store
@@ -84,6 +84,10 @@ PREV_BOT_ID = S.PREV_BOT_ID
 LAST_SEEN_ID = S.LAST_SEEN_ID
 LAST_CLEANUP_ID = S.LAST_CLEANUP_ID
 FIRST_BOT_ID = S.FIRST_BOT_ID
+CLEANUP_TASKS = S.CLEANUP_TASKS
+CLEANUP_PENDING = S.CLEANUP_PENDING
+CLEANUP_DEFERRED = S.CLEANUP_DEFERRED
+CLEANUP_FAILED = S.CLEANUP_FAILED
 STARTUP_POSTED = S.STARTUP_POSTED
 LIST_MSG_ID = S.LIST_MSG_ID
 PANEL_MSG_ID = S.PANEL_MSG_ID
@@ -482,6 +486,62 @@ def record_last_seen(ctx, update):
         )
 
 
+# Message ids the list/panel currently occupy; those must survive cleanup.
+def _protected_message_ids(chat_id):
+    return {LIST_MSG_ID.get(chat_id), PANEL_MSG_ID.get(chat_id)}
+
+
+# Telegram refused this id for good; never spend another API call on it.
+def _is_permanent_delete_error(err):
+    return isinstance(err, (BadRequest, Forbidden))
+
+
+def _is_missing_message_error(err):
+    return isinstance(err, BadRequest) and "message to delete not found" in str(err).lower()
+
+
+def _remember_failed_delete(chat_id, mid):
+    failed = CLEANUP_FAILED.setdefault(chat_id, set())
+    if len(failed) >= S.CLEANUP_FAILED_LIMIT:
+        failed.discard(min(failed))
+    failed.add(mid)
+
+
+# Queue ids [begin, end_id] for deletion, skipping ones already known dead.
+def _enqueue_cleanup_range(chat_id, begin, end_id):
+    if begin > end_id:
+        return 0
+    failed = CLEANUP_FAILED.get(chat_id, ())
+    pending = CLEANUP_PENDING.setdefault(chat_id, set())
+    before = len(pending)
+    pending.update(mid for mid in range(begin, end_id + 1) if mid not in failed)
+    return len(pending) - before
+
+
+# Re-queue ids that were skipped while they were the live list/panel message.
+def _release_deferred(chat_id):
+    deferred = CLEANUP_DEFERRED.get(chat_id)
+    if not deferred:
+        return
+    protected = _protected_message_ids(chat_id)
+    freed = {mid for mid in deferred if mid not in protected}
+    if not freed:
+        return
+    deferred -= freed
+    failed = CLEANUP_FAILED.get(chat_id, ())
+    CLEANUP_PENDING.setdefault(chat_id, set()).update(mid for mid in freed if mid not in failed)
+
+
+# Mark everything up to mid as done, but never past a still-deferred id.
+def _advance_last_cleanup(chat_id, mid):
+    deferred = CLEANUP_DEFERRED.get(chat_id)
+    if deferred:
+        mid = min(mid, min(deferred) - 1)
+    prev_cleanup = LAST_CLEANUP_ID.get(chat_id)
+    if prev_cleanup is None or mid > prev_cleanup:
+        LAST_CLEANUP_ID[chat_id] = mid
+
+
 # Schedule deletion of recent messages after a delay.
 def schedule_cleanup(ctx, chat_id, prev_id):
     last_seen = LAST_SEEN_ID.get(chat_id)
@@ -498,54 +558,86 @@ def schedule_cleanup(ctx, chat_id, prev_id):
         prev_id = LAST_CLEANUP_ID.get(chat_id)
     else:
         prev_id = FIRST_BOT_ID.get(chat_id)
+    if prev_id is None:
+        return
     end_id = max(x for x in [last_seen, last_bot] if x is not None)
+    begin = prev_id if start_inclusive else prev_id + 1
+    # Never walk back into a range an earlier pass already finished.
+    done_through = LAST_CLEANUP_ID.get(chat_id)
+    if done_through is not None:
+        begin = max(begin, done_through + 1)
+    _release_deferred(chat_id)
+    queued = _enqueue_cleanup_range(chat_id, begin, end_id)
     log.info(
-        "SCHEDULE CLEANUP chat_id=%s prev_id=%s end_id=%s inclusive=%s last_cleanup=%s",
+        "SCHEDULE CLEANUP chat_id=%s begin=%s end_id=%s inclusive=%s queued=%s pending=%s last_cleanup=%s",
         chat_id,
-        prev_id,
+        begin,
         end_id,
         start_inclusive,
-        LAST_CLEANUP_ID.get(chat_id),
+        queued,
+        len(CLEANUP_PENDING.get(chat_id, ())),
+        done_through,
     )
+    if CLEANUP_PENDING.get(chat_id):
+        _ensure_cleanup_worker(ctx, chat_id)
+
+
+# Start the per-chat cleanup worker unless one is already draining the queue.
+def _ensure_cleanup_worker(ctx, chat_id):
+    task = CLEANUP_TASKS.get(chat_id)
+    if task is not None and not task.done():
+        return
+    coro = _cleanup_worker(ctx, chat_id)
     if hasattr(ctx, "application"):
-        ctx.application.create_task(_cleanup_after_delay(ctx, chat_id, prev_id, end_id, start_inclusive))
-    elif S.MAIN_LOOP is not None:
-        asyncio.run_coroutine_threadsafe(
-            _cleanup_after_delay(ctx, chat_id, prev_id, end_id, start_inclusive),
-            S.MAIN_LOOP,
+        CLEANUP_TASKS[chat_id] = ctx.application.create_task(coro)
+        return
+    if S.MAIN_LOOP is not None:
+        CLEANUP_TASKS[chat_id] = asyncio.run_coroutine_threadsafe(coro, S.MAIN_LOOP)
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        coro.close()
+        log.info("SCHEDULE CLEANUP skipped: no running event loop")
+        return
+    CLEANUP_TASKS[chat_id] = loop.create_task(coro)
+
+
+# Drain the queued message ids for one chat, oldest id first.
+async def _cleanup_worker(ctx, chat_id):
+    await asyncio.sleep(S.CLEANUP_DELAY_SECONDS)
+    pending = CLEANUP_PENDING.setdefault(chat_id, set())
+    deleted = 0
+    try:
+        while pending:
+            mid = min(pending)
+            pending.discard(mid)
+            if mid in _protected_message_ids(chat_id):
+                CLEANUP_DEFERRED.setdefault(chat_id, set()).add(mid)
+            else:
+                try:
+                    await telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=mid)
+                    deleted += 1
+                except Exception as e:
+                    if _is_permanent_delete_error(e):
+                        _remember_failed_delete(chat_id, mid)
+                    if _is_missing_message_error(e):
+                        log.debug("DELETE SKIP chat_id=%s message_id=%s err=%s", chat_id, mid, e)
+                    else:
+                        log.info("DELETE FAIL chat_id=%s message_id=%s err=%s", chat_id, mid, e)
+            _advance_last_cleanup(chat_id, mid)
+    finally:
+        stored = CLEANUP_TASKS.get(chat_id)
+        if stored is None or stored is asyncio.current_task() or stored.done():
+            CLEANUP_TASKS.pop(chat_id, None)
+        log.info(
+            "RUN CLEANUP done chat_id=%s deleted=%s deferred=%s last_cleanup=%s",
+            chat_id,
+            deleted,
+            len(CLEANUP_DEFERRED.get(chat_id, ())),
+            LAST_CLEANUP_ID.get(chat_id),
         )
-    else:
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(_cleanup_after_delay(ctx, chat_id, prev_id, end_id, start_inclusive))
-        except RuntimeError:
-            log.info("SCHEDULE CLEANUP skipped: no running event loop")
-
-
-# Delete a range of messages after a delay.
-async def _cleanup_after_delay(ctx, chat_id, start_id, end_id, start_inclusive):
-    await asyncio.sleep(4)
-    log.info(
-        "RUN CLEANUP chat_id=%s start_id=%s end_id=%s inclusive=%s",
-        chat_id,
-        start_id,
-        end_id,
-        start_inclusive,
-    )
-    if start_id is not None:
-        begin = start_id if start_inclusive else start_id + 1
-        for mid in range(begin, end_id + 1):
-            try:
-                if mid == LIST_MSG_ID.get(chat_id):
-                    continue
-                if mid == PANEL_MSG_ID.get(chat_id):
-                    continue
-                await telegram_request_delete(ctx.bot.delete_message, chat_id=chat_id, message_id=mid)
-            except Exception as e:
-                log.info("DELETE FAIL chat_id=%s message_id=%s err=%s", chat_id, mid, e)
-    prev_cleanup = LAST_CLEANUP_ID.get(chat_id)
-    if prev_cleanup is None or end_id > prev_cleanup:
-        LAST_CLEANUP_ID[chat_id] = end_id
+        save_ui_state()
 
 
 # Warn about off-topic chat and remove both messages.
