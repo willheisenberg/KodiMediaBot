@@ -144,7 +144,10 @@ async def on_button(update, ctx):
             skip_cleanup = True
 
     elif cmd == "cancel_reconnect":
-        UI.cancel_reconnect_action(chat_id)
+        # clear_radio_reconnect_state() cancels the reconnect task via
+        # CANCEL_RECONNECT_CB and resets LAST_PLAYED_RADIO/EXPECTED_STOP so the
+        # next WS stop is not mistaken for an unexpected drop.
+        UI.queue_state.clear_radio_reconnect_state()
         await q.answer(text="Reconnection cancelled.")
         sent = True
         skip_cleanup = True
@@ -674,6 +677,8 @@ async def on_button(update, ctx):
         else:
             await q.answer(text="⚠ Toggle failed.")
         sent = True
+        # Menu is refreshed in place; don't let schedule_cleanup delete it.
+        skip_cleanup = True
     elif cmd in {"ha:setcolor", "ha:loadcolor"}:
         await UI.show_ha_preset_menu(
             ctx,
@@ -749,6 +754,8 @@ async def on_button(update, ctx):
             else:
                 await q.answer(text="⚠ Saved color not found.")
         sent = True
+        # Menu is refreshed in place; don't let schedule_cleanup delete it.
+        skip_cleanup = True
     elif cmd.startswith("ha:effect:"):
         effect_name = cmd.split(":", 2)[2].strip()
         if not effect_name:
@@ -762,6 +769,8 @@ async def on_button(update, ctx):
             else:
                 await q.answer(text="⚠ Effect could not be enabled.")
         sent = True
+        # Menu is refreshed in place; don't let schedule_cleanup delete it.
+        skip_cleanup = True
     elif cmd.startswith("ha:color:"):
         hex_part = cmd.split(":", 2)[2]
         parsed = UI.ha.parse_hex_color(hex_part)
@@ -776,6 +785,8 @@ async def on_button(update, ctx):
         else:
             await q.answer(text="⚠ Invalid color code.")
         sent = True
+        # Menu is refreshed in place; don't let schedule_cleanup delete it.
+        skip_cleanup = True
     elif cmd == "ha:sethex":
         if ctx.user_data.get("await_ha_hex"):
             await q.answer()
@@ -1143,6 +1154,9 @@ async def on_button(update, ctx):
         else:
             await q.answer(text="⚠ Brightness update failed.")
         sent = True
+        # The brightness prompt is deleted explicitly above and the menu is
+        # refreshed in place; don't let schedule_cleanup delete the menu too.
+        skip_cleanup = True
 
     elif cmd.startswith("delete_ha_color:"):
         idx = int(cmd.split(":")[1])

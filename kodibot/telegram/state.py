@@ -18,6 +18,17 @@ PREV_BOT_ID = {}
 LAST_SEEN_ID = {}
 LAST_CLEANUP_ID = {}
 FIRST_BOT_ID = {}
+
+# ── Cleanup queue ────────────────────────────────────────────────────
+# One worker per chat drains CLEANUP_PENDING; CLEANUP_DEFERRED holds ids
+# that are currently protected (list/panel), CLEANUP_FAILED holds ids that
+# Telegram will never let us delete.
+CLEANUP_TASKS = {}
+CLEANUP_PENDING = {}
+CLEANUP_DEFERRED = {}
+CLEANUP_FAILED = {}
+CLEANUP_FAILED_LIMIT = 2000
+CLEANUP_DELAY_SECONDS = 4
 STARTUP_POSTED = {}
 LIST_MSG_ID = {}
 PANEL_MSG_ID = {}
