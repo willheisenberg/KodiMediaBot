@@ -11,13 +11,20 @@ REMOTE_COMPOSE_CMD="bin/docker-compose"
 
 LOCAL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SSH_TARGET="${REMOTE_USER}@${REMOTE_HOST}"
+SSH_OPTS=(
+  -F /dev/null
+  -o BatchMode=yes
+  -o ConnectTimeout=8
+  -o StrictHostKeyChecking=no
+  -o UserKnownHostsFile=/dev/null
+)
 
 log() {
   printf '[deploy] %s\n' "$*"
 }
 
 remote_run() {
-  ssh "$SSH_TARGET" "$@"
+  ssh "${SSH_OPTS[@]}" "$SSH_TARGET" "$@"
 }
 
 log "Loesche den Remote-Ordner ${REMOTE_DIR} und stelle sicher, dass der Daten-Ordner existiert"
@@ -27,13 +34,24 @@ rm -rf '${REMOTE_DIR}'
 mkdir -p '${REMOTE_DIR}'
 # Sicherstellen, dass der persistente Daten-Ordner und die m3u-Datei (als Datei!) existieren
 mkdir -p '/storage/docker/partyqueue/data'
+mkdir -p '/storage/docker/partyqueue/state'
 touch '/storage/docker/partyqueue/data/kodi.m3u'"
 
+log "Stelle UI-State-Volume in /storage/docker-compose.yml sicher"
+remote_run "set -eu
+COMPOSE_FILE='/storage/docker-compose.yml'
+if [ -f \"\$COMPOSE_FILE\" ]; then
+  sed -i 's#/data/playlists/telegram_ui_state.json#/data/state/telegram_ui_state.json#g' \"\$COMPOSE_FILE\"
+  if ! grep -q '/storage/docker/partyqueue/state:/data/state' \"\$COMPOSE_FILE\"; then
+    sed -i '\\#/storage/docker/partyqueue/playlists:/data/playlists#a\\      - /storage/docker/partyqueue/state:/data/state' \"\$COMPOSE_FILE\"
+  fi
+fi"
+
 log "Kopiere kodi.m3u nach LibreELEC..."
-scp "${LOCAL_ROOT}/data/kodi.m3u" "${SSH_TARGET}:/storage/docker/partyqueue/data/kodi.m3u"
+scp "${SSH_OPTS[@]}" "${LOCAL_ROOT}/data/kodi.m3u" "${SSH_TARGET}:/storage/docker/partyqueue/data/kodi.m3u"
 
 log "Kopiere Projektdateien per scp"
-scp -r \
+scp "${SSH_OPTS[@]}" -r \
   "${LOCAL_ROOT}/.dockerignore" \
   "${LOCAL_ROOT}/Caddyfile" \
   "${LOCAL_ROOT}/Dockerfile" \

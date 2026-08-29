@@ -42,6 +42,7 @@ BUTTON_REFERENCE_PATH = os.path.join(
     "assets",
     "panel_button_reference.png",
 )
+LEGACY_UI_STATE_FILE = "/data/playlists/telegram_ui_state.json"
 
 
 # ── Error classification ─────────────────────────────────────────────
@@ -73,6 +74,9 @@ def save_ui_state():
             "prev_bot_id": S.PREV_BOT_ID,
             "last_cleanup_id": S.LAST_CLEANUP_ID,
         }
+        parent = os.path.dirname(CFG.ui_state_file)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         tmp = f"{CFG.ui_state_file}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f)
@@ -82,13 +86,23 @@ def save_ui_state():
 
 
 def load_ui_state():
+    state_file = CFG.ui_state_file
+    migrated_from_legacy = False
+    if (
+        state_file != LEGACY_UI_STATE_FILE
+        and not os.path.exists(state_file)
+        and os.path.exists(LEGACY_UI_STATE_FILE)
+    ):
+        state_file = LEGACY_UI_STATE_FILE
+        migrated_from_legacy = True
+        log.info("UI state using legacy file for migration file=%s", state_file)
     try:
-        with open(CFG.ui_state_file, "r", encoding="utf-8") as f:
+        with open(state_file, "r", encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError:
         return
     except Exception as e:
-        log.warning("UI state load fail file=%s err=%s", CFG.ui_state_file, e)
+        log.warning("UI state load fail file=%s err=%s", state_file, e)
         return
     chats = set()
     for store_name, target in (
@@ -104,7 +118,10 @@ def load_ui_state():
         for k, v in raw.items():
             target[int(k)] = v
             chats.add(int(k))
-    log.info("UI state loaded file=%s chats=%d", CFG.ui_state_file, len(chats))
+    log.info("UI state loaded file=%s chats=%d", state_file, len(chats))
+    if migrated_from_legacy:
+        save_ui_state()
+        log.info("UI state migrated file=%s", CFG.ui_state_file)
 
 
 # ── Status text helpers ──────────────────────────────────────────────

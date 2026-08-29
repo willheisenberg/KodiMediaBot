@@ -1,5 +1,7 @@
 """Tests for now-playing panel logic."""
 import asyncio
+import dataclasses
+import json
 import os
 import sys
 
@@ -14,6 +16,43 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from kodibot.core import kodi_api, queue_state
 from kodibot.telegram import panel
+
+
+class TestUiStatePersistence:
+    def setup_method(self):
+        panel.S.LIST_MSG_ID.clear()
+        panel.S.PANEL_MSG_ID.clear()
+        panel.S.FIRST_BOT_ID.clear()
+        panel.S.LAST_BOT_ID.clear()
+        panel.S.PREV_BOT_ID.clear()
+        panel.S.LAST_CLEANUP_ID.clear()
+
+    def test_save_ui_state_creates_parent_directory(self, tmp_path, monkeypatch):
+        state_file = tmp_path / "state" / "telegram_ui_state.json"
+        monkeypatch.setattr(panel, "CFG", dataclasses.replace(panel.CFG, ui_state_file=str(state_file)))
+        panel.S.PANEL_MSG_ID[123] = 456
+
+        panel.save_ui_state()
+
+        assert state_file.exists()
+        assert json.loads(state_file.read_text(encoding="utf-8"))["panel_msg_id"] == {"123": 456}
+
+    def test_load_ui_state_migrates_from_legacy_playlist_file(self, tmp_path, monkeypatch):
+        state_file = tmp_path / "state" / "telegram_ui_state.json"
+        legacy_file = tmp_path / "playlists" / "telegram_ui_state.json"
+        legacy_file.parent.mkdir()
+        legacy_file.write_text(
+            json.dumps({"panel_msg_id": {"123": 456}, "list_msg_id": {"123": 455}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(panel, "CFG", dataclasses.replace(panel.CFG, ui_state_file=str(state_file)))
+        monkeypatch.setattr(panel, "LEGACY_UI_STATE_FILE", str(legacy_file))
+
+        panel.load_ui_state()
+
+        assert panel.S.PANEL_MSG_ID == {123: 456}
+        assert panel.S.LIST_MSG_ID == {123: 455}
+        assert json.loads(state_file.read_text(encoding="utf-8"))["panel_msg_id"] == {"123": 456}
 
 
 class TestControlPanelMarkup:

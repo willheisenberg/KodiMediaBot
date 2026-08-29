@@ -32,7 +32,7 @@ services:
       DEBUG_WS: "${DEBUG_WS:-1}"
       SC_CLIENT_ID: "${SC_CLIENT_ID}"
       MEDIA_BASE_URL: "${MEDIA_BASE_URL}"
-      UI_STATE_FILE: "${UI_STATE_FILE:-/data/playlists/telegram_ui_state.json}"
+      UI_STATE_FILE: "${UI_STATE_FILE:-/data/state/telegram_ui_state.json}"
       TELEGRAM_LOCAL_MODE: "1"
       TELEGRAM_BASE_URL: "http://127.0.0.1:8081/bot"
       TELEGRAM_BASE_FILE_URL: "http://127.0.0.1:8081/file/bot"
@@ -63,6 +63,7 @@ services:
       - /storage/docker/partyqueue/data/kodi.m3u:/data/kodi.m3u
       - /storage/docker/partyqueue:/root/.ssh:ro
       - /storage/docker/partyqueue/playlists:/data/playlists
+      - /storage/docker/partyqueue/state:/data/state
       - /storage/docker/partyqueue/uploads:/data/uploads
       - /storage/docker/partyqueue/colors:/data/colors
       - telegram-bot-api-data:/var/lib/telegram-bot-api:ro

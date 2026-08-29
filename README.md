@@ -202,7 +202,7 @@ services:
       DEBUG_WS: "1"
       SC_CLIENT_ID: "YOUR_CLIENT_ID"
       MEDIA_BASE_URL: "http://YOUR_HOST_IP:8765"
-      UI_STATE_FILE: "/data/playlists/telegram_ui_state.json"
+      UI_STATE_FILE: "/data/state/telegram_ui_state.json"
       TELEGRAM_LOCAL_MODE: "1"
       TELEGRAM_BASE_URL: "http://127.0.0.1:8081/bot"
       TELEGRAM_BASE_FILE_URL: "http://127.0.0.1:8081/file/bot"
@@ -217,6 +217,7 @@ services:
     volumes:
       - /storage/docker/partyqueue:/root/.ssh:ro
       - /storage/docker/partyqueue/playlists:/data/playlists
+      - /storage/docker/partyqueue/state:/data/state
       - /storage/docker/partyqueue/uploads:/data/uploads
       - /storage/docker/partyqueue/colors:/data/colors
       - telegram-bot-api-data:/var/lib/telegram-bot-api:ro
@@ -312,8 +313,8 @@ Notes:
 - `MEDIA_SERVER_PUBLIC_HOST` is an optional fallback when `MEDIA_BASE_URL` is not set.
 - `UI_STATE_FILE` stores the Telegram list/panel message IDs so redeploys and
   restarts can edit the existing panel instead of posting a duplicate. The
-  local compose setup uses `/data/playlists/telegram_ui_state.json`, which is
-  persisted by the playlists volume.
+  local compose setup uses `/data/state/telegram_ui_state.json`, which is
+  persisted by the dedicated state volume.
 - `PANEL_SHOW_VOLUME`, `PANEL_SHOW_HIFI`, `PANEL_SHOW_DISPLAY`,
   `PANEL_SHOW_AIRPLAY` and `PANEL_SHOW_HA` accept `true` or `false`. They hide
   only their corresponding panel sections; disabled Hifi, AirPlay and volume
@@ -366,7 +367,7 @@ Notes:
 - The title is visible but playback/runtime is missing: verify that
   `KODI_USER`, `KODI_PASS` and `KODI_PORT` match Kodi's web-server settings.
 - Duplicate panels after a restart: verify that `UI_STATE_FILE` points into the
-  persistent playlists volume and is writable by the bot.
+  persistent state volume and is writable by the bot.
 - `sh: .env: ... not found` while sourcing `.env`: Compose accepts command
   values containing spaces, but a shell does not unless they are quoted. Avoid
   sourcing the complete Compose `.env`; read individual values when needed.

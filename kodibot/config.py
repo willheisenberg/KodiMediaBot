@@ -214,7 +214,7 @@ class Config:
             sc_search_timeout=float(os.environ.get("RADIO_SC_TIMEOUT", "8")),
             # Persistence
             playlist_dir=os.environ.get("PLAYLIST_DIR", "/data/playlists"),
-            ui_state_file=os.environ.get("UI_STATE_FILE", "/data/playlists/telegram_ui_state.json"),
+            ui_state_file=os.environ.get("UI_STATE_FILE", "/data/state/telegram_ui_state.json"),
             # Home Assistant
             ha_host=os.environ.get("HA_HOST") or None,
             ha_port=int(os.environ.get("HA_PORT", "8123")),

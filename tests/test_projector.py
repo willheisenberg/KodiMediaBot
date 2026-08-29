@@ -42,7 +42,7 @@ def test_display_power_config_defaults():
     assert CFG.display_power_on_cmd == "python -m kodibot.core.projector on"
     assert CFG.display_power_off_cmd == "python -m kodibot.core.projector off"
     assert CFG.display_command_timeout == 15.0
-    assert CFG.ui_state_file == "/data/playlists/telegram_ui_state.json"
+    assert CFG.ui_state_file == "/data/state/telegram_ui_state.json"
 
 
 def test_projector_connect_missing_device():
