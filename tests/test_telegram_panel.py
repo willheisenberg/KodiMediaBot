@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from kodibot.core import kodi_api, queue_state
 from kodibot.telegram import panel
+from kodibot.telegram import i18n
 
 
 class TestUiStatePersistence:
@@ -74,6 +75,17 @@ class TestControlPanelMarkup:
         assert markup.inline_keyboard[4][0].callback_data == "plist:save"
         assert markup.inline_keyboard[-1][0].callback_data == "controls:back"
 
+    def test_german_language_changes_visible_panel_labels(self, monkeypatch):
+        monkeypatch.setattr(i18n, "LANG", "de")
+        monkeypatch.setattr(panel.ha, "ha_available", lambda: False)
+
+        main = panel.control_panel(mode="main")
+        controls = panel.control_panel(mode="controls")
+
+        assert main.inline_keyboard[2][0].text == "🎛 Steuerung"
+        assert controls.inline_keyboard[-2][0].text == "❓ Tasten"
+        assert controls.inline_keyboard[-1][0].text == "⬅ Zurück"
+
     def test_delete_confirm_markup_uses_yes_no_callbacks(self):
         markup = panel.delete_confirm_markup("abc")
 
@@ -99,6 +111,22 @@ class TestNowPlayingText:
         kodi_api.LAST_WS_PLAYERID = None
         kodi_api.LAST_WS_ITEM.clear()
         kodi_api.WS_PLAYING = False
+
+    def test_german_nothing_playing_text(self, monkeypatch):
+        monkeypatch.setattr(i18n, "LANG", "de")
+        monkeypatch.setattr(panel, "LANG", "de")
+
+        async def fake_call(method, params=None):
+            if method == "Player.GetActivePlayers":
+                return {"result": []}
+            raise AssertionError(method)
+
+        monkeypatch.setattr(panel.kodi_api, "kodi_call_async", fake_call)
+
+        text, progress = asyncio.run(panel.get_now_playing_text())
+
+        assert text == "⏸ Es läuft nichts"
+        assert progress is None
 
     def test_external_player_replaces_stale_queue_title(self, monkeypatch):
         queue_state.QUEUE.append(
@@ -347,6 +375,12 @@ class TestPanelSectionFlags:
         monkeypatch.setattr(panel, "CFG", dataclasses.replace(panel.CFG, **flags))
         return panel.build_panel_status_parts(progress_text)
 
+    def _status_parts_with_width(self, monkeypatch, min_width, progress_text=None, **flags):
+        import dataclasses
+
+        monkeypatch.setattr(panel, "CFG", dataclasses.replace(panel.CFG, **flags))
+        return panel.build_panel_status_parts(progress_text, min_width=min_width)
+
     def test_all_sections_visible_by_default(self, monkeypatch):
         cbs = self._callbacks(self._panel(monkeypatch))
 
@@ -478,6 +512,34 @@ class TestPanelSectionFlags:
         assert set(parts[-1]) == {"─"}
         assert len(" | ".join(parts)) == panel.PANEL_STATUS_MIN_WIDTH
 
+    def test_status_line_can_use_wider_no_preview_width(self, monkeypatch):
+        panel.S.HIFI_STATUS_CACHE = "🟢 Hifi: On"
+        panel.S.AIRPLAY_STATUS_CACHE = "AirPlay: On"
+        queue_state.REPEAT_MODE = "off"
+
+        parts = self._status_parts_with_width(
+            monkeypatch,
+            panel.PANEL_STATUS_MIN_WIDTH_NO_PREVIEW,
+            progress_text="00:00 / 00:00",
+            panel_show_volume=False,
+            panel_show_hifi=False,
+            panel_show_airplay=False,
+        )
+
+        assert parts[:-1] == ["🔁 Repeat: off", "⏱ 00:00 / 00:00"]
+        assert set(parts[-1]) == {"─"}
+        assert len(" | ".join(parts)) == panel.PANEL_STATUS_MIN_WIDTH_NO_PREVIEW
+
+    def test_idle_status_line_uses_short_width(self):
+        width = panel.panel_status_min_width(panel.t("nothing_playing_plain"), None)
+
+        assert width == panel.PANEL_STATUS_MIN_WIDTH_IDLE
+
+    def test_playing_without_preview_uses_wide_width(self):
+        width = panel.panel_status_min_width("▶ arte HD", "00:00 / 00:00")
+
+        assert width == panel.PANEL_STATUS_MIN_WIDTH_NO_PREVIEW
+
 
 class TestButtonReference:
     """The ❓ button shows a picture that hides itself again."""
@@ -543,7 +605,7 @@ class TestButtonReference:
     def test_hide_markup_carries_the_hide_callback(self):
         markup = panel.button_reference_markup()
 
-        assert markup.inline_keyboard[0][0].text == "🙈 Ausblenden"
+        assert markup.inline_keyboard[0][0].text == "🙈 Hide"
         assert markup.inline_keyboard[0][0].callback_data == "help:hide"
 
     def test_show_sends_photo_and_records_message_id(self):

@@ -33,7 +33,7 @@ async def handle_nontext(update, ctx):
         item = await UI.media.download_media_item(ctx.bot, msg)
     except Exception as e:
         UI.log.info("MEDIA DOWNLOAD FAIL chat_id=%s message_id=%s err=%s", chat_id, msg.message_id, e)
-        user_msg = getattr(e, "user_message", "⚠ Upload could not be processed.")
+        user_msg = getattr(e, "user_message", UI.t("upload_process_failed"))
         await UI.send_and_track(ctx, chat_id, user_msg)
         UI.schedule_cleanup(ctx, chat_id, UI.LAST_BOT_ID.get(chat_id))
         return
@@ -47,7 +47,7 @@ async def handle_nontext(update, ctx):
     except Exception as e:
         UI.log.info("MEDIA PLAY FAIL chat_id=%s message_id=%s err=%s", chat_id, msg.message_id, e)
         UI.media.cleanup_temp_media(item.get("url"))
-        await UI.send_and_track(ctx, chat_id, "⚠ Upload could not be played.")
+        await UI.send_and_track(ctx, chat_id, UI.t("upload_play_failed"))
         UI.schedule_cleanup(ctx, chat_id, UI.LAST_BOT_ID.get(chat_id))
         return
 
@@ -72,11 +72,11 @@ async def start_command(update, ctx):
     start_param = ctx.args[0] if getattr(ctx, "args", None) else ""
     if start_param == "ha_livecolor":
         if chat.type != "private":
-            sent = await UI.send_and_track(ctx, chat.id, "🔒 Please open Live Color in the private chat with the bot.")
+            sent = await UI.send_and_track(ctx, chat.id, UI.t("ha_private_live_color"))
             UI.schedule_cleanup(ctx, chat.id, sent.message_id)
             return
         if not UI.ha.ha_available():
-            await UI.send_and_track(ctx, chat.id, "⚠ Home Assistant is not configured.")
+            await UI.send_and_track(ctx, chat.id, UI.t("ha_not_configured"))
             return
         state = await asyncio.to_thread(UI.ha.get_light_state)
         bot_username = getattr(ctx.bot, "username", "") or ""

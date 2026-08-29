@@ -37,6 +37,11 @@ def mock_ui(monkeypatch):
     mock.update_now_playing_message = AsyncMock()
     mock.request_delete_confirmation = AsyncMock()
     mock.telegram_request_delete = AsyncMock()
+
+    async def run_inline(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(ui_callbacks.asyncio, "to_thread", run_inline)
     
     monkeypatch.setattr(ui_callbacks, "UI", mock)
     return mock
@@ -76,7 +81,6 @@ async def test_execute_pending_delete_playlist_file(mock_ui):
     
     assert "🗑 Deleted: file.m3u" in msg
     assert skip is True
-    # Verify it was run in a thread
     mock_ui.playlist_store.delete_playlist_from_disk.assert_called_once()
 
 @pytest.mark.asyncio

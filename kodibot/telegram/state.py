@@ -7,6 +7,8 @@ and telegram_handlers live here so that circular imports are avoided.
 import asyncio
 import threading
 
+from kodibot.telegram.i18n import t
+
 # ── Message tracking ─────────────────────────────────────────────────
 pending = {}
 IMAGE_GROUPS = {}
@@ -46,9 +48,9 @@ HELP_MSG_ID = {}
 HELP_PHOTO_FILE_ID = None
 
 # ── Status caches ────────────────────────────────────────────────────
-HIFI_STATUS_CACHE = "⚪ Hifi: Unknown"
+HIFI_STATUS_CACHE = t("hifi_unknown_status")
 HIFI_STATUS_TS = 0.0
-AIRPLAY_STATUS_CACHE = "AirPlay: Unknown"
+AIRPLAY_STATUS_CACHE = t("airplay_unknown")
 AIRPLAY_STATUS_TS = 0.0
 DENON_VOLUME_CACHE = "🔊 --"
 DENON_VOLUME_TS = 0.0

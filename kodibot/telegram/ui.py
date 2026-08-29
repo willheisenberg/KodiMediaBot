@@ -17,6 +17,7 @@ from kodibot.core import homeassistant as ha
 from kodibot.telegram import media
 from kodibot.telegram import state as S
 from kodibot.config import CFG
+from kodibot.telegram.i18n import repeat_mode_label, state_label, store_message, t
 
 # ── Import extracted modules ─────────────────────────────────────────
 from kodibot.telegram.rate import (
@@ -183,18 +184,19 @@ async def run_reconnect_loop(chat_id, url, title):
     
     log.info("Starting reconnect loop for '%s' (%s) in chat %s", title, url, chat_id)
     
-    keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="cancel_reconnect")]]
+    keyboard = [[InlineKeyboardButton(t("cancel"), callback_data="cancel_reconnect")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     msg = None
     try:
         # Step 1: Countdown warning (5 seconds)
-        msg_text = f"📻 Connection to *{html.escape(title)}* lost.\nReconnecting in 5s..."
+        escaped_title = html.escape(title)
+        msg_text = t("reconnect_warning", title=escaped_title, seconds=5)
         msg = await send_and_track(S.APP_INSTANCE, chat_id, msg_text, reply_markup=reply_markup)
         
         for i in range(4, 0, -1):
             await asyncio.sleep(1)
-            countdown_text = f"📻 Connection to *{html.escape(title)}* lost.\nReconnecting in {i}s..."
+            countdown_text = t("reconnect_warning", title=escaped_title, seconds=i)
             await S.APP_INSTANCE.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=msg.message_id,
@@ -208,7 +210,7 @@ async def run_reconnect_loop(chat_id, url, title):
         # Step 2: Retry attempts (3 retries)
         max_retries = 3
         for retry in range(1, max_retries + 1):
-            retry_text = f"📻 Connection to *{html.escape(title)}* lost.\nReconnecting (attempt {retry}/{max_retries})..."
+            retry_text = t("reconnect_attempt", title=escaped_title, attempt=retry, max_retries=max_retries)
             await S.APP_INSTANCE.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=msg.message_id,
@@ -222,7 +224,7 @@ async def run_reconnect_loop(chat_id, url, title):
                 log.info("Successfully reconnected to '%s'", title)
                 queue_state.set_last_played_radio(url, title)
                 
-                success_text = f"📻 *{html.escape(title)}* successfully reconnected! 🎉"
+                success_text = t("reconnect_success", title=escaped_title)
                 await S.APP_INSTANCE.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=msg.message_id,
@@ -236,7 +238,7 @@ async def run_reconnect_loop(chat_id, url, title):
             if retry < max_retries:
                 await asyncio.sleep(3)
                 
-        fail_text = f"⚠ Reconnection to *{html.escape(title)}* failed."
+        fail_text = t("reconnect_failed", title=escaped_title)
         await S.APP_INSTANCE.bot.edit_message_text(
             chat_id=chat_id,
             message_id=msg.message_id,
@@ -656,7 +658,7 @@ async def warn_and_cleanup_chat(ctx, chat_id, user_msg_id, delay=5):
     warn = await send_and_track(
         ctx,
         chat_id,
-        "This group is not meant for conversations."
+        t("not_for_conversations")
     )
     await asyncio.sleep(delay)
     try:
@@ -713,7 +715,7 @@ async def play_image_items(ctx, chat_id, message_ids, items):
                         os.remove(path)
                 except Exception:
                     pass
-        await send_and_track(ctx, chat_id, "⚠ Image upload could not be displayed.")
+        await send_and_track(ctx, chat_id, t("image_upload_failed"))
         schedule_cleanup(ctx, chat_id, LAST_BOT_ID.get(chat_id))
         return
     await update_now_playing_message(ctx, chat_id)
@@ -768,7 +770,7 @@ async def _flush_image_group(ctx, chat_id, group_key):
             for other_item in others[1:]:
                 await asyncio.to_thread(queue_state.queue_item, other_item)
         else:
-            await send_and_track(ctx, chat_id, "⚠ Alle Medien aus dieser Sendung konnten nicht heruntergeladen werden.")
+            await send_and_track(ctx, chat_id, t("broadcast_media_download_failed"))
             schedule_cleanup(ctx, chat_id, LAST_BOT_ID.get(chat_id))
     except Exception as e:
         log.exception("Error flushing media group chat_id=%s: %s", chat_id, e)

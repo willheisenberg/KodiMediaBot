@@ -36,13 +36,16 @@ Those temporary media files are deleted again after playback stops.
 ### Button reference
 
 <p align="center">
-  <img src="assets/panel_button_reference.png" alt="Kodi Remote button reference with German descriptions" width="75%">
+  <img src="assets/panel_button_reference.png" alt="Kodi Remote button reference" width="75%">
 </p>
 
 The same image is available inside Telegram: `🎛 Controls` → `❓ Buttons` posts it
-below the panel, and the `🙈 Ausblenden` button underneath removes it again. The
+below the panel, and the `🙈 Hide` button underneath removes it again. The
 image is uploaded once and reused from its Telegram `file_id` afterwards, so it
 has to be present at `assets/panel_button_reference.png` in the image.
+Set `BOT_LANGUAGE=de` to switch Telegram-facing UI text to German. In that
+mode the bot uses `assets/panel_button_reference_de.png` for the in-chat button
+reference, while this README keeps showing the English reference.
 
 ## Telegram panel and commands
 
@@ -206,6 +209,7 @@ services:
       TELEGRAM_LOCAL_MODE: "1"
       TELEGRAM_BASE_URL: "http://127.0.0.1:8081/bot"
       TELEGRAM_BASE_FILE_URL: "http://127.0.0.1:8081/file/bot"
+      BOT_LANGUAGE: "en"
       HA_HOST: "HA_IP"
       HA_PORT: "8123"
       HA_TOKEN: "YOUR_HA_TOKEN"
@@ -323,6 +327,8 @@ Notes:
 - `TELEGRAM_BASE_URL` optionally overrides the Telegram API endpoint, for example `http://127.0.0.1:8081/bot`.
 - `TELEGRAM_BASE_FILE_URL` optionally overrides the Telegram file endpoint, for example `http://127.0.0.1:8081/file/bot`.
 - `TELEGRAM_DOWNLOAD_SIZE_LIMIT_MB` changes the pre-check limit for cloud Bot API downloads (default `20`). Leave this unchanged unless you know your Telegram endpoint supports more.
+- `BOT_LANGUAGE` controls Telegram-facing UI text and the in-chat button
+  reference image. Use `en` or `de`; any other value falls back to `en`.
 - `TELEGRAM_READ_TIMEOUT` and `TELEGRAM_GET_FILE_READ_TIMEOUT` default to `300` seconds in the local Bot API setup so large Telegram files have enough time to be prepared and returned.
 - The image includes `ffmpeg` so Telegram MP4 uploads can be remuxed with `+faststart` before playback.
 - `kodi.m3u` is copied into the image as `/data/kodi.m3u` and is used to map channel names to stream URLs for ICY now-playing title lookup.

@@ -45,6 +45,9 @@ if [ -f \"\$COMPOSE_FILE\" ]; then
   if ! grep -q '/storage/docker/partyqueue/state:/data/state' \"\$COMPOSE_FILE\"; then
     sed -i '\\#/storage/docker/partyqueue/playlists:/data/playlists#a\\      - /storage/docker/partyqueue/state:/data/state' \"\$COMPOSE_FILE\"
   fi
+  if ! grep -q 'BOT_LANGUAGE:' \"\$COMPOSE_FILE\"; then
+    sed -i '/TELEGRAM_BASE_FILE_URL:/a\\      BOT_LANGUAGE: \"\${BOT_LANGUAGE:-en}\"' \"\$COMPOSE_FILE\"
+  fi
 fi"
 
 log "Kopiere kodi.m3u nach LibreELEC..."

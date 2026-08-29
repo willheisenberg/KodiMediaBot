@@ -40,6 +40,7 @@ class Config:
     telegram_get_file_write_timeout: float
     telegram_get_file_connect_timeout: float
     telegram_get_file_pool_timeout: float
+    bot_language: str
 
     # ── Devices ──────────────────────────────────────────────────────
     cec_host: str
@@ -181,6 +182,7 @@ class Config:
             telegram_get_file_write_timeout=float(os.environ.get("TELEGRAM_GET_FILE_WRITE_TIMEOUT", "30")),
             telegram_get_file_connect_timeout=float(os.environ.get("TELEGRAM_GET_FILE_CONNECT_TIMEOUT", "30")),
             telegram_get_file_pool_timeout=float(os.environ.get("TELEGRAM_GET_FILE_POOL_TIMEOUT", "30")),
+            bot_language=(os.environ.get("BOT_LANGUAGE") or "en").strip().lower(),
             # Devices
             cec_host=cec_host,
             denon_host=os.environ.get("DENON_HOST") or None,

@@ -6,6 +6,8 @@ import json
 import time
 from urllib.parse import parse_qsl
 
+from kodibot.telegram.i18n import LANG, t
+
 
 def validate_webapp_init_data(
     init_data: str,
@@ -83,12 +85,45 @@ def parse_brightness_percent(payload, key: str = "brightness_pct"):
 def build_ha_color_webapp_html(app_base_url: str = "") -> str:
     """Return the HTML payload for the Home Assistant color Mini App."""
     app_base_url_json = json.dumps((app_base_url or "").rstrip("/"))
+    i18n_json = json.dumps({
+        "title": t("ha_webapp_title"),
+        "subtitle": t("ha_webapp_subtitle"),
+        "choose_color": t("choose_color"),
+        "loading_light_state": t("loading_light_state"),
+        "color_wheel": t("color_wheel"),
+        "brightness": t("brightness").replace("🔆 ", ""),
+        "saved_colors": t("saved_colors").replace("💾 ", ""),
+        "preset_name": t("preset_name"),
+        "save": t("save"),
+        "apply": t("apply"),
+        "close": t("close"),
+        "network_error": t("network_error"),
+        "request_failed": t("request_failed"),
+        "light_fallback": t("light_fallback"),
+        "unknown": t("unknown"),
+        "state_on": t("state_on"),
+        "state_off": t("state_off"),
+        "state_unknown": t("state_unknown"),
+        "no_saved_colors_yet": t("no_saved_colors_yet") + ".",
+        "preset": t("preset_name").replace("-Name", "").replace(" name", ""),
+        "preset_loaded": t("preset_loaded", name="{name}"),
+        "telegram_mini_app_required": t("telegram_mini_app_required"),
+        "ready": t("ready"),
+        "light_state_load_failed": t("light_state_load_failed"),
+        "telegram_init_missing": t("telegram_init_missing"),
+        "applying_color": t("applying_color"),
+        "color_apply_failed": t("color_apply_failed"),
+        "color_applied": t("color_applied", hex="{hex}"),
+        "enter_preset_name": t("enter_preset_name"),
+        "preset_saved": t("preset_saved", name="{name}"),
+        "preset_save_failed": t("preset_save_failed"),
+    }, ensure_ascii=False)
     return """<!doctype html>
-<html lang="de">
+<html lang="__LANG__">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-  <title>HA Color</title>
+  <title>__TITLE__</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
     :root {
@@ -288,34 +323,34 @@ def build_ha_color_webapp_html(app_base_url: str = "") -> str:
 <body>
   <main class="app">
     <section class="card">
-      <h1 class="title">Home Assistant Light</h1>
-      <p class="muted">Apply the current color directly and save it as a preset.</p>
+      <h1 class="title">__HA_LIGHT_TITLE__</h1>
+      <p class="muted">__SUBTITLE__</p>
 
       <div class="preview-wrap">
         <div id="preview" class="preview"></div>
         <div>
           <div class="hex-row">
             <strong id="hexValue">#FFFFFF</strong>
-            <input id="colorPicker" type="color" value="#ffffff" aria-label="Choose color">
+            <input id="colorPicker" type="color" value="#ffffff" aria-label="__CHOOSE_COLOR__">
           </div>
-          <p id="lightMeta" class="muted">Loading current light state...</p>
+          <p id="lightMeta" class="muted">__LOADING_LIGHT_STATE__</p>
         </div>
       </div>
 
       <div class="wheel-wrap">
-        <canvas id="colorWheel" width="300" height="300" aria-label="Color wheel"></canvas>
+        <canvas id="colorWheel" width="300" height="300" aria-label="__COLOR_WHEEL__"></canvas>
       </div>
       <div class="slider">
-        <div class="slider-head"><span>Brightness</span><span class="slider-value" id="valueBrightness">100%</span></div>
+        <div class="slider-head"><span>__BRIGHTNESS__</span><span class="slider-value" id="valueBrightness">100%</span></div>
         <input id="sliderBrightness" type="range" min="0" max="100" value="100">
       </div>
 
-      <div class="section-title">Saved Colors</div>
+      <div class="section-title">__SAVED_COLORS__</div>
       <div id="presetGrid" class="preset-grid"></div>
 
       <div class="save-row">
-        <input id="presetName" type="text" maxlength="64" placeholder="Preset name">
-        <button id="savePreset" type="button">Save</button>
+        <input id="presetName" type="text" maxlength="64" placeholder="__PRESET_NAME__">
+        <button id="savePreset" type="button">__SAVE__</button>
       </div>
 
       <div id="status" class="status"></div>
@@ -325,6 +360,7 @@ def build_ha_color_webapp_html(app_base_url: str = "") -> str:
   <script>
     const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
     const APP_BASE_URL = __APP_BASE_URL__;
+    const I18N = __I18N__;
     const state = { r: 255, g: 255, b: 255, brightnessPct: 100, presets: [], hs: { h: 0, s: 0 } };
 
     const preview = document.getElementById("preview");
@@ -361,7 +397,7 @@ def build_ha_color_webapp_html(app_base_url: str = "") -> str:
         return fallback;
       }
       if (message === "Load failed" || message === "Failed to fetch" || message === "NetworkError when attempting to fetch resource.") {
-        return "Network error while reaching the Mini App API.";
+        return I18N.network_error;
       }
       return message;
     }
@@ -530,7 +566,7 @@ def build_ha_color_webapp_html(app_base_url: str = "") -> str:
       state.hs = rgbToHs(state.r, state.g, state.b);
       drawWheelFast();
       if (tg && tg.MainButton) {
-        tg.MainButton.setText("Apply " + hex + " \u00b7 " + state.brightnessPct + "%");
+        tg.MainButton.setText(I18N.apply + " " + hex + " \u00b7 " + state.brightnessPct + "%");
       }
     }
 
@@ -551,8 +587,9 @@ def build_ha_color_webapp_html(app_base_url: str = "") -> str:
     }
 
     function updateLightMeta(light, fallbackBrightnessPct) {
-      const name = light.friendly_name || "Light";
-      const lampState = light.state || "unknown";
+      const name = light.friendly_name || I18N.light_fallback;
+      const rawLampState = String(light.state || "unknown").toLowerCase();
+      const lampState = rawLampState === "on" ? I18N.state_on : (rawLampState === "off" ? I18N.state_off : I18N.state_unknown);
       const brightnessPct = brightnessPctFromHa(light.brightness, fallbackBrightnessPct);
       lightMeta.textContent = name + " - " + lampState + " - " + brightnessPct + "%";
       return brightnessPct;
@@ -561,7 +598,7 @@ def build_ha_color_webapp_html(app_base_url: str = "") -> str:
     function renderPresets(items) {
       state.presets = Array.isArray(items) ? items : [];
       if (!state.presets.length) {
-        presetGrid.innerHTML = '<div class="muted">No saved colors yet.</div>';
+        presetGrid.innerHTML = '<div class="muted">' + I18N.no_saved_colors_yet + '</div>';
         return;
       }
       presetGrid.innerHTML = "";
@@ -577,10 +614,10 @@ def build_ha_color_webapp_html(app_base_url: str = "") -> str:
           '<div class="preset-swatch" style="background:' + hex + '"></div>' +
           '<span class="preset-name"></span>' +
           '<span class="preset-hex">' + hex + "</span>";
-        button.querySelector(".preset-name").textContent = item.name || "Preset";
+        button.querySelector(".preset-name").textContent = item.name || I18N.preset;
         button.addEventListener("click", () => {
           setColor(r, g, b);
-          setStatus("Preset loaded: " + (item.name || hex), "");
+          setStatus(I18N.preset_loaded.replace("{name}", item.name || hex), "");
           if (tg && tg.HapticFeedback && tg.HapticFeedback.selectionChanged) {
             tg.HapticFeedback.selectionChanged();
           }
@@ -602,7 +639,7 @@ def build_ha_color_webapp_html(app_base_url: str = "") -> str:
         data = {};
       }
       if (!res.ok || data.ok === false) {
-        const message = data.error || "Request failed";
+        const message = data.error || I18N.request_failed;
         throw new Error(message);
       }
       return data;
@@ -610,7 +647,7 @@ def build_ha_color_webapp_html(app_base_url: str = "") -> str:
 
     async function loadState() {
       if (!tg || !tg.initData) {
-        setStatus("This Mini App must be opened inside Telegram.", "error");
+        setStatus(I18N.telegram_mini_app_required, "error");
         return;
       }
       try {
@@ -622,19 +659,19 @@ def build_ha_color_webapp_html(app_base_url: str = "") -> str:
         const brightnessPct = updateLightMeta(light, state.brightnessPct);
         setLightValues(rgb[0], rgb[1], rgb[2], brightnessPct);
         renderPresets(data.saved_colors || []);
-        setStatus("Ready.", "");
+        setStatus(I18N.ready, "");
       } catch (err) {
-        setStatus(formatError(err, "Could not load the light state."), "error");
+        setStatus(formatError(err, I18N.light_state_load_failed), "error");
       }
     }
 
     async function applyColor() {
       if (!tg || !tg.initData) {
-        setStatus("Telegram initData is missing.", "error");
+        setStatus(I18N.telegram_init_missing, "error");
         return;
       }
       try {
-        setStatus("Applying color...", "");
+        setStatus(I18N.applying_color, "");
         if (tg.MainButton && tg.MainButton.showProgress) {
           tg.MainButton.showProgress();
         }
@@ -651,12 +688,12 @@ def build_ha_color_webapp_html(app_base_url: str = "") -> str:
           : [state.r, state.g, state.b];
         const brightnessPct = updateLightMeta(light, state.brightnessPct);
         setLightValues(rgb[0], rgb[1], rgb[2], brightnessPct);
-        setStatus("Color applied: " + currentHex(), "ok");
+        setStatus(I18N.color_applied.replace("{hex}", currentHex().replace("#", "")), "ok");
         if (tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred) {
           tg.HapticFeedback.notificationOccurred("success");
         }
       } catch (err) {
-        setStatus(formatError(err, "Color could not be applied."), "error");
+        setStatus(formatError(err, I18N.color_apply_failed), "error");
         if (tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred) {
           tg.HapticFeedback.notificationOccurred("error");
         }
@@ -670,11 +707,11 @@ def build_ha_color_webapp_html(app_base_url: str = "") -> str:
     async function saveCurrentPreset() {
       const name = (presetName.value || "").trim();
       if (!name) {
-        setStatus("Enter a preset name first.", "error");
+        setStatus(I18N.enter_preset_name, "error");
         return;
       }
       if (!tg || !tg.initData) {
-        setStatus("Telegram initData is missing.", "error");
+        setStatus(I18N.telegram_init_missing, "error");
         return;
       }
       try {
@@ -687,12 +724,12 @@ def build_ha_color_webapp_html(app_base_url: str = "") -> str:
         });
         renderPresets(data.saved_colors || []);
         presetName.value = "";
-        setStatus('Preset saved: "' + name + '"', "ok");
+        setStatus(I18N.preset_saved.replace("{name}", name), "ok");
         if (tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred) {
           tg.HapticFeedback.notificationOccurred("success");
         }
       } catch (err) {
-        setStatus(formatError(err, "Preset could not be saved."), "error");
+        setStatus(formatError(err, I18N.preset_save_failed), "error");
       }
     }
 
@@ -712,12 +749,12 @@ def build_ha_color_webapp_html(app_base_url: str = "") -> str:
         tg.enableClosingConfirmation();
       }
       if (tg.MainButton) {
-        tg.MainButton.setText("Apply");
+        tg.MainButton.setText(I18N.apply);
         tg.MainButton.show();
         tg.MainButton.onClick(applyColor);
       }
       if (tg.SecondaryButton) {
-        tg.SecondaryButton.setParams({ text: "Close", position: "left", is_visible: true });
+        tg.SecondaryButton.setParams({ text: I18N.close, position: "left", is_visible: true });
         tg.SecondaryButton.onClick(() => tg.close && tg.close());
         tg.SecondaryButton.show();
       }
@@ -728,4 +765,14 @@ def build_ha_color_webapp_html(app_base_url: str = "") -> str:
   </script>
 </body>
 </html>
-""".replace("__APP_BASE_URL__", app_base_url_json)
+""".replace("__LANG__", LANG).replace("__TITLE__", t("ha_webapp_title")).replace(
+        "__HA_LIGHT_TITLE__", t("ha_light_title").replace("🏠 ", "")
+    ).replace("__SUBTITLE__", t("ha_webapp_subtitle")).replace(
+        "__CHOOSE_COLOR__", t("choose_color")
+    ).replace("__LOADING_LIGHT_STATE__", t("loading_light_state")).replace(
+        "__COLOR_WHEEL__", t("color_wheel")
+    ).replace("__BRIGHTNESS__", t("brightness").replace("🔆 ", "")).replace(
+        "__SAVED_COLORS__", t("saved_colors").replace("💾 ", "")
+    ).replace("__PRESET_NAME__", t("preset_name")).replace("__SAVE__", t("save")).replace(
+        "__APP_BASE_URL__", app_base_url_json
+    ).replace("__I18N__", i18n_json)

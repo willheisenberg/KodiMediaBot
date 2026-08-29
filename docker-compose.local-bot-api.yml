@@ -36,6 +36,7 @@ services:
       TELEGRAM_LOCAL_MODE: "1"
       TELEGRAM_BASE_URL: "http://127.0.0.1:8081/bot"
       TELEGRAM_BASE_FILE_URL: "http://127.0.0.1:8081/file/bot"
+      BOT_LANGUAGE: "${BOT_LANGUAGE:-en}"
       HA_HOST: "${HA_HOST}"
       HA_PORT: "${HA_PORT:-8123}"
       HA_TOKEN: "${HA_TOKEN}"
