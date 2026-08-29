@@ -31,6 +31,8 @@ from kodibot.telegram.panel import (
     resolve_airplay_status_text,
     control_panel,
     cancel_markup,
+    show_button_reference,
+    hide_button_reference,
     send_delete_confirmation,
     set_panel_menu_mode,
     save_ui_state,
@@ -488,7 +490,11 @@ def record_last_seen(ctx, update):
 
 # Message ids the list/panel currently occupy; those must survive cleanup.
 def _protected_message_ids(chat_id):
-    return {LIST_MSG_ID.get(chat_id), PANEL_MSG_ID.get(chat_id)}
+    return {
+        LIST_MSG_ID.get(chat_id),
+        PANEL_MSG_ID.get(chat_id),
+        S.HELP_MSG_ID.get(chat_id),
+    }
 
 
 # Telegram refused this id for good; never spend another API call on it.

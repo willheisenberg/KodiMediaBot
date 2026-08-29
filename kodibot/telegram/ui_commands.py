@@ -118,6 +118,8 @@ async def reset_panel_command(update, ctx):
         try:
             old_list_id = UI.LIST_MSG_ID.get(chat_id)
             old_panel_id = UI.PANEL_MSG_ID.get(chat_id)
+            # Drop the button reference too, or it survives with a dead button.
+            await UI.hide_button_reference(ctx, chat_id)
 
             await asyncio.to_thread(UI.queue_state.hard_stop_and_clear)
             UI.queue_state.clear_queue()

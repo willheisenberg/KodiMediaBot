@@ -26,7 +26,7 @@ CHAT = 4242
 def clean_state(monkeypatch):
     for store in (
         S.LAST_BOT_ID, S.PREV_BOT_ID, S.LAST_SEEN_ID, S.LAST_CLEANUP_ID,
-        S.FIRST_BOT_ID, S.LIST_MSG_ID, S.PANEL_MSG_ID,
+        S.FIRST_BOT_ID, S.LIST_MSG_ID, S.PANEL_MSG_ID, S.HELP_MSG_ID,
         S.CLEANUP_TASKS, S.CLEANUP_PENDING, S.CLEANUP_DEFERRED, S.CLEANUP_FAILED,
     ):
         store.clear()
@@ -167,3 +167,32 @@ class TestCleanupQueue:
         assert recorded == [102, 109]
         assert S.CLEANUP_DEFERRED[CHAT] == {110}
         assert S.LAST_CLEANUP_ID[CHAT] == 109
+
+
+class TestButtonReferenceIsProtected:
+    """The shown button reference must survive the cleanup sweep."""
+
+    def test_visible_image_is_protected(self):
+        S.HELP_MSG_ID[CHAT] = 105
+
+        assert 105 in ui._protected_message_ids(CHAT)
+
+    def test_hidden_image_is_not_protected(self):
+        assert 105 not in ui._protected_message_ids(CHAT)
+
+    def test_cleanup_defers_the_image_instead_of_deleting_it(self):
+        recorded = []
+        ctx = make_ctx(recorded)
+        S.FIRST_BOT_ID[CHAT] = 100
+        S.LAST_BOT_ID[CHAT] = 104
+        S.PREV_BOT_ID[CHAT] = 100
+        S.HELP_MSG_ID[CHAT] = 102
+
+        async def run():
+            ui.schedule_cleanup(ctx, CHAT, None)
+            await drain()
+
+        asyncio.run(run())
+
+        assert 102 not in recorded, "the visible button reference was deleted"
+        assert 102 in S.CLEANUP_DEFERRED.get(CHAT, set())

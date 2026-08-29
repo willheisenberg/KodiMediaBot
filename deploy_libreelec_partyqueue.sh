@@ -40,6 +40,8 @@ scp -r \
   "${LOCAL_ROOT}/README.md" \
   "${LOCAL_ROOT}/main.py" \
   "${LOCAL_ROOT}/kodibot" \
+  "${LOCAL_ROOT}/scripts" \
+  "${LOCAL_ROOT}/assets" \
   "${SSH_TARGET}:${REMOTE_DIR}/"
 
 log "Entferne Python-Bytecode und pycache aus ${REMOTE_DIR}"

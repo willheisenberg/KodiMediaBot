@@ -34,6 +34,10 @@ LIST_MSG_ID = {}
 PANEL_MSG_ID = {}
 PANEL_MENU_MODE = {}
 HA_MENU_MSG_ID = {}
+# Button-reference image: message id per chat while it is shown, plus the
+# Telegram file_id so the png is uploaded once and reused afterwards.
+HELP_MSG_ID = {}
+HELP_PHOTO_FILE_ID = None
 
 # ── Status caches ────────────────────────────────────────────────────
 HIFI_STATUS_CACHE = "⚪ Hifi: Unknown"

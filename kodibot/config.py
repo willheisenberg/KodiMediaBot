@@ -89,14 +89,25 @@ class Config:
     ha_webapp_max_age: int
 
     # ── Projector (Beamer) ────────────────────────────────────────────
-    pigpio_host: str | None
-    pigpio_port: int
-    projector_gpio: int
-    projector_protocol: str
+    projector_lirc_device: str
     projector_address: int
     projector_power_on_code: int
     projector_power_off_code: int
     projector_power_on_repeats: int
+
+    # ── Display power (projector or TV) ───────────────────────────────
+    display_button_label: str
+    display_power_on_cmd: str
+    display_power_off_cmd: str
+    display_command_timeout: float
+    tv_host: str | None
+
+    # ── Optional panel sections ───────────────────────────────────────
+    panel_show_volume: bool
+    panel_show_hifi: bool
+    panel_show_display: bool
+    panel_show_airplay: bool
+    panel_show_ha: bool
 
     # ── Internal tuning ──────────────────────────────────────────────
     kodi_error_log_interval: float
@@ -203,7 +214,7 @@ class Config:
             sc_search_timeout=float(os.environ.get("RADIO_SC_TIMEOUT", "8")),
             # Persistence
             playlist_dir=os.environ.get("PLAYLIST_DIR", "/data/playlists"),
-            ui_state_file=os.environ.get("UI_STATE_FILE", "/data/telegram_ui_state.json"),
+            ui_state_file=os.environ.get("UI_STATE_FILE", "/data/playlists/telegram_ui_state.json"),
             # Home Assistant
             ha_host=os.environ.get("HA_HOST") or None,
             ha_port=int(os.environ.get("HA_PORT", "8123")),
@@ -213,14 +224,29 @@ class Config:
             ha_webapp_url=(os.environ.get("HA_WEBAPP_URL") or "").strip(),
             ha_webapp_max_age=int(os.environ.get("HA_WEBAPP_MAX_AGE", "900")),
             # Projector (Beamer)
-            pigpio_host=os.environ.get("PIGPIO_HOST", "127.0.0.1") or None,
-            pigpio_port=int(os.environ.get("PIGPIO_PORT", "8888")),
-            projector_gpio=int(os.environ.get("PROJECTOR_GPIO", "17")),
-            projector_protocol=os.environ.get("PROJECTOR_PROTOCOL", "NEC"),
+            projector_lirc_device=os.environ.get("PROJECTOR_LIRC_DEVICE", "/dev/lirc0"),
             projector_address=int(os.environ.get("PROJECTOR_ADDRESS", "0x08"), 16),
             projector_power_on_code=int(os.environ.get("PROJECTOR_POWER_ON_CODE", "0x03"), 16),
             projector_power_off_code=int(os.environ.get("PROJECTOR_POWER_OFF_CODE", "0x00"), 16),
             projector_power_on_repeats=int(os.environ.get("PROJECTOR_POWER_ON_REPEATS", "4")),
+            # Display power (projector or TV)
+            display_button_label=(os.environ.get("DISPLAY_BUTTON_LABEL") or "📽 Beamer").strip(),
+            display_power_on_cmd=(
+                os.environ.get("DISPLAY_POWER_ON_CMD")
+                or "python -m kodibot.core.projector on"
+            ),
+            display_power_off_cmd=(
+                os.environ.get("DISPLAY_POWER_OFF_CMD")
+                or "python -m kodibot.core.projector off"
+            ),
+            display_command_timeout=float(os.environ.get("DISPLAY_COMMAND_TIMEOUT", "15")),
+            tv_host=os.environ.get("TV_HOST") or None,
+            # Optional panel sections
+            panel_show_volume=_bool_env("PANEL_SHOW_VOLUME", True),
+            panel_show_hifi=_bool_env("PANEL_SHOW_HIFI", True),
+            panel_show_display=_bool_env("PANEL_SHOW_DISPLAY", True),
+            panel_show_airplay=_bool_env("PANEL_SHOW_AIRPLAY", True),
+            panel_show_ha=_bool_env("PANEL_SHOW_HA", True),
             # Tuning
             kodi_error_log_interval=float(os.environ.get("KODI_ERROR_LOG_INTERVAL", "10")),
             # Radio Browser

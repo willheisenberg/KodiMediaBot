@@ -24,9 +24,19 @@ from kodibot.telegram.rate import (
     telegram_request,
     telegram_request_delete,
     send_and_track,
+    delete_message_if_present,
 )
 
 log = logging.getLogger(__name__)
+
+PANEL_STATUS_MIN_WIDTH = 67
+
+# assets/ sits next to kodibot/ both in the repo and in the image.
+BUTTON_REFERENCE_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "assets",
+    "panel_button_reference.png",
+)
 
 
 # ── Error classification ─────────────────────────────────────────────
@@ -130,31 +140,38 @@ def build_main_control_panel(play_label):
         [
             InlineKeyboardButton("🎛 Controls", callback_data="controls:menu"),
         ],
-        [
+    ]
+    if CFG.panel_show_volume:
+        rows.append([
             InlineKeyboardButton("🔉 -5", callback_data="vol:down5"),
             InlineKeyboardButton("🔊 +5", callback_data="vol:up5"),
             InlineKeyboardButton("🔉 -10", callback_data="vol:down10"),
             InlineKeyboardButton("🔊 +10", callback_data="vol:up10"),
-        ],
-        [
-            InlineKeyboardButton("⭐", callback_data="fav:ask"),
-            InlineKeyboardButton("🎬", callback_data="media:ask"),
-            InlineKeyboardButton("🗣", callback_data="av:ask"),
-        ],
-        [
+        ])
+    rows.append([
+        InlineKeyboardButton("⭐", callback_data="fav:ask"),
+        InlineKeyboardButton("🎬", callback_data="media:ask"),
+        InlineKeyboardButton("🗣", callback_data="av:ask"),
+    ])
+    if CFG.panel_show_hifi:
+        rows.append([
             InlineKeyboardButton("🔌 Hifi On", callback_data="hifi:on"),
             InlineKeyboardButton("🔌 Hifi Off", callback_data="hifi:off"),
-        ],
-        [
-            InlineKeyboardButton("📽 Beamer On", callback_data="beamer:on"),
-            InlineKeyboardButton("📽 Beamer Off", callback_data="beamer:off"),
-        ],
-    ]
-    if ha.ha_available():
-        rows.append([
-            InlineKeyboardButton("☠️ AirPlay Kill", callback_data="airplay:kill"),
-            InlineKeyboardButton("🏠 Home Assistant", callback_data="ha:menu"),
         ])
+    if CFG.panel_show_display:
+        rows.append([
+            InlineKeyboardButton(f"{CFG.display_button_label} On", callback_data="display:on"),
+            InlineKeyboardButton(f"{CFG.display_button_label} Off", callback_data="display:off"),
+        ])
+    # AirPlay Kill is a CEC command and stands on its own; Home Assistant
+    # additionally needs a reachable HA instance.
+    extras = []
+    if CFG.panel_show_airplay:
+        extras.append(InlineKeyboardButton("☠️ AirPlay Kill", callback_data="airplay:kill"))
+    if CFG.panel_show_ha and ha.ha_available():
+        extras.append(InlineKeyboardButton("🏠 Home Assistant", callback_data="ha:menu"))
+    if extras:
+        rows.append(extras)
     return rows
 
 
@@ -198,6 +215,9 @@ def build_controls_panel():
             InlineKeyboardButton("📺 🔍", callback_data="tv:ask"),
         ],
         [
+            InlineKeyboardButton("❓ Buttons", callback_data="help:show"),
+        ],
+        [
             InlineKeyboardButton("⬅ Back", callback_data="controls:back"),
         ],
     ]
@@ -209,6 +229,84 @@ def control_panel(chat_id=None, *, mode=None):
     resolved_mode = mode or panel_menu_mode(chat_id)
     rows = build_controls_panel() if resolved_mode == "controls" else build_main_control_panel(play_label)
     return InlineKeyboardMarkup(rows)
+
+
+def build_panel_status_parts(progress_text=None):
+    status_parts = []
+    hifi_text = S.HIFI_STATUS_CACHE
+    if CFG.panel_show_hifi:
+        status_parts.append(hifi_text)
+    if CFG.panel_show_airplay:
+        status_parts.append(S.AIRPLAY_STATUS_CACHE)
+    status_parts.append(f"🔁 Repeat: {queue_state.REPEAT_MODE}")
+    if CFG.panel_show_volume and hifi_text != "🔴 Hifi: Standby":
+        status_parts.append(S.DENON_VOLUME_CACHE)
+    if progress_text:
+        status_parts.append(f"⏱ {progress_text}")
+    status_flag_disabled = not (
+        CFG.panel_show_hifi
+        and CFG.panel_show_airplay
+        and CFG.panel_show_volume
+    )
+    if status_flag_disabled:
+        status_width = sum(len(part) for part in status_parts) + 3 * (len(status_parts) - 1)
+        filler_width = PANEL_STATUS_MIN_WIDTH - status_width - 3
+        if filler_width > 0:
+            status_parts.append("─" * filler_width)
+    return status_parts
+
+
+def button_reference_markup():
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🙈 Ausblenden", callback_data="help:hide")]]
+    )
+
+
+async def hide_button_reference(ctx, chat_id):
+    """Remove the button reference image if one is on screen."""
+    msg_id = S.HELP_MSG_ID.pop(chat_id, None)
+    if not msg_id:
+        return False
+    await delete_message_if_present(ctx, chat_id, msg_id)
+    return True
+
+
+async def show_button_reference(ctx, chat_id):
+    """Send the button reference image with its own hide button.
+
+    Any image still on screen is dropped first.  Pressing the button twice
+    therefore moves the image back down next to the panel instead of stacking
+    a second copy, and it recovers when the message was deleted by hand.
+    """
+    await hide_button_reference(ctx, chat_id)
+    photo = S.HELP_PHOTO_FILE_ID
+    try:
+        if photo:
+            msg = await telegram_request(
+                ctx.bot.send_photo,
+                chat_id=chat_id,
+                photo=photo,
+                reply_markup=button_reference_markup(),
+            )
+        else:
+            with open(BUTTON_REFERENCE_PATH, "rb") as fh:
+                msg = await telegram_request(
+                    ctx.bot.send_photo,
+                    chat_id=chat_id,
+                    photo=fh,
+                    reply_markup=button_reference_markup(),
+                )
+    except FileNotFoundError:
+        log.warning("Button reference image missing at %s", BUTTON_REFERENCE_PATH)
+        return False
+    except Exception as e:
+        log.warning("Button reference send failed chat_id=%s err=%s", chat_id, e)
+        return False
+    S.HELP_MSG_ID[chat_id] = msg.message_id
+    # Remember the uploaded file so later presses cost one id instead of 1.5 MB.
+    if not S.HELP_PHOTO_FILE_ID and getattr(msg, "photo", None):
+        S.HELP_PHOTO_FILE_ID = msg.photo[-1].file_id
+    return True
 
 
 def cancel_markup():
@@ -727,14 +825,7 @@ async def update_now_playing_message(ctx, chat_id):
     """Update or create the now-playing panel message."""
     msg_id = S.PANEL_MSG_ID.get(chat_id)
     text, progress_text = await get_now_playing_text()
-    hifi_text = S.HIFI_STATUS_CACHE
-    airplay_text = S.AIRPLAY_STATUS_CACHE
-    repeat_text = f"🔁 Repeat: {queue_state.REPEAT_MODE}"
-    status_parts = [hifi_text, airplay_text, repeat_text]
-    if hifi_text != "🔴 Hifi: Standby":
-        status_parts.append(S.DENON_VOLUME_CACHE)
-    if progress_text:
-        status_parts.append(f"⏱ {progress_text}")
+    status_parts = build_panel_status_parts(progress_text)
     full_text = f"🎛 Kodi Remote - Current track:\n{text}\n{' | '.join(status_parts)}"
     panel_markup = control_panel(chat_id)
     render_sig = (

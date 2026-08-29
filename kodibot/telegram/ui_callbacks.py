@@ -594,15 +594,17 @@ async def on_button(update, ctx):
         await UI.refresh_hifi_status_cache(force=True)
         await UI.update_now_playing_message(ctx, chat_id)
         sent = True
-    elif cmd == "beamer:on":
-        from kodibot.core.projector import projector
-        ok = await asyncio.to_thread(projector.power_on)
-        await q.answer(text="📽 Beamer On" if ok else "⚠ Beamer On failed")
+    elif cmd == "display:on":
+        from kodibot.core.power import run_display_power
+        label = UI.CFG.display_button_label
+        ok = await asyncio.to_thread(run_display_power, True)
+        await q.answer(text=f"{label} On" if ok else f"⚠ {label} On failed")
         sent = True
-    elif cmd == "beamer:off":
-        from kodibot.core.projector import projector
-        ok = await asyncio.to_thread(projector.power_off)
-        await q.answer(text="📽 Beamer Off" if ok else "⚠ Beamer Off failed")
+    elif cmd == "display:off":
+        from kodibot.core.power import run_display_power
+        label = UI.CFG.display_button_label
+        ok = await asyncio.to_thread(run_display_power, False)
+        await q.answer(text=f"{label} Off" if ok else f"⚠ {label} Off failed")
         sent = True
     elif cmd == "airplay:kill":
         ok = await asyncio.to_thread(UI.kodi_api.run_airplay_kill)
@@ -641,6 +643,17 @@ async def on_button(update, ctx):
     elif cmd == "controls:back":
         UI.set_panel_menu_mode(chat_id, "main")
         await UI.update_now_playing_message(ctx, chat_id)
+        await q.answer()
+        return
+    elif cmd == "help:show":
+        ok = await UI.show_button_reference(ctx, chat_id)
+        if ok:
+            await q.answer()
+        else:
+            await q.answer(text="⚠ Button reference unavailable")
+        return
+    elif cmd == "help:hide":
+        await UI.hide_button_reference(ctx, chat_id)
         await q.answer()
         return
     elif cmd == "ha:back":

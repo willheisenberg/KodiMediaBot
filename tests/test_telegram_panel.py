@@ -269,3 +269,310 @@ class TestCurrentSubtitleLabel:
             "currentsubtitle": {"index": 1, "name": "German Forced", "language": "deu"}
         }
         assert panel.current_subtitle_label(av_state) == "🇩🇪 Deutsch · German Forced"
+
+
+class TestDisplayPowerButtons:
+    def test_buttons_use_configured_label_and_callbacks(self, monkeypatch):
+        import dataclasses
+
+        monkeypatch.setattr(panel.ha, "ha_available", lambda: False)
+        monkeypatch.setattr(
+            panel, "CFG", dataclasses.replace(panel.CFG, display_button_label="📺 TV")
+        )
+
+        markup = panel.control_panel(mode="main")
+        row = markup.inline_keyboard[6]
+
+        assert row[0].text == "📺 TV On"
+        assert row[0].callback_data == "display:on"
+        assert row[1].text == "📺 TV Off"
+        assert row[1].callback_data == "display:off"
+
+
+class TestPanelSectionFlags:
+    """Each optional button group can be hidden on its own."""
+
+    def _panel(self, monkeypatch, ha_available=True, **flags):
+        import dataclasses
+
+        monkeypatch.setattr(panel.ha, "ha_available", lambda: ha_available)
+        monkeypatch.setattr(panel, "CFG", dataclasses.replace(panel.CFG, **flags))
+        return panel.control_panel(mode="main")
+
+    def _callbacks(self, markup):
+        return [b.callback_data for row in markup.inline_keyboard for b in row]
+
+    def _status_parts(self, monkeypatch, progress_text=None, **flags):
+        import dataclasses
+
+        monkeypatch.setattr(panel, "CFG", dataclasses.replace(panel.CFG, **flags))
+        return panel.build_panel_status_parts(progress_text)
+
+    def test_all_sections_visible_by_default(self, monkeypatch):
+        cbs = self._callbacks(self._panel(monkeypatch))
+
+        for expected in ("vol:up5", "hifi:on", "display:on", "airplay:kill", "ha:menu"):
+            assert expected in cbs
+
+    def test_volume_row_can_be_hidden(self, monkeypatch):
+        cbs = self._callbacks(self._panel(monkeypatch, panel_show_volume=False))
+
+        assert not any(c.startswith("vol:") for c in cbs)
+        assert "hifi:on" in cbs
+
+    def test_hifi_row_can_be_hidden(self, monkeypatch):
+        cbs = self._callbacks(self._panel(monkeypatch, panel_show_hifi=False))
+
+        assert not any(c.startswith("hifi:") for c in cbs)
+        assert "vol:up5" in cbs
+
+    def test_display_row_can_be_hidden(self, monkeypatch):
+        cbs = self._callbacks(self._panel(monkeypatch, panel_show_display=False))
+
+        assert not any(c.startswith("display:") for c in cbs)
+        assert "hifi:on" in cbs
+
+    def test_airplay_can_be_hidden_leaving_ha(self, monkeypatch):
+        cbs = self._callbacks(self._panel(monkeypatch, panel_show_airplay=False))
+
+        assert "airplay:kill" not in cbs
+        assert "ha:menu" in cbs
+
+    def test_ha_can_be_hidden_leaving_airplay(self, monkeypatch):
+        cbs = self._callbacks(self._panel(monkeypatch, panel_show_ha=False))
+
+        assert "ha:menu" not in cbs
+        assert "airplay:kill" in cbs
+
+    def test_last_row_disappears_when_both_hidden(self, monkeypatch):
+        markup = self._panel(
+            monkeypatch, panel_show_airplay=False, panel_show_ha=False
+        )
+        cbs = self._callbacks(markup)
+
+        assert "airplay:kill" not in cbs
+        assert "ha:menu" not in cbs
+        assert all(len(row) > 0 for row in markup.inline_keyboard)
+
+    def test_airplay_survives_without_home_assistant(self, monkeypatch):
+        """AirPlay Kill is a CEC command and no longer depends on HA."""
+        cbs = self._callbacks(self._panel(monkeypatch, ha_available=False))
+
+        assert "airplay:kill" in cbs
+        assert "ha:menu" not in cbs
+
+    def test_all_optional_sections_off(self, monkeypatch):
+        markup = self._panel(
+            monkeypatch,
+            panel_show_volume=False,
+            panel_show_hifi=False,
+            panel_show_display=False,
+            panel_show_airplay=False,
+            panel_show_ha=False,
+        )
+        cbs = self._callbacks(markup)
+
+        assert "playpause" in cbs
+        assert "controls:menu" in cbs
+        assert not any(
+            c.startswith(("vol:", "hifi:", "display:", "airplay:", "ha:")) for c in cbs
+        )
+        assert all(len(row) > 0 for row in markup.inline_keyboard)
+
+    def test_status_line_hides_disabled_sections(self, monkeypatch):
+        panel.S.HIFI_STATUS_CACHE = "⚪ Hifi: Unknown"
+        panel.S.AIRPLAY_STATUS_CACHE = "AirPlay: Unknown"
+        panel.S.DENON_VOLUME_CACHE = "🔊 --"
+        queue_state.REPEAT_MODE = "off"
+
+        parts = self._status_parts(
+            monkeypatch,
+            panel_show_volume=False,
+            panel_show_hifi=False,
+            panel_show_airplay=False,
+        )
+
+        assert parts[0] == "🔁 Repeat: off"
+        assert set(parts[1]) == {"─"}
+        assert len(" | ".join(parts)) == panel.PANEL_STATUS_MIN_WIDTH
+
+    def test_status_line_keeps_enabled_sections(self, monkeypatch):
+        panel.S.HIFI_STATUS_CACHE = "🟢 Hifi: On"
+        panel.S.AIRPLAY_STATUS_CACHE = "AirPlay: On"
+        panel.S.DENON_VOLUME_CACHE = "🔊 42"
+        queue_state.REPEAT_MODE = "one"
+
+        parts = self._status_parts(monkeypatch, progress_text="00:01 / 00:02")
+
+        assert parts == [
+            "🟢 Hifi: On",
+            "AirPlay: On",
+            "🔁 Repeat: one",
+            "🔊 42",
+            "⏱ 00:01 / 00:02",
+        ]
+
+    def test_status_line_has_no_filler_when_all_flags_are_enabled(self, monkeypatch):
+        panel.S.HIFI_STATUS_CACHE = "Hifi: On"
+        panel.S.AIRPLAY_STATUS_CACHE = "AirPlay: On"
+        panel.S.DENON_VOLUME_CACHE = "Vol: 1"
+        queue_state.REPEAT_MODE = "off"
+
+        parts = self._status_parts(monkeypatch)
+
+        assert parts == ["Hifi: On", "AirPlay: On", "🔁 Repeat: off", "Vol: 1"]
+        assert all("─" not in part for part in parts)
+
+    def test_status_line_filler_shrinks_for_visible_sections(self, monkeypatch):
+        panel.S.HIFI_STATUS_CACHE = "🟢 Hifi: On"
+        panel.S.AIRPLAY_STATUS_CACHE = "AirPlay: On"
+        queue_state.REPEAT_MODE = "off"
+
+        parts = self._status_parts(
+            monkeypatch,
+            panel_show_volume=False,
+            panel_show_hifi=True,
+            panel_show_airplay=True,
+        )
+
+        assert parts[:-1] == ["🟢 Hifi: On", "AirPlay: On", "🔁 Repeat: off"]
+        assert set(parts[-1]) == {"─"}
+        assert len(" | ".join(parts)) == panel.PANEL_STATUS_MIN_WIDTH
+
+
+class TestButtonReference:
+    """The ❓ button shows a picture that hides itself again."""
+
+    class _Photo:
+        def __init__(self, file_id):
+            self.file_id = file_id
+
+    class _Msg:
+        def __init__(self, message_id, file_id="cached-id"):
+            self.message_id = message_id
+            self.photo = [TestButtonReference._Photo(file_id)]
+
+    class _Bot:
+        def __init__(self, msg):
+            self._msg = msg
+            self.sent = []
+            self.deleted = []
+
+        async def send_photo(self, **kwargs):
+            self.sent.append(kwargs)
+            return self._msg
+
+        async def delete_message(self, **kwargs):
+            self.deleted.append(kwargs["message_id"])
+
+    class _Ctx:
+        def __init__(self, bot):
+            self.bot = bot
+
+    def _ctx(self, message_id=99):
+        return self._Ctx(self._Bot(self._Msg(message_id)))
+
+    def setup_method(self):
+        panel.S.HELP_MSG_ID.clear()
+        panel.S.HELP_PHOTO_FILE_ID = None
+        # These tests drive the rate-limited wrappers; without this each call
+        # would sleep for the real inter-request interval.
+        self._intervals = (panel.S.TG_MIN_INTERVAL, panel.S.TG_DELETE_MIN_INTERVAL)
+        panel.S.TG_MIN_INTERVAL = 0
+        panel.S.TG_DELETE_MIN_INTERVAL = 0
+
+    def teardown_method(self):
+        panel.S.HELP_MSG_ID.clear()
+        panel.S.HELP_PHOTO_FILE_ID = None
+        panel.S.TG_MIN_INTERVAL, panel.S.TG_DELETE_MIN_INTERVAL = self._intervals
+
+    def test_controls_panel_has_help_button_above_back(self):
+        markup = panel.control_panel(mode="controls")
+
+        assert markup.inline_keyboard[-2][0].text == "❓ Buttons"
+        assert markup.inline_keyboard[-2][0].callback_data == "help:show"
+        assert markup.inline_keyboard[-1][0].callback_data == "controls:back"
+
+    def test_main_panel_has_no_help_button(self, monkeypatch):
+        monkeypatch.setattr(panel.ha, "ha_available", lambda: False)
+
+        markup = panel.control_panel(mode="main")
+
+        cbs = [b.callback_data for row in markup.inline_keyboard for b in row]
+        assert "help:show" not in cbs
+
+    def test_hide_markup_carries_the_hide_callback(self):
+        markup = panel.button_reference_markup()
+
+        assert markup.inline_keyboard[0][0].text == "🙈 Ausblenden"
+        assert markup.inline_keyboard[0][0].callback_data == "help:hide"
+
+    def test_show_sends_photo_and_records_message_id(self):
+        ctx = self._ctx(message_id=42)
+
+        assert asyncio.run(panel.show_button_reference(ctx, 7)) is True
+        assert panel.S.HELP_MSG_ID[7] == 42
+        assert len(ctx.bot.sent) == 1
+        assert ctx.bot.sent[0]["reply_markup"].inline_keyboard[0][0].callback_data == "help:hide"
+
+    def test_first_send_caches_the_file_id(self):
+        ctx = self._ctx()
+
+        asyncio.run(panel.show_button_reference(ctx, 7))
+
+        assert panel.S.HELP_PHOTO_FILE_ID == "cached-id"
+
+    def test_second_send_reuses_the_file_id_instead_of_the_file(self):
+        asyncio.run(panel.show_button_reference(self._ctx(), 7))
+        ctx = self._ctx()
+
+        asyncio.run(panel.show_button_reference(ctx, 7))
+
+        assert ctx.bot.sent[0]["photo"] == "cached-id"
+
+    def test_hide_deletes_the_message_and_clears_state(self):
+        ctx = self._ctx(message_id=42)
+        asyncio.run(panel.show_button_reference(ctx, 7))
+
+        assert asyncio.run(panel.hide_button_reference(ctx, 7)) is True
+        assert ctx.bot.deleted == [42]
+        assert 7 not in panel.S.HELP_MSG_ID
+
+    def test_hide_without_a_visible_image_is_a_no_op(self):
+        ctx = self._ctx()
+
+        assert asyncio.run(panel.hide_button_reference(ctx, 7)) is False
+        assert ctx.bot.deleted == []
+
+    def test_pressing_show_twice_replaces_instead_of_stacking(self):
+        ctx = self._ctx(message_id=42)
+        asyncio.run(panel.show_button_reference(ctx, 7))
+        second = self._ctx(message_id=43)
+
+        asyncio.run(panel.show_button_reference(second, 7))
+
+        assert second.bot.deleted == [42], "the old image must be removed first"
+        assert panel.S.HELP_MSG_ID[7] == 43
+
+    def test_show_recovers_when_the_message_was_deleted_by_hand(self):
+        """A manual delete must not lock the button out for good."""
+        ctx = self._ctx(message_id=42)
+        asyncio.run(panel.show_button_reference(ctx, 7))
+
+        class _GoneBot(self._Bot):
+            async def delete_message(self, **kwargs):
+                raise RuntimeError("message to delete not found")
+
+        recovered = self._Ctx(_GoneBot(self._Msg(44)))
+        assert asyncio.run(panel.show_button_reference(recovered, 7)) is True
+        assert panel.S.HELP_MSG_ID[7] == 44
+
+    def test_show_reports_failure_when_the_image_is_missing(self, monkeypatch):
+        monkeypatch.setattr(panel, "BUTTON_REFERENCE_PATH", "/nope/missing.png")
+        ctx = self._ctx()
+
+        assert asyncio.run(panel.show_button_reference(ctx, 7)) is False
+        assert 7 not in panel.S.HELP_MSG_ID
+
+    def test_shipped_reference_image_exists(self):
+        assert os.path.isfile(panel.BUTTON_REFERENCE_PATH)

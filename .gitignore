@@ -3,3 +3,5 @@ test.py
 .venv
 wimius_ir_codes.json
 .codex
+scripts/*
+!scripts/.gitkeep

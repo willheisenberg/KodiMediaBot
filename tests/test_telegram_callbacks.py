@@ -1,7 +1,19 @@
 """Tests for deletion logic in ui_callbacks.py."""
 import asyncio
+import os
+import sys
+
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
+
+os.environ.setdefault("KODI_HOST", "127.0.0.1")
+os.environ.setdefault("KODI_PORT", "8080")
+os.environ.setdefault("KODI_WS_PORT", "9090")
+os.environ.setdefault("KODI_USER", "kodi")
+os.environ.setdefault("KODI_PASS", "kodi")
+os.environ.setdefault("TG_TOKEN", "test:token")
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from kodibot.telegram import ui as UI
 from kodibot.telegram import ui_callbacks
@@ -133,3 +145,48 @@ async def test_on_button_delete_last_skips_confirmation(mock_ui, monkeypatch):
     
     fake_execute.assert_called_once()
     assert fake_execute.call_args[0][2]["index"] == 1
+
+
+@pytest.mark.asyncio
+async def test_on_button_help_show_displays_the_reference(mock_ui):
+    update = MagicMock()
+    update.callback_query.data = "help:show"
+    update.callback_query.answer = AsyncMock()
+    update.effective_chat.id = 123
+    update.effective_user.id = 789
+    mock_ui.show_button_reference = AsyncMock(return_value=True)
+
+    await ui_callbacks.on_button(update, MagicMock())
+
+    mock_ui.show_button_reference.assert_called_once()
+    assert mock_ui.show_button_reference.call_args[0][1] == 123
+    update.callback_query.answer.assert_called_with()
+
+
+@pytest.mark.asyncio
+async def test_on_button_help_show_warns_when_image_is_unavailable(mock_ui):
+    update = MagicMock()
+    update.callback_query.data = "help:show"
+    update.callback_query.answer = AsyncMock()
+    update.effective_chat.id = 123
+    update.effective_user.id = 789
+    mock_ui.show_button_reference = AsyncMock(return_value=False)
+
+    await ui_callbacks.on_button(update, MagicMock())
+
+    update.callback_query.answer.assert_called_with(text="⚠ Button reference unavailable")
+
+
+@pytest.mark.asyncio
+async def test_on_button_help_hide_removes_the_reference(mock_ui):
+    update = MagicMock()
+    update.callback_query.data = "help:hide"
+    update.callback_query.answer = AsyncMock()
+    update.effective_chat.id = 123
+    update.effective_user.id = 789
+    mock_ui.hide_button_reference = AsyncMock(return_value=True)
+
+    await ui_callbacks.on_button(update, MagicMock())
+
+    mock_ui.hide_button_reference.assert_called_once()
+    assert mock_ui.hide_button_reference.call_args[0][1] == 123
