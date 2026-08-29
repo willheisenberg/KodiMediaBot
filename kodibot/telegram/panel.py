@@ -29,6 +29,11 @@ from kodibot.telegram.rate import (
 
 log = logging.getLogger(__name__)
 
+# Queue list paging.  Twenty entries at up to TITLE_MAX_LEN visible characters
+# stay well inside Telegram's 4096-character message limit.
+PAGE_SIZE = 20
+TITLE_MAX_LEN = 120
+
 PANEL_STATUS_MIN_WIDTH = 67
 
 # assets/ sits next to kodibot/ both in the repo and in the image.
@@ -324,10 +329,56 @@ def delete_confirm_markup(token=None):
 
 # ── Formatting helpers ───────────────────────────────────────────────
 
+def visible_length(text):
+    """Length of text the way Telegram counts it: entities parsed, tags gone.
+
+    The 4096-character limit applies to the rendered text, not to the HTML we
+    send.  Measuring the raw string would count every ``<a href="...">`` and cut
+    pages far shorter than necessary.
+    """
+    return len(html.unescape(re.sub(r"<[^>]+>", "", text)))
+
+
+def truncate_title(title):
+    """Cap a single title so one pathological entry cannot blow the page."""
+    if len(title) <= TITLE_MAX_LEN:
+        return title
+    return title[:TITLE_MAX_LEN - 1] + "…"
+
+
+def page_count(total):
+    """Number of pages for a queue of ``total`` items (never less than one)."""
+    if total <= 0:
+        return 1
+    return (total + PAGE_SIZE - 1) // PAGE_SIZE
+
+
+def resolve_page(chat_id, total):
+    """Return the page to render, clamped, and remember it for the chat.
+
+    Until someone pages manually the page follows the playing track, so the
+    marker stays visible.  Clamping matters because the queue shrinks: sitting
+    on page 8 when 100 tracks are removed would otherwise render an empty page.
+    """
+    pages = page_count(total)
+    if S.LIST_PAGE_PINNED.get(chat_id):
+        page = S.LIST_PAGE.get(chat_id, 0)
+    else:
+        page = (queue_state.DISPLAY_INDEX or 0) // PAGE_SIZE
+    page = max(0, min(page, pages - 1))
+    S.LIST_PAGE[chat_id] = page
+    return page
+
+
 def format_item_line(i, it):
-    """Format a single queue item as a display line."""
+    """Format a single queue item as a display line.
+
+    ``i`` is the absolute queue index, never the position within a page: the
+    marker test below compares it against DISPLAY_INDEX, and a per-page index
+    would paint the marker on every page.
+    """
     mark = "▶ " if i == queue_state.DISPLAY_INDEX else ""
-    title = html.escape(it.get("title", ""), quote=False)
+    title = html.escape(truncate_title(it.get("title", "")), quote=False)
     link = it.get("link")
     if link:
         safe_link = html.escape(link, quote=True)
@@ -335,13 +386,70 @@ def format_item_line(i, it):
     return f"{mark}{i+1}. {title}"
 
 
-def build_list_text():
-    """Build the full queue list text for display."""
+def build_list_text(chat_id):
+    """Build one page of the queue list for display."""
     with queue_state.LOCK:
         if not queue_state.QUEUE:
             return "Queue empty."
-        lines = [format_item_line(i, it) for i, it in enumerate(queue_state.QUEUE)]
-        return "🎵 Playlist:\n\n" + "\n".join(lines)
+        total = len(queue_state.QUEUE)
+        pages = page_count(total)
+        page = resolve_page(chat_id, total)
+        start = page * PAGE_SIZE
+        lines = [
+            format_item_line(i, it)
+            for i, it in enumerate(
+                queue_state.QUEUE[start:start + PAGE_SIZE], start=start
+            )
+        ]
+        header = "🎵 Playlist:" if pages == 1 else f"🎵 Playlist ({page + 1}/{pages}):"
+        return header + "\n\n" + "\n".join(lines)
+
+
+def list_nav_markup(chat_id):
+    """Paging buttons for the list message, or None while it fits on one page.
+
+    All three buttons are always present so the row does not reflow as the page
+    changes.  At the first and last page the edge button is inert: page_step()
+    clamps, the render is identical, and the cache check skips the edit.
+    """
+    with queue_state.LOCK:
+        total = len(queue_state.QUEUE)
+    if total == 0 or page_count(total) <= 1:
+        return None
+    row = [
+        InlineKeyboardButton("◀", callback_data="list:prev"),
+        InlineKeyboardButton("▶ Aktuelle", callback_data="list:current"),
+        InlineKeyboardButton("▶", callback_data="list:next"),
+    ]
+    return InlineKeyboardMarkup([row])
+
+
+def list_render_key(chat_id, text):
+    """Cache key for the list message.
+
+    Text alone is not enough: paging away from the marker page and back leaves
+    the text identical while the keyboard has to gain a "current" button.
+    """
+    return (
+        text,
+        S.LIST_PAGE.get(chat_id, 0),
+        bool(S.LIST_PAGE_PINNED.get(chat_id)),
+    )
+
+
+def page_step(chat_id, delta):
+    """Move the list one page and pin it, so playback stops moving it."""
+    with queue_state.LOCK:
+        total = len(queue_state.QUEUE)
+    pages = page_count(total)
+    page = S.LIST_PAGE.get(chat_id, 0) + delta
+    S.LIST_PAGE[chat_id] = max(0, min(page, pages - 1))
+    S.LIST_PAGE_PINNED[chat_id] = True
+
+
+def unpin_page(chat_id):
+    """Return the list to auto-follow: the next render jumps to the marker."""
+    S.LIST_PAGE_PINNED.pop(chat_id, None)
 
 
 def format_link_line(i, title, link):
@@ -627,13 +735,10 @@ def current_subtitle_label(av_state):
 
 async def send_info_list_panel(ctx, chat_id):
     """Send the queue list and control panel messages."""
-    with queue_state.LOCK:
-        if not queue_state.QUEUE:
-            out = "Queue empty."
-        else:
-            lines = [format_item_line(i, it) for i, it in enumerate(queue_state.QUEUE)]
-            out = "\n".join(lines)
-    list_msg = await send_and_track(ctx, chat_id, out, parse_mode="HTML")
+    out = build_list_text(chat_id)
+    list_msg = await send_and_track(
+        ctx, chat_id, out, parse_mode="HTML", reply_markup=list_nav_markup(chat_id)
+    )
     S.LIST_MSG_ID[chat_id] = list_msg.message_id
     set_panel_menu_mode(chat_id, "main")
     panel_msg = await send_and_track(ctx, chat_id, "🎛 Kodi Remote - Current track:", reply_markup=control_panel(chat_id))
@@ -643,15 +748,19 @@ async def send_info_list_panel(ctx, chat_id):
 
 async def update_list_message(ctx, chat_id):
     msg_id = S.LIST_MSG_ID.get(chat_id)
-    text = build_list_text()
-    if S.LIST_RENDER_CACHE.get(chat_id) == text and msg_id:
+    text = build_list_text(chat_id)
+    markup = list_nav_markup(chat_id)
+    key = list_render_key(chat_id, text)
+    if S.LIST_RENDER_CACHE.get(chat_id) == key and msg_id:
         queue_state.LIST_DIRTY = False
         return
     if not msg_id:
         if S.PANEL_MSG_ID.get(chat_id):
-            list_msg = await send_and_track(ctx, chat_id, text, parse_mode="HTML")
+            list_msg = await send_and_track(
+                ctx, chat_id, text, parse_mode="HTML", reply_markup=markup
+            )
             S.LIST_MSG_ID[chat_id] = list_msg.message_id
-            S.LIST_RENDER_CACHE[chat_id] = text
+            S.LIST_RENDER_CACHE[chat_id] = key
             save_ui_state()
         else:
             await send_info_list_panel(ctx, chat_id)
@@ -663,22 +772,30 @@ async def update_list_message(ctx, chat_id):
             message_id=msg_id,
             text=text,
             parse_mode="HTML",
-            disable_web_page_preview=True
+            disable_web_page_preview=True,
+            reply_markup=markup,
         )
     except Exception as e:
         if is_not_modified_error(e):
-            S.LIST_RENDER_CACHE[chat_id] = text
+            S.LIST_RENDER_CACHE[chat_id] = key
             queue_state.LIST_DIRTY = False
             return
         if not should_recreate_after_edit_error(e):
+            # Clear the flag even though the edit failed.  Leaving it set makes
+            # the worker retry the identical render on its next pass, which
+            # turns one rejected message into an unbounded retry loop.
             log.info("List edit fail chat_id=%s message_id=%s err=%s", chat_id, msg_id, e)
+            queue_state.LIST_DIRTY = False
             return
-        list_msg = await send_and_track(ctx, chat_id, text, parse_mode="HTML")
+        list_msg = await send_and_track(
+            ctx, chat_id, text, parse_mode="HTML", reply_markup=markup
+        )
         S.LIST_MSG_ID[chat_id] = list_msg.message_id
-        S.LIST_RENDER_CACHE[chat_id] = text
+        S.LIST_RENDER_CACHE[chat_id] = key
         save_ui_state()
+        queue_state.LIST_DIRTY = False
     else:
-        S.LIST_RENDER_CACHE[chat_id] = text
+        S.LIST_RENDER_CACHE[chat_id] = key
         queue_state.LIST_DIRTY = False
 
 

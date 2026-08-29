@@ -161,6 +161,8 @@ async def reset_panel_command(update, ctx):
             UI.FIRST_BOT_ID.pop(chat_id, None)
             UI.STARTUP_POSTED.pop(chat_id, None)
             UI.LIST_MSG_ID.pop(chat_id, None)
+            UI.LIST_PAGE.pop(chat_id, None)
+            UI.LIST_PAGE_PINNED.pop(chat_id, None)
             UI.PANEL_MSG_ID.pop(chat_id, None)
             UI.PANEL_MENU_MODE.pop(chat_id, None)
             UI.LIST_RENDER_CACHE.pop(chat_id, None)

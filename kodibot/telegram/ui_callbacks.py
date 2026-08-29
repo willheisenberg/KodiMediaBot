@@ -606,6 +606,16 @@ async def on_button(update, ctx):
         ok = await asyncio.to_thread(run_display_power, False)
         await q.answer(text=f"{label} Off" if ok else f"⚠ {label} Off failed")
         sent = True
+    elif cmd in ("list:prev", "list:next", "list:current"):
+        # Paging only repaints the list message; no cleanup run, or we would
+        # delete the very messages the user is paging through.
+        if cmd == "list:current":
+            UI.unpin_page(chat_id)
+        else:
+            UI.page_step(chat_id, 1 if cmd == "list:next" else -1)
+        await UI.update_list_message(ctx, chat_id)
+        await q.answer()
+        return
     elif cmd == "airplay:kill":
         ok = await asyncio.to_thread(UI.kodi_api.run_airplay_kill)
         status = await asyncio.to_thread(UI.kodi_api.get_airplay_status)

@@ -39,6 +39,9 @@ from kodibot.telegram.panel import (
     load_ui_state,
     format_item_line,
     build_list_text,
+    list_nav_markup,
+    page_step,
+    unpin_page,
     format_link_line,
     chunk_selection_text,
     send_chunked_selection,
@@ -92,6 +95,8 @@ CLEANUP_DEFERRED = S.CLEANUP_DEFERRED
 CLEANUP_FAILED = S.CLEANUP_FAILED
 STARTUP_POSTED = S.STARTUP_POSTED
 LIST_MSG_ID = S.LIST_MSG_ID
+LIST_PAGE = S.LIST_PAGE
+LIST_PAGE_PINNED = S.LIST_PAGE_PINNED
 PANEL_MSG_ID = S.PANEL_MSG_ID
 PANEL_MENU_MODE = S.PANEL_MENU_MODE
 LIST_RENDER_CACHE = S.LIST_RENDER_CACHE

@@ -31,6 +31,12 @@ CLEANUP_FAILED_LIMIT = 2000
 CLEANUP_DELAY_SECONDS = 4
 STARTUP_POSTED = {}
 LIST_MSG_ID = {}
+# Queue list paging, per chat.  LIST_PAGE_PINNED is set once someone pages
+# manually; until then the page follows the playing track.  Deliberately not
+# persisted by save_ui_state() -- after a restart the list returns to
+# auto-follow.
+LIST_PAGE = {}
+LIST_PAGE_PINNED = {}
 PANEL_MSG_ID = {}
 PANEL_MENU_MODE = {}
 HA_MENU_MSG_ID = {}
