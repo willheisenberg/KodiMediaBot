@@ -76,6 +76,11 @@ class Config:
     sc_search_fail_ttl: float
     sc_search_timeout: float
 
+    # ── Spotify ──────────────────────────────────────────────────────
+    spotify_max_tracks: int
+    spotify_yt_timeout: float
+    spotify_timeout: float
+
     # ── Persistence ──────────────────────────────────────────────────
     playlist_dir: str
     ui_state_file: str
@@ -214,6 +219,10 @@ class Config:
             sc_search_ttl=float(os.environ.get("RADIO_SC_TTL", "21600")),
             sc_search_fail_ttl=float(os.environ.get("RADIO_SC_FAIL_TTL", "300")),
             sc_search_timeout=float(os.environ.get("RADIO_SC_TIMEOUT", "8")),
+            # Spotify
+            spotify_max_tracks=int(os.environ.get("SPOTIFY_MAX_TRACKS", "100")),
+            spotify_yt_timeout=float(os.environ.get("SPOTIFY_YT_TIMEOUT", "25")),
+            spotify_timeout=float(os.environ.get("SPOTIFY_TIMEOUT", "10")),
             # Persistence
             playlist_dir=os.environ.get("PLAYLIST_DIR", "/data/playlists"),
             ui_state_file=os.environ.get("UI_STATE_FILE", "/data/state/telegram_ui_state.json"),

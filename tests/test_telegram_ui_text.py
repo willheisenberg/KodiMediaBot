@@ -93,6 +93,7 @@ async def test_handle_text_youtube_playlist_and_video_skips_cleanup(mock_ui):
 
     mock_ui.kodi_api.YT.search.return_value = mock_vid
     mock_ui.kodi_api.PL.search.return_value = mock_pl
+    mock_ui.spotify.parse_spotify_url.return_value = None
     mock_ui.kodi_api.SC_SET.search.return_value = None
     mock_ui.kodi_api.SC.search.return_value = None
     mock_ui.kodi_api.SC_SHORT.search.return_value = None

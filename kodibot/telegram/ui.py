@@ -13,6 +13,7 @@ from telegram.error import RetryAfter, TimedOut, NetworkError, BadRequest, Forbi
 from kodibot.core import kodi_api
 from kodibot.core import playlist_store
 from kodibot.core import queue_state
+from kodibot.core import spotify
 from kodibot.core import homeassistant as ha
 from kodibot.telegram import media
 from kodibot.telegram import state as S

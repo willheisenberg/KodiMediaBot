@@ -16,6 +16,9 @@ Those temporary media files are deleted again after playback stops.
   edited in place across container restarts and redeployments.
 - YouTube and SoundCloud queues with play/pause, next/previous, repeat, seeking,
   queue editing and saved playlists.
+- Spotify playlists, albums and tracks, resolved to the matching YouTube videos
+  and queued — no Spotify account or API key required (see
+  [Spotify links](#spotify-links)).
 - Kodi favourites, movie/series browsing, audio-track and subtitle selection.
 - Radio Browser search, IPTV channel search and radio/TV favourites.
 - Configurable TV or projector power commands, optional CEC/Denon controls and
@@ -204,6 +207,8 @@ services:
       DENON_HOST: ""
       DEBUG_WS: "1"
       SC_CLIENT_ID: "YOUR_CLIENT_ID"
+      SPOTIFY_MAX_TRACKS: "100"
+      SPOTIFY_TIMEOUT: "10"
       MEDIA_BASE_URL: "http://YOUR_HOST_IP:8765"
       UI_STATE_FILE: "/data/state/telegram_ui_state.json"
       TELEGRAM_LOCAL_MODE: "1"
@@ -260,6 +265,11 @@ docker compose -f docker-compose.local-bot-api.yml up -d --build
 - **`telegram-bot-api`**: Used for large Telegram uploads. It stores files under `/var/lib/telegram-bot-api`. This volume is mounted into `kodi-media-bot` as read-only.
 - **`kodi-media-bot`**: The main bot container.
 - **`caddy-webapp`**: Public HTTPS reverse proxy required for the Telegram Mini App (Home Assistant color picker).
+
+Environment variables worth calling out:
+- **`SPOTIFY_MAX_TRACKS`**: Upper bound on how many tracks one Spotify link may add. Default `100`. Reading Spotify needs no account and no credentials — see [Spotify links](#spotify-links).
+- **`SPOTIFY_TIMEOUT`**: HTTP timeout in seconds when fetching a Spotify page. Default `10`.
+- **`SPOTIFY_YT_TIMEOUT`**: Timeout in seconds for one YouTube search while resolving a Spotify link. Default `25`. This is deliberately far above `RADIO_YT_TIMEOUT`: the bot resolves five tracks at a time, and parallel `yt-dlp` searches are much slower than a single one. Too low a value silently drops tracks — they look like "no match found". Raise it on slow hardware.
 
 Bot data is persisted on the host in `/storage/docker/partyqueue/` (playlists, uploads, HA colors, SSH keys).
 
@@ -366,6 +376,55 @@ Notes:
 - If Kodi can reach the bot under `http://172.17.0.1:8765`, then `MEDIA_BASE_URL=http://172.17.0.1:8765` is fine.
 - If Kodi cannot reach that address, use the real LAN IP of the Docker host instead, for example `http://192.168.178.10:8765`.
 
+## Spotify links
+
+Send a link like `https://open.spotify.com/playlist/...` into the chat and the
+bot reads the track list, searches YouTube for each title and queues every
+confident match. Playlists, albums and single tracks all work; regional links
+(`/intl-de/`) and the `?si=...` share suffix are handled.
+
+**No Spotify account, API key or configuration is required.** The bot reads the
+public embed page — the one Spotify serves so that players can be embedded in
+third-party websites. Nothing needs to be set up; the feature works out of the
+box.
+
+Nothing is streamed from Spotify. What you get is a re-interpretation of the
+playlist: the titles are looked up on YouTube and played from there. Titles
+without a convincing YouTube match are skipped rather than guessed at, so the
+confirmation reports both numbers, for example `Spotify: 54 of 60 tracks
+queued.` Chart pop resolves almost completely; obscure or purely electronic
+tracks less so.
+
+Because each track costs one `yt-dlp` search, a long playlist takes a while —
+measured on a LibreELEC box, about 2 seconds per track, so roughly half a
+minute for a 14-track album and several minutes for a full 100. The bot
+acknowledges the link immediately so you know it arrived.
+
+### Limits
+
+- **100 tracks per link.** The embed page stops there regardless of how long the
+  playlist actually is, and it does not report the real length. When exactly 100
+  tracks come back, the bot says so in its confirmation, because the playlist
+  was probably longer. Lower it with `SPOTIFY_MAX_TRACKS` if you
+  want shorter batches.
+- **Playlists must be public.** Private ones are not readable without an
+  account, and the bot has none.
+- Playlists curated by Spotify itself (Discover Weekly, Release Radar and the
+  editorial lists) *do* work this way, unlike through the official Web API.
+
+### Why not the official Web API
+
+Since February 2026 Spotify requires the owner of a developer app to hold an
+active Premium subscription, allows only one development-mode client ID per
+account, and stops the app from working if the subscription lapses. A free
+account can no longer register an app at all. Spotify's own curated playlists
+additionally return 404 for apps registered after late 2024.
+
+The embed page has none of those constraints. Its drawback is that its internal
+structure is undocumented: if Spotify changes the page layout, reading it breaks.
+That case is handled — the bot reports the link as unreadable and keeps running
+normally.
+
 ## Troubleshooting
 - `ssh: not found`: install `openssh-client` in the image.
 - `Host key verification failed`: the bot uses SSH options to skip host key checks.
@@ -374,6 +433,12 @@ Notes:
   `KODI_USER`, `KODI_PASS` and `KODI_PORT` match Kodi's web-server settings.
 - Duplicate panels after a restart: verify that `UI_STATE_FILE` points into the
   persistent state volume and is writable by the bot.
+- A Spotify link reports that it cannot be read: the playlist is private or
+  deleted. If public links stopped working altogether, Spotify likely changed
+  the embed page — see [Spotify links](#spotify-links).
+- A Spotify playlist queues far fewer tracks than it holds: the embed page caps
+  at 100 tracks, `SPOTIFY_MAX_TRACKS` may cap it lower, and titles without a
+  convincing YouTube match are skipped on purpose.
 - `sh: .env: ... not found` while sourcing `.env`: Compose accepts command
   values containing spaces, but a shell does not unless they are quoted. Avoid
   sourcing the complete Compose `.env`; read individual values when needed.

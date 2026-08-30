@@ -1124,6 +1124,34 @@ async def handle_text(update, ctx):
             await UI.update_list_message(ctx, chat_id)
         return
 
+    spotify_link = UI.spotify.parse_spotify_url(txt)
+    if spotify_link:
+        kind, sid = spotify_link
+        tracks = None
+        try:
+            tracks = await asyncio.to_thread(UI.spotify.fetch_tracks, kind, sid)
+            UI.log.info(
+                "SPOTIFY LINK chat_id=%s kind=%s id=%s tracks=%d",
+                chat_id, kind, sid, len(tracks),
+            )
+        except UI.spotify.SpotifyUnavailable as e:
+            UI.log.info("SPOTIFY UNAVAILABLE chat_id=%s kind=%s id=%s err=%s", chat_id, kind, sid, e)
+            await UI.send_toast_message(ctx, chat_id, UI.t("spotify_unavailable"))
+        if tracks:
+            # Resolving runs one yt-dlp search per track, so say something first.
+            await UI.send_toast_message(ctx, chat_id, UI.t("spotify_resolving", count=len(tracks)))
+            # The embed page stops at its limit without saying how long the
+            # playlist really was, so exactly that many means "probably more".
+            capped = len(tracks) >= UI.spotify.EMBED_TRACK_LIMIT
+            added, total = await UI.queue_state.queue_spotify_async(tracks)
+            key = "spotify_added_capped" if capped else "spotify_added"
+            await UI.send_toast_message(ctx, chat_id, UI.t(key, added=added, total=total))
+        elif tracks is not None:
+            await UI.send_toast_message(ctx, chat_id, UI.t("spotify_unavailable"))
+        UI.schedule_cleanup(ctx, chat_id, prev_id)
+        await UI.update_list_message(ctx, chat_id)
+        return
+
     sc_set = UI.kodi_api.SC_SET.search(txt)
     if sc_set and UI.queue_state.is_sc_set_url(sc_set.group(0)):
         count = await UI.queue_state.queue_soundcloud_set_async(sc_set.group(0))

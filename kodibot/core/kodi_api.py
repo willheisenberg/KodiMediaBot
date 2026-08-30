@@ -459,6 +459,7 @@ from kodibot.core.kodi_metadata import (
     search_soundcloud_link,
     radio_title_to_youtube_link,
     radio_title_to_soundcloud_link,
+    spotify_track_to_youtube_id,
     resolve_radio_title,
     get_cached_soundcloud_permalink,
     cache_soundcloud_permalink,
