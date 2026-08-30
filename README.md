@@ -65,9 +65,11 @@ The optional `PANEL_SHOW_*` flags remove their matching button rows. Hifi,
 AirPlay and volume status text is hidden by the same flags. When those status
 fields are hidden, a neutral divider keeps the inline keyboard at a stable width.
 
-To discover a group ID, temporarily stop the bot so it does not consume updates,
-send any message in the group and query the local Bot API. Read
-`result[].message.chat.id` from the response:
+Set `STARTUP_CHAT_ID` before the first bot start. To discover a group ID,
+keep the bot stopped so it does not consume the update first, send any message
+in the target group and query the local Bot API. Read
+`result[].message.chat.id` from the response and put it into `/storage/.env` as
+`STARTUP_CHAT_ID`:
 
 ```bash
 TG_TOKEN=$(sed -n 's/^TG_TOKEN=//p' /storage/.env | head -n1)
