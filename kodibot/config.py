@@ -174,7 +174,7 @@ class Config:
             kodi_pass=os.environ["KODI_PASS"],
             # Telegram
             tg_token=os.environ["TG_TOKEN"],
-            startup_chat_id=int(os.environ.get("STARTUP_CHAT_ID", "-1003641420817")),
+            startup_chat_id=int(os.environ["STARTUP_CHAT_ID"]),
             telegram_local_mode=_bool_env("TELEGRAM_LOCAL_MODE"),
             telegram_base_url=(os.environ.get("TELEGRAM_BASE_URL") or "").strip(),
             telegram_base_file_url=(os.environ.get("TELEGRAM_BASE_FILE_URL") or "").strip(),
