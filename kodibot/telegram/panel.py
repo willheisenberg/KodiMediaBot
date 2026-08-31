@@ -19,14 +19,31 @@ from kodibot.core import kodi_api
 from kodibot.core import queue_state
 from kodibot.core import homeassistant as ha
 from kodibot.config import CFG
+from kodibot.telegram.i18n import LANG, localized_asset, repeat_mode_label, t
 from kodibot.telegram import state as S
 from kodibot.telegram.rate import (
     telegram_request,
     telegram_request_delete,
     send_and_track,
+    delete_message_if_present,
 )
 
 log = logging.getLogger(__name__)
+
+# Queue list paging.  Twenty entries at up to TITLE_MAX_LEN visible characters
+# stay well inside Telegram's 4096-character message limit.
+PAGE_SIZE = 20
+TITLE_MAX_LEN = 120
+
+PANEL_STATUS_MIN_WIDTH = 67
+PANEL_STATUS_MIN_WIDTH_IDLE = 67
+PANEL_STATUS_MIN_WIDTH_NO_PREVIEW = 124
+
+BUTTON_REFERENCE_PATH = localized_asset(
+    "panel_button_reference.png",
+    "panel_button_reference_de.png",
+)
+LEGACY_UI_STATE_FILE = "/data/playlists/telegram_ui_state.json"
 
 
 # ── Error classification ─────────────────────────────────────────────
@@ -51,6 +68,7 @@ def is_not_modified_error(err):
 def save_ui_state():
     try:
         data = {
+            "language": LANG,
             "list_msg_id": S.LIST_MSG_ID,
             "panel_msg_id": S.PANEL_MSG_ID,
             "first_bot_id": S.FIRST_BOT_ID,
@@ -58,6 +76,9 @@ def save_ui_state():
             "prev_bot_id": S.PREV_BOT_ID,
             "last_cleanup_id": S.LAST_CLEANUP_ID,
         }
+        parent = os.path.dirname(CFG.ui_state_file)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         tmp = f"{CFG.ui_state_file}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f)
@@ -67,15 +88,28 @@ def save_ui_state():
 
 
 def load_ui_state():
+    state_file = CFG.ui_state_file
+    migrated_from_legacy = False
+    if (
+        state_file != LEGACY_UI_STATE_FILE
+        and not os.path.exists(state_file)
+        and os.path.exists(LEGACY_UI_STATE_FILE)
+    ):
+        state_file = LEGACY_UI_STATE_FILE
+        migrated_from_legacy = True
+        log.info("UI state using legacy file for migration file=%s", state_file)
     try:
-        with open(CFG.ui_state_file, "r", encoding="utf-8") as f:
+        with open(state_file, "r", encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError:
         return
     except Exception as e:
-        log.warning("UI state load fail file=%s err=%s", CFG.ui_state_file, e)
+        log.warning("UI state load fail file=%s err=%s", state_file, e)
         return
     chats = set()
+    stored_language = data.get("language")
+    if stored_language and stored_language != LANG:
+        log.info("UI state language changed stored=%s current=%s", stored_language, LANG)
     for store_name, target in (
         ("list_msg_id", S.LIST_MSG_ID),
         ("panel_msg_id", S.PANEL_MSG_ID),
@@ -89,19 +123,22 @@ def load_ui_state():
         for k, v in raw.items():
             target[int(k)] = v
             chats.add(int(k))
-    log.info("UI state loaded file=%s chats=%d", CFG.ui_state_file, len(chats))
+    log.info("UI state loaded file=%s chats=%d", state_file, len(chats))
+    if migrated_from_legacy:
+        save_ui_state()
+        log.info("UI state migrated file=%s", CFG.ui_state_file)
 
 
 # ── Status text helpers ──────────────────────────────────────────────
 
 def resolve_airplay_status_text(status):
     if status == "On":
-        return "AirPlay: On"
+        return t("airplay_on")
     if status == "Off":
-        return "AirPlay: Off"
-    if S.HIFI_STATUS_CACHE == "🔴 Hifi: Standby":
-        return "AirPlay: Off"
-    return "AirPlay: Unknown"
+        return t("airplay_off")
+    if S.HIFI_STATUS_CACHE == t("hifi_standby_status"):
+        return t("airplay_off")
+    return t("airplay_unknown")
 
 
 # ── Control panel markup ─────────────────────────────────────────────
@@ -128,33 +165,40 @@ def build_main_control_panel(play_label):
             InlineKeyboardButton("⏹", callback_data="stop"),
         ],
         [
-            InlineKeyboardButton("🎛 Controls", callback_data="controls:menu"),
+            InlineKeyboardButton(t("controls"), callback_data="controls:menu"),
         ],
-        [
+    ]
+    if CFG.panel_show_volume:
+        rows.append([
             InlineKeyboardButton("🔉 -5", callback_data="vol:down5"),
             InlineKeyboardButton("🔊 +5", callback_data="vol:up5"),
             InlineKeyboardButton("🔉 -10", callback_data="vol:down10"),
             InlineKeyboardButton("🔊 +10", callback_data="vol:up10"),
-        ],
-        [
-            InlineKeyboardButton("⭐", callback_data="fav:ask"),
-            InlineKeyboardButton("🎬", callback_data="media:ask"),
-            InlineKeyboardButton("🗣", callback_data="av:ask"),
-        ],
-        [
-            InlineKeyboardButton("🔌 Hifi On", callback_data="hifi:on"),
-            InlineKeyboardButton("🔌 Hifi Off", callback_data="hifi:off"),
-        ],
-        [
-            InlineKeyboardButton("📽 Beamer On", callback_data="beamer:on"),
-            InlineKeyboardButton("📽 Beamer Off", callback_data="beamer:off"),
-        ],
-    ]
-    if ha.ha_available():
-        rows.append([
-            InlineKeyboardButton("☠️ AirPlay Kill", callback_data="airplay:kill"),
-            InlineKeyboardButton("🏠 Home Assistant", callback_data="ha:menu"),
         ])
+    rows.append([
+        InlineKeyboardButton("⭐", callback_data="fav:ask"),
+        InlineKeyboardButton("🎬", callback_data="media:ask"),
+        InlineKeyboardButton("🗣", callback_data="av:ask"),
+    ])
+    if CFG.panel_show_hifi:
+        rows.append([
+            InlineKeyboardButton(t("hifi_on"), callback_data="hifi:on"),
+            InlineKeyboardButton(t("hifi_off"), callback_data="hifi:off"),
+        ])
+    if CFG.panel_show_display:
+        rows.append([
+            InlineKeyboardButton(t("display_on", label=CFG.display_button_label), callback_data="display:on"),
+            InlineKeyboardButton(t("display_off", label=CFG.display_button_label), callback_data="display:off"),
+        ])
+    # AirPlay Kill is a CEC command and stands on its own; Home Assistant
+    # additionally needs a reachable HA instance.
+    extras = []
+    if CFG.panel_show_airplay:
+        extras.append(InlineKeyboardButton(t("airplay_kill"), callback_data="airplay:kill"))
+    if CFG.panel_show_ha and ha.ha_available():
+        extras.append(InlineKeyboardButton(t("home_assistant"), callback_data="ha:menu"))
+    if extras:
+        rows.append(extras)
     return rows
 
 
@@ -175,14 +219,14 @@ def build_controls_panel():
             InlineKeyboardButton("+10m", callback_data="seek:+10m"),
         ],
         [
-            InlineKeyboardButton("⏱ % Seek", callback_data="seek:percent"),
-            InlineKeyboardButton("🔁 Repeat", callback_data="repeat"),
+            InlineKeyboardButton(t("percent_seek"), callback_data="seek:percent"),
+            InlineKeyboardButton(t("repeat"), callback_data="repeat"),
         ],
         [
             InlineKeyboardButton("🗑 №", callback_data="delete:ask"),
-            InlineKeyboardButton("🗑 First", callback_data="delete:first"),
-            InlineKeyboardButton("🗑 Last", callback_data="delete:last"),
-            InlineKeyboardButton("🗑 All", callback_data="deleteall"),
+            InlineKeyboardButton(t("delete_first"), callback_data="delete:first"),
+            InlineKeyboardButton(t("delete_last"), callback_data="delete:last"),
+            InlineKeyboardButton(t("delete_all"), callback_data="deleteall"),
         ],
         [
             InlineKeyboardButton("🎶 💾", callback_data="plist:save"),
@@ -198,7 +242,10 @@ def build_controls_panel():
             InlineKeyboardButton("📺 🔍", callback_data="tv:ask"),
         ],
         [
-            InlineKeyboardButton("⬅ Back", callback_data="controls:back"),
+            InlineKeyboardButton(t("buttons"), callback_data="help:show"),
+        ],
+        [
+            InlineKeyboardButton(t("back"), callback_data="controls:back"),
         ],
     ]
 
@@ -211,25 +258,159 @@ def control_panel(chat_id=None, *, mode=None):
     return InlineKeyboardMarkup(rows)
 
 
+def build_panel_status_parts(progress_text=None, min_width=PANEL_STATUS_MIN_WIDTH):
+    status_parts = []
+    hifi_text = S.HIFI_STATUS_CACHE
+    if CFG.panel_show_hifi:
+        status_parts.append(hifi_text)
+    if CFG.panel_show_airplay:
+        status_parts.append(S.AIRPLAY_STATUS_CACHE)
+    status_parts.append(t("repeat_status", mode=repeat_mode_label(queue_state.REPEAT_MODE)))
+    if CFG.panel_show_volume and hifi_text != t("hifi_standby_status"):
+        status_parts.append(S.DENON_VOLUME_CACHE)
+    if progress_text:
+        status_parts.append(f"⏱ {progress_text}")
+    status_flag_disabled = not (
+        CFG.panel_show_hifi
+        and CFG.panel_show_airplay
+        and CFG.panel_show_volume
+    )
+    if status_flag_disabled:
+        status_width = sum(len(part) for part in status_parts) + 3 * (len(status_parts) - 1)
+        filler_width = min_width - status_width - 3
+        if filler_width > 0:
+            status_parts.append("─" * filler_width)
+    return status_parts
+
+
+def panel_status_min_width(text, progress_text=None):
+    if progress_text:
+        return PANEL_STATUS_MIN_WIDTH_NO_PREVIEW
+    if text == t("nothing_playing_plain"):
+        return PANEL_STATUS_MIN_WIDTH_IDLE
+    if "<a href=" in text:
+        return PANEL_STATUS_MIN_WIDTH
+    return PANEL_STATUS_MIN_WIDTH_NO_PREVIEW
+
+
+def button_reference_markup():
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton(t("hide"), callback_data="help:hide")]]
+    )
+
+
+async def hide_button_reference(ctx, chat_id):
+    """Remove the button reference image if one is on screen."""
+    msg_id = S.HELP_MSG_ID.pop(chat_id, None)
+    if not msg_id:
+        return False
+    await delete_message_if_present(ctx, chat_id, msg_id)
+    return True
+
+
+async def show_button_reference(ctx, chat_id):
+    """Send the button reference image with its own hide button.
+
+    Any image still on screen is dropped first.  Pressing the button twice
+    therefore moves the image back down next to the panel instead of stacking
+    a second copy, and it recovers when the message was deleted by hand.
+    """
+    await hide_button_reference(ctx, chat_id)
+    photo = S.HELP_PHOTO_FILE_ID
+    try:
+        if photo:
+            msg = await telegram_request(
+                ctx.bot.send_photo,
+                chat_id=chat_id,
+                photo=photo,
+                reply_markup=button_reference_markup(),
+            )
+        else:
+            with open(BUTTON_REFERENCE_PATH, "rb") as fh:
+                msg = await telegram_request(
+                    ctx.bot.send_photo,
+                    chat_id=chat_id,
+                    photo=fh,
+                    reply_markup=button_reference_markup(),
+                )
+    except FileNotFoundError:
+        log.warning("Button reference image missing at %s", BUTTON_REFERENCE_PATH)
+        return False
+    except Exception as e:
+        log.warning("Button reference send failed chat_id=%s err=%s", chat_id, e)
+        return False
+    S.HELP_MSG_ID[chat_id] = msg.message_id
+    # Remember the uploaded file so later presses cost one id instead of 1.5 MB.
+    if not S.HELP_PHOTO_FILE_ID and getattr(msg, "photo", None):
+        S.HELP_PHOTO_FILE_ID = msg.photo[-1].file_id
+    return True
+
+
 def cancel_markup():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="prompt:cancel")]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton(t("cancel"), callback_data="prompt:cancel")]])
 
 
 def delete_confirm_markup(token=None):
     yes_callback = f"delete_confirm:{token}:yes" if token else "delete_confirm:yes"
     no_callback = f"delete_confirm:{token}:no" if token else "delete_confirm:no"
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Yes", callback_data=yes_callback),
-        InlineKeyboardButton("❌ No", callback_data=no_callback),
+        InlineKeyboardButton(t("yes"), callback_data=yes_callback),
+        InlineKeyboardButton(t("no"), callback_data=no_callback),
     ]])
 
 
 # ── Formatting helpers ───────────────────────────────────────────────
 
+def visible_length(text):
+    """Length of text the way Telegram counts it: entities parsed, tags gone.
+
+    The 4096-character limit applies to the rendered text, not to the HTML we
+    send.  Measuring the raw string would count every ``<a href="...">`` and cut
+    pages far shorter than necessary.
+    """
+    return len(html.unescape(re.sub(r"<[^>]+>", "", text)))
+
+
+def truncate_title(title):
+    """Cap a single title so one pathological entry cannot blow the page."""
+    if len(title) <= TITLE_MAX_LEN:
+        return title
+    return title[:TITLE_MAX_LEN - 1] + "…"
+
+
+def page_count(total):
+    """Number of pages for a queue of ``total`` items (never less than one)."""
+    if total <= 0:
+        return 1
+    return (total + PAGE_SIZE - 1) // PAGE_SIZE
+
+
+def resolve_page(chat_id, total):
+    """Return the page to render, clamped, and remember it for the chat.
+
+    Until someone pages manually the page follows the playing track, so the
+    marker stays visible.  Clamping matters because the queue shrinks: sitting
+    on page 8 when 100 tracks are removed would otherwise render an empty page.
+    """
+    pages = page_count(total)
+    if S.LIST_PAGE_PINNED.get(chat_id):
+        page = S.LIST_PAGE.get(chat_id, 0)
+    else:
+        page = (queue_state.DISPLAY_INDEX or 0) // PAGE_SIZE
+    page = max(0, min(page, pages - 1))
+    S.LIST_PAGE[chat_id] = page
+    return page
+
+
 def format_item_line(i, it):
-    """Format a single queue item as a display line."""
+    """Format a single queue item as a display line.
+
+    ``i`` is the absolute queue index, never the position within a page: the
+    marker test below compares it against DISPLAY_INDEX, and a per-page index
+    would paint the marker on every page.
+    """
     mark = "▶ " if i == queue_state.DISPLAY_INDEX else ""
-    title = html.escape(it.get("title", ""), quote=False)
+    title = html.escape(truncate_title(it.get("title", "")), quote=False)
     link = it.get("link")
     if link:
         safe_link = html.escape(link, quote=True)
@@ -237,13 +418,70 @@ def format_item_line(i, it):
     return f"{mark}{i+1}. {title}"
 
 
-def build_list_text():
-    """Build the full queue list text for display."""
+def build_list_text(chat_id):
+    """Build one page of the queue list for display."""
     with queue_state.LOCK:
         if not queue_state.QUEUE:
-            return "Queue empty."
-        lines = [format_item_line(i, it) for i, it in enumerate(queue_state.QUEUE)]
-        return "🎵 Playlist:\n\n" + "\n".join(lines)
+            return t("queue_empty")
+        total = len(queue_state.QUEUE)
+        pages = page_count(total)
+        page = resolve_page(chat_id, total)
+        start = page * PAGE_SIZE
+        lines = [
+            format_item_line(i, it)
+            for i, it in enumerate(
+                queue_state.QUEUE[start:start + PAGE_SIZE], start=start
+            )
+        ]
+        header = t("playlist") if pages == 1 else t("playlist_page", page=page + 1, pages=pages)
+        return header + "\n\n" + "\n".join(lines)
+
+
+def list_nav_markup(chat_id):
+    """Paging buttons for the list message, or None while it fits on one page.
+
+    All three buttons are always present so the row does not reflow as the page
+    changes.  At the first and last page the edge button is inert: page_step()
+    clamps, the render is identical, and the cache check skips the edit.
+    """
+    with queue_state.LOCK:
+        total = len(queue_state.QUEUE)
+    if total == 0 or page_count(total) <= 1:
+        return None
+    row = [
+        InlineKeyboardButton("◀", callback_data="list:prev"),
+        InlineKeyboardButton(t("list_current"), callback_data="list:current"),
+        InlineKeyboardButton("▶", callback_data="list:next"),
+    ]
+    return InlineKeyboardMarkup([row])
+
+
+def list_render_key(chat_id, text):
+    """Cache key for the list message.
+
+    Text alone is not enough: paging away from the marker page and back leaves
+    the text identical while the keyboard has to gain a "current" button.
+    """
+    return (
+        text,
+        S.LIST_PAGE.get(chat_id, 0),
+        bool(S.LIST_PAGE_PINNED.get(chat_id)),
+    )
+
+
+def page_step(chat_id, delta):
+    """Move the list one page and pin it, so playback stops moving it."""
+    with queue_state.LOCK:
+        total = len(queue_state.QUEUE)
+    pages = page_count(total)
+    page = S.LIST_PAGE.get(chat_id, 0) + delta
+    S.LIST_PAGE[chat_id] = max(0, min(page, pages - 1))
+    S.LIST_PAGE_PINNED[chat_id] = True
+
+
+def unpin_page(chat_id):
+    """Return the list to auto-follow: the next render jumps to the marker."""
+    S.LIST_PAGE_PINNED.pop(chat_id, None)
 
 
 def format_link_line(i, title, link):
@@ -286,7 +524,7 @@ async def send_chunked_selection(ctx, chat_id, header, lines, footer=None, extra
                     else:
                         label, callback_data = btn
                         rows.append([InlineKeyboardButton(label, callback_data=callback_data)])
-            rows.append([InlineKeyboardButton("❌ Cancel", callback_data="prompt:cancel")])
+            rows.append([InlineKeyboardButton(t("cancel"), callback_data="prompt:cancel")])
             markup = InlineKeyboardMarkup(rows)
         msg = await send_and_track(ctx, chat_id, chunk, parse_mode="HTML", reply_markup=markup)
         msg_ids.append(msg.message_id)
@@ -301,7 +539,7 @@ async def send_button_selection(ctx, chat_id, text, items, callback_prefix, item
         for label, suffix in items[i:i + items_per_row]:
             row.append(InlineKeyboardButton(label, callback_data=f"{callback_prefix}:{suffix}"))
         rows.append(row)
-    rows.append([InlineKeyboardButton("❌ Cancel", callback_data="prompt:cancel")])
+    rows.append([InlineKeyboardButton(t("cancel"), callback_data="prompt:cancel")])
     msg = await send_and_track(ctx, chat_id, text, reply_markup=InlineKeyboardMarkup(rows))
     return msg.message_id
 
@@ -338,7 +576,7 @@ def movie_list_lines(movies):
     lines = []
     thirty_days_ago = datetime.now() - timedelta(days=30)
     for i, movie in enumerate(movies):
-        title = movie.get("label") or movie.get("title") or "Unknown"
+        title = movie.get("label") or movie.get("title") or t("unknown")
         year = movie.get("year")
         if year:
             title = f"{title} ({year})"
@@ -367,7 +605,7 @@ def show_list_lines(shows):
     lines = []
     thirty_days_ago = datetime.now() - timedelta(days=30)
     for i, show in enumerate(shows):
-        title = show.get("label") or show.get("title") or "Unknown"
+        title = show.get("label") or show.get("title") or t("unknown")
         year = show.get("year")
         if year:
             title = f"{title} ({year})"
@@ -403,7 +641,7 @@ def episode_list_lines(episodes):
             prefix = f"S{season:02d}E{number:02d} "
         else:
             prefix = f"S{season}E{number} "
-        title = f"{prefix}{ep.get('label') or ep.get('title') or 'Unknown'}".strip()
+        title = f"{prefix}{ep.get('label') or ep.get('title') or t('unknown')}".strip()
         
         ctime = ep.get("ctime")
         if ctime:
@@ -498,7 +736,7 @@ def format_av_track(idx, name, lang, codec=None, channels=None):
     if channels:
         parts.append(f"{channels}ch")
         
-    label = " · ".join(parts) or f"Track {idx}"
+    label = " · ".join(parts) or t("track_fallback", index=idx)
     return label
 
 
@@ -517,11 +755,11 @@ def av_stream_label(stream):
 
 def current_subtitle_label(av_state):
     if not av_state.get("subtitleenabled"):
-        return "Off"
+        return t("off")
     sub = av_state.get("currentsubtitle") or {}
     idx = sub.get("index")
     if idx is None:
-        return "Off"
+        return t("off")
     return format_av_track(idx, sub.get("name"), sub.get("language"))
 
 
@@ -529,31 +767,32 @@ def current_subtitle_label(av_state):
 
 async def send_info_list_panel(ctx, chat_id):
     """Send the queue list and control panel messages."""
-    with queue_state.LOCK:
-        if not queue_state.QUEUE:
-            out = "Queue empty."
-        else:
-            lines = [format_item_line(i, it) for i, it in enumerate(queue_state.QUEUE)]
-            out = "\n".join(lines)
-    list_msg = await send_and_track(ctx, chat_id, out, parse_mode="HTML")
+    out = build_list_text(chat_id)
+    list_msg = await send_and_track(
+        ctx, chat_id, out, parse_mode="HTML", reply_markup=list_nav_markup(chat_id)
+    )
     S.LIST_MSG_ID[chat_id] = list_msg.message_id
     set_panel_menu_mode(chat_id, "main")
-    panel_msg = await send_and_track(ctx, chat_id, "🎛 Kodi Remote - Current track:", reply_markup=control_panel(chat_id))
+    panel_msg = await send_and_track(ctx, chat_id, t("now_playing_title"), reply_markup=control_panel(chat_id))
     S.PANEL_MSG_ID[chat_id] = panel_msg.message_id
     save_ui_state()
 
 
 async def update_list_message(ctx, chat_id):
     msg_id = S.LIST_MSG_ID.get(chat_id)
-    text = build_list_text()
-    if S.LIST_RENDER_CACHE.get(chat_id) == text and msg_id:
+    text = build_list_text(chat_id)
+    markup = list_nav_markup(chat_id)
+    key = list_render_key(chat_id, text)
+    if S.LIST_RENDER_CACHE.get(chat_id) == key and msg_id:
         queue_state.LIST_DIRTY = False
         return
     if not msg_id:
         if S.PANEL_MSG_ID.get(chat_id):
-            list_msg = await send_and_track(ctx, chat_id, text, parse_mode="HTML")
+            list_msg = await send_and_track(
+                ctx, chat_id, text, parse_mode="HTML", reply_markup=markup
+            )
             S.LIST_MSG_ID[chat_id] = list_msg.message_id
-            S.LIST_RENDER_CACHE[chat_id] = text
+            S.LIST_RENDER_CACHE[chat_id] = key
             save_ui_state()
         else:
             await send_info_list_panel(ctx, chat_id)
@@ -565,22 +804,30 @@ async def update_list_message(ctx, chat_id):
             message_id=msg_id,
             text=text,
             parse_mode="HTML",
-            disable_web_page_preview=True
+            disable_web_page_preview=True,
+            reply_markup=markup,
         )
     except Exception as e:
         if is_not_modified_error(e):
-            S.LIST_RENDER_CACHE[chat_id] = text
+            S.LIST_RENDER_CACHE[chat_id] = key
             queue_state.LIST_DIRTY = False
             return
         if not should_recreate_after_edit_error(e):
+            # Clear the flag even though the edit failed.  Leaving it set makes
+            # the worker retry the identical render on its next pass, which
+            # turns one rejected message into an unbounded retry loop.
             log.info("List edit fail chat_id=%s message_id=%s err=%s", chat_id, msg_id, e)
+            queue_state.LIST_DIRTY = False
             return
-        list_msg = await send_and_track(ctx, chat_id, text, parse_mode="HTML")
+        list_msg = await send_and_track(
+            ctx, chat_id, text, parse_mode="HTML", reply_markup=markup
+        )
         S.LIST_MSG_ID[chat_id] = list_msg.message_id
-        S.LIST_RENDER_CACHE[chat_id] = text
+        S.LIST_RENDER_CACHE[chat_id] = key
         save_ui_state()
+        queue_state.LIST_DIRTY = False
     else:
-        S.LIST_RENDER_CACHE[chat_id] = text
+        S.LIST_RENDER_CACHE[chat_id] = key
         queue_state.LIST_DIRTY = False
 
 
@@ -623,7 +870,7 @@ async def get_now_playing_text():
                 return f'▶ <a href="{safe_link}">{safe_name}</a>', None
             return f"▶ {safe_name}", None
         if kodi_api.WS_PLAYING and not name:
-            return "▶ Playing...", None
+            return t("playing_plain"), None
         queue_state.EXTERNAL_PLAYBACK = False
         if name:
             safe_name = html.escape(name, quote=False)
@@ -631,7 +878,7 @@ async def get_now_playing_text():
                 safe_link = html.escape(link, quote=True)
                 return f'▶ <a href="{safe_link}">{safe_name}</a>', None
             return f"▶ {safe_name}", None
-        return "⏸ Nothing playing", None
+        return t("nothing_playing_plain"), None
 
     pid = None
     if kodi_api.LAST_WS_PLAYERID is not None:
@@ -643,7 +890,7 @@ async def get_now_playing_text():
         pid = kodi_api.pick_playerid(players)
     if pid is None:
         queue_state.EXTERNAL_PLAYBACK = False
-        return "⏸ Nothing playing", None
+        return t("nothing_playing_plain"), None
 
     # Fetch properties and item in parallel to halve the Kodi round-trip time.
     need_item = bool(qitem or not name)
@@ -699,8 +946,10 @@ async def get_now_playing_text():
 
         if not name:
             name, link = kodi_api.external_item_display(item)
+        if name == "Unknown":
+            name = t("unknown")
         if not name:
-            name = "Unknown"
+            name = t("unknown")
     else:
         # Name is known (e.g. external playback already identified), but we
         # still need time/totaltime for the progress display.
@@ -727,15 +976,9 @@ async def update_now_playing_message(ctx, chat_id):
     """Update or create the now-playing panel message."""
     msg_id = S.PANEL_MSG_ID.get(chat_id)
     text, progress_text = await get_now_playing_text()
-    hifi_text = S.HIFI_STATUS_CACHE
-    airplay_text = S.AIRPLAY_STATUS_CACHE
-    repeat_text = f"🔁 Repeat: {queue_state.REPEAT_MODE}"
-    status_parts = [hifi_text, airplay_text, repeat_text]
-    if hifi_text != "🔴 Hifi: Standby":
-        status_parts.append(S.DENON_VOLUME_CACHE)
-    if progress_text:
-        status_parts.append(f"⏱ {progress_text}")
-    full_text = f"🎛 Kodi Remote - Current track:\n{text}\n{' | '.join(status_parts)}"
+    min_width = panel_status_min_width(text, progress_text)
+    status_parts = build_panel_status_parts(progress_text, min_width=min_width)
+    full_text = f"{t('now_playing_title')}\n{text}\n{' | '.join(status_parts)}"
     panel_markup = control_panel(chat_id)
     render_sig = (
         full_text,
@@ -788,10 +1031,12 @@ async def refresh_hifi_status_cache(force=False):
         return
     status = await asyncio.to_thread(kodi_api.get_hifi_power_status)
     if status == "On":
-        S.HIFI_STATUS_CACHE = "🟢 Hifi: On"
+        S.HIFI_STATUS_CACHE = t("hifi_on_status")
     elif status == "Standby" or (status is None and bool(CFG.denon_host)):
-        S.HIFI_STATUS_CACHE = "🔴 Hifi: Standby"
-        S.AIRPLAY_STATUS_CACHE = "AirPlay: Off"
+        S.HIFI_STATUS_CACHE = t("hifi_standby_status")
+        S.AIRPLAY_STATUS_CACHE = t("airplay_off")
+    else:
+        S.HIFI_STATUS_CACHE = t("hifi_unknown_status")
     S.HIFI_STATUS_TS = now
 
 
@@ -799,8 +1044,8 @@ async def refresh_airplay_status_cache(force=False):
     now = time.time()
     if not force and now - S.AIRPLAY_STATUS_TS < 15:
         return
-    if S.HIFI_STATUS_CACHE == "🔴 Hifi: Standby":
-        S.AIRPLAY_STATUS_CACHE = "AirPlay: Off"
+    if S.HIFI_STATUS_CACHE == t("hifi_standby_status"):
+        S.AIRPLAY_STATUS_CACHE = t("airplay_off")
         S.AIRPLAY_STATUS_TS = now
         return
     status = await asyncio.to_thread(kodi_api.get_airplay_status)
@@ -812,7 +1057,7 @@ async def refresh_denon_volume_cache(force=False):
     now = time.time()
     if not force and now - S.DENON_VOLUME_TS < 60:
         return
-    if S.HIFI_STATUS_CACHE == "🔴 Hifi: Standby":
+    if S.HIFI_STATUS_CACHE == t("hifi_standby_status"):
         S.DENON_VOLUME_CACHE = "🔊 --"
         S.DENON_VOLUME_TS = now
         return

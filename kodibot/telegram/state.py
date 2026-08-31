@@ -7,6 +7,8 @@ and telegram_handlers live here so that circular imports are avoided.
 import asyncio
 import threading
 
+from kodibot.telegram.i18n import t
+
 # ── Message tracking ─────────────────────────────────────────────────
 pending = {}
 IMAGE_GROUPS = {}
@@ -31,14 +33,24 @@ CLEANUP_FAILED_LIMIT = 2000
 CLEANUP_DELAY_SECONDS = 4
 STARTUP_POSTED = {}
 LIST_MSG_ID = {}
+# Queue list paging, per chat.  LIST_PAGE_PINNED is set once someone pages
+# manually; until then the page follows the playing track.  Deliberately not
+# persisted by save_ui_state() -- after a restart the list returns to
+# auto-follow.
+LIST_PAGE = {}
+LIST_PAGE_PINNED = {}
 PANEL_MSG_ID = {}
 PANEL_MENU_MODE = {}
 HA_MENU_MSG_ID = {}
+# Button-reference image: message id per chat while it is shown, plus the
+# Telegram file_id so the png is uploaded once and reused afterwards.
+HELP_MSG_ID = {}
+HELP_PHOTO_FILE_ID = None
 
 # ── Status caches ────────────────────────────────────────────────────
-HIFI_STATUS_CACHE = "⚪ Hifi: Unknown"
+HIFI_STATUS_CACHE = t("hifi_unknown_status")
 HIFI_STATUS_TS = 0.0
-AIRPLAY_STATUS_CACHE = "AirPlay: Unknown"
+AIRPLAY_STATUS_CACHE = t("airplay_unknown")
 AIRPLAY_STATUS_TS = 0.0
 DENON_VOLUME_CACHE = "🔊 --"
 DENON_VOLUME_TS = 0.0

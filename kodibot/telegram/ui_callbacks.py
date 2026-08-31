@@ -4,6 +4,7 @@ import time
 
 from kodibot.telegram import ui as UI
 from kodibot.core import radio_browser
+from kodibot.telegram.i18n import repeat_mode_label, state_label, store_message, t
 
 
 async def _refresh_ha_menu(ctx, chat_id, update):
@@ -38,52 +39,52 @@ async def _execute_pending_delete(ctx, chat_id, pending_delete):
 
     if kind == "queue_all":
         UI.queue_state.clear_queue()
-        return "🗑 Queue cleared", False
+        return t("queue_cleared"), False
 
     if kind == "queue_index":
         index = pending_delete.get("index")
         if not isinstance(index, int):
-            return "Invalid index.", True
+            return t("invalid_index"), True
         identity = pending_delete.get("identity")
         if identity and not UI.queue_delete_target_matches(index, identity):
-            return "⚠ Queue changed. Delete cancelled.", True
+            return t("queue_changed_delete_cancelled"), True
         ok, msg = UI.queue_state.delete_index(index)
         if ok:
-            return pending_delete.get("success_text") or "🗑 Track deleted.", False
-        return msg or "⚠ Track could not be deleted.", True
+            return pending_delete.get("success_text") or t("track_deleted"), False
+        return store_message(msg) if msg else t("track_delete_failed"), True
 
     if kind == "playlist_file":
         filename = pending_delete.get("filename")
         if not filename:
-            return "⚠ Playlist not found.", True
+            return t("playlist_not_found"), True
         ok, res = await asyncio.to_thread(
             UI.playlist_store.delete_playlist_from_disk,
             UI.CFG.playlist_dir,
             filename,
         )
-        return (f"🗑 Deleted: {res}" if ok else f"⚠ {res}"), True
+        return (t("deleted", name=res) if ok else f"⚠ {store_message(res)}"), True
 
     if kind == "favourite":
         title = pending_delete.get("title")
         if not title:
-            return "⚠ Favourite not found.", True
+            return t("favourite_not_found"), True
         ok = await asyncio.to_thread(UI.kodi_api.remove_favourite, title)
-        return (f"🗑 Deleted favourite: {title}" if ok else "⚠ Favourite could not be deleted."), True
+        return (t("deleted_favourite", title=title) if ok else t("favourite_delete_failed")), True
 
     if kind == "ha_color":
         color_name = pending_delete.get("name", "")
         label = pending_delete.get("label") or color_name or "?"
         if not color_name:
-            return "⚠ Color not found.", True
+            return t("color_not_found"), True
         ok = await asyncio.to_thread(UI.ha.delete_saved_color, color_name)
         if ok:
             menu_message_id = UI.HA_MENU_MSG_ID.get(chat_id)
             if menu_message_id:
                 await UI.show_ha_preset_menu(ctx, chat_id, edit_message_id=menu_message_id)
-            return f"🗑 Color deleted: {label}", True
-        return "⚠ Color could not be deleted.", True
+            return t("color_deleted", label=label), True
+        return t("color_delete_failed"), True
 
-    return "⚠ Nothing to delete.", True
+    return t("nothing_to_delete"), True
 
 
 async def on_button(update, ctx):
@@ -111,11 +112,11 @@ async def on_button(update, ctx):
         with UI.queue_state.LOCK:
             has_queue = len(UI.queue_state.QUEUE) > 0
         if not has_queue:
-            await q.answer(text="⏹ End of queue.")
+            await q.answer(text=t("end_of_queue"))
             sent = True
         else:
             UI.schedule_playback_action(ctx, chat_id, UI.queue_state.skip_queue)
-            await q.answer(text="⏭ Next")
+            await q.answer(text=t("next"))
             # Brief yield so the playback thread has time to update DISPLAY_INDEX
             # and set BOT_EXPECTING_WS, then immediately refresh the panel so the
             # new track name/link appears before Kodi has even started playing.
@@ -129,11 +130,11 @@ async def on_button(update, ctx):
         with UI.queue_state.LOCK:
             has_queue = len(UI.queue_state.QUEUE) > 0
         if not has_queue:
-            await q.answer(text="⏹ End of queue.")
+            await q.answer(text=t("end_of_queue"))
             sent = True
         else:
             UI.schedule_playback_action(ctx, chat_id, UI.queue_state.back_queue)
-            await q.answer(text="⏮ Back")
+            await q.answer(text="⏮ " + t("previous"))
             # Brief yield so the playback thread has time to update DISPLAY_INDEX
             # and set BOT_EXPECTING_WS, then immediately refresh the panel so the
             # new track name/link appears before Kodi has even started playing.
@@ -148,7 +149,7 @@ async def on_button(update, ctx):
         # CANCEL_RECONNECT_CB and resets LAST_PLAYED_RADIO/EXPECTED_STOP so the
         # next WS stop is not mistaken for an unexpected drop.
         UI.queue_state.clear_radio_reconnect_state()
-        await q.answer(text="Reconnection cancelled.")
+        await q.answer(text=t("reconnection_cancelled"))
         sent = True
         skip_cleanup = True
 
@@ -164,19 +165,19 @@ async def on_button(update, ctx):
                 has_queue = len(UI.queue_state.QUEUE) > 0
             if display_index is not None:
                 UI.schedule_playback_action(ctx, chat_id, UI.queue_state.play_index, display_index)
-                await q.answer(text="▶ Play")
+                await q.answer(text=t("play"))
                 sent = True
             elif has_queue:
                 UI.schedule_playback_action(ctx, chat_id, UI.queue_state.play_index, 0)
-                await q.answer(text="▶ Play")
+                await q.answer(text=t("play"))
                 sent = True
             else:
-                await q.answer(text="⏹ Queue empty.")
+                await q.answer(text="⏹ " + t("queue_empty"))
                 sent = True
 
     elif cmd == "stop":
         UI.schedule_playback_action(ctx, chat_id, UI.queue_state.hard_stop_and_clear)
-        await q.answer(text="⏹ Stop")
+        await q.answer(text=t("stop"))
         sent = True
 
     elif cmd.startswith("seek:"):
@@ -188,7 +189,7 @@ async def on_button(update, ctx):
             msg_id = await UI.send_button_selection(
                 ctx, 
                 chat_id, 
-                "⏱ Select or enter percentage (0-100):", 
+                t("select_percent"),
                 button_items, 
                 "seek_to",
                 items_per_row=5
@@ -211,31 +212,31 @@ async def on_button(update, ctx):
             }
             delta = delta_map.get(cmd)
             if delta is None:
-                await q.answer(text="⚠ Unknown seek.")
+                await q.answer(text=t("unknown_seek"))
                 sent = True
             else:
                 ok = UI.queue_state.seek_relative_seconds(delta)
-                await q.answer(text="⏩ Seeked." if ok else "⚠ Seek failed.")
+                await q.answer(text=t("seeked") if ok else t("seek_failed"))
                 sent = True
 
     elif cmd == "repeat":
         UI.queue_state.REPEAT_MODE = {"off":"one","one":"all","all":"off"}[UI.queue_state.REPEAT_MODE]
-        await q.answer(text=f"🔁 Repeat: {UI.queue_state.REPEAT_MODE}")
+        await q.answer(text=t("repeat_status", mode=repeat_mode_label(UI.queue_state.REPEAT_MODE)))
         sent = True
 
     elif cmd == "deleteall":
         with UI.queue_state.LOCK:
             queue_count = len(UI.queue_state.QUEUE)
         if queue_count == 0:
-            await q.answer(text="🗑 Queue empty.")
+            await q.answer(text="🗑 " + t("queue_empty"))
             sent = True
         else:
             UI.queue_state.clear_queue()
-            await q.answer(text="🗑 Queue cleared")
+            await q.answer(text=t("queue_cleared"))
             sent = True
 
     elif cmd == "delete:first":
-        payload, msg = UI.queue_delete_confirmation_payload(0, "🗑 First track deleted.")
+        payload, msg = UI.queue_delete_confirmation_payload(0, t("first_track_deleted"))
         if payload:
             answer_text, _ = await _execute_pending_delete(ctx, chat_id, payload)
             await q.answer(text=answer_text)
@@ -246,7 +247,7 @@ async def on_button(update, ctx):
     elif cmd == "delete:last":
         with UI.queue_state.LOCK:
             last_idx = len(UI.queue_state.QUEUE) - 1
-        payload, msg = UI.queue_delete_confirmation_payload(last_idx, "🗑 Last track deleted.")
+        payload, msg = UI.queue_delete_confirmation_payload(last_idx, t("last_track_deleted"))
         if payload:
             answer_text, _ = await _execute_pending_delete(ctx, chat_id, payload)
             await q.answer(text=answer_text)
@@ -261,10 +262,10 @@ async def on_button(update, ctx):
         with UI.queue_state.LOCK:
             has_queue = len(UI.queue_state.QUEUE) > 0
         if not has_queue:
-            await q.answer(text="⏹ Queue empty.")
+            await q.answer(text="⏹ " + t("queue_empty"))
             sent = True
         else:
-            msg = await UI.send_and_track(ctx, chat_id, "▶ Which number should be played? (e.g. 3)", reply_markup=UI.cancel_markup())
+            msg = await UI.send_and_track(ctx, chat_id, t("which_number_play"), reply_markup=UI.cancel_markup())
             UI.activate_prompt(ctx, chat_id, user_id, "await_play_index", "await_play_msg_id", msg.message_id)
             sent = True
             skip_cleanup = True
@@ -274,14 +275,14 @@ async def on_button(update, ctx):
             return
         favourites = await asyncio.to_thread(UI.kodi_api.get_playable_favourites)
         if not favourites:
-            await q.answer(text="⭐ No playable Kodi favourites found.")
+            await q.answer(text=t("no_kodi_favourites"))
             sent = True
         else:
             button_items = [(fav['title'], i) for i, fav in enumerate(favourites)]
             msg_id = await UI.send_button_selection(
                 ctx,
                 chat_id,
-                "⭐ Select a Kodi favourite:",
+                t("select_favourite"),
                 button_items,
                 "play_fav"
             )
@@ -301,13 +302,13 @@ async def on_button(update, ctx):
         pct = int(cmd.split(":")[1])
         ok = await asyncio.to_thread(UI.queue_state.seek_percent, pct)
         if ok:
-            await q.answer(text=f"⏩ Seeked to {pct}%")
+            await q.answer(text=t("seeked_to", pct=pct))
             if q.message:
                 await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
             ctx.user_data["await_seek_percent"] = False
             ctx.user_data.pop("await_seek_percent_msg_id", None)
         else:
-            await q.answer(text="⚠ Seek failed.")
+            await q.answer(text=t("seek_failed"))
         sent = True
 
     elif cmd == "media:ask":
@@ -316,14 +317,14 @@ async def on_button(update, ctx):
             return
         scan_ok = await asyncio.to_thread(UI.kodi_api.scan_video_library)
         if not scan_ok:
-            await q.answer(text="⚠ Library scan RPC failed.")
+            await q.answer(text=t("library_scan_failed"))
             sent = True
         else:
-            button_items = [("🎬 Movies", "movies"), ("📺 Series", "shows")]
+            button_items = [(t("movies"), "movies"), (t("series"), "shows")]
             msg_id = await UI.send_button_selection(
                 ctx,
                 chat_id,
-                "🎬 Media browser:",
+                t("media_browser"),
                 button_items,
                 "media_type"
             )
@@ -336,20 +337,20 @@ async def on_button(update, ctx):
             return
         av_state = await asyncio.to_thread(UI.kodi_api.get_av_settings)
         if av_state.get("playerid") is None:
-            await q.answer(text="⚠ Nothing is currently playing.")
+            await q.answer(text=t("nothing_playing"))
             sent = True
         elif av_state.get("error"):
-            await q.answer(text="⚠ Audio/subtitle information could not be loaded.")
+            await q.answer(text=t("av_info_failed"))
             sent = True
         else:
             current_audio = UI.av_stream_label(av_state.get("currentaudiostream") or {})
             current_sub = UI.current_subtitle_label(av_state)
             header = (
-                "🗣 Audio / Subtitles\n"
-                f"Current audio: {current_audio}\n"
-                f"Current subtitles: {current_sub}"
+                f"{t('audio_subtitles')}\n"
+                f"{t('current_audio', value=current_audio)}\n"
+                f"{t('current_subtitles', value=current_sub)}"
             )
-            button_items = [("🗣 Change Audio", "audio"), ("💬 Change Subtitles", "subtitles")]
+            button_items = [(t("change_audio"), "audio"), (t("change_subtitles"), "subtitles")]
             msg_id = await UI.send_button_selection(ctx, chat_id, header, button_items, "av_action")
             UI.activate_prompt(ctx, chat_id, user_id, "await_av_action", "await_av_action_msg_id", msg_id)
             sent = True
@@ -361,10 +362,10 @@ async def on_button(update, ctx):
         with UI.queue_state.LOCK:
             has_queue = len(UI.queue_state.QUEUE) > 0
         if not has_queue:
-            await q.answer(text="🗑 Queue empty.")
+            await q.answer(text="🗑 " + t("queue_empty"))
             sent = True
         else:
-            msg = await UI.send_and_track(ctx, chat_id, "🗑 Which number should be deleted? (e.g. 3)", reply_markup=UI.cancel_markup())
+            msg = await UI.send_and_track(ctx, chat_id, t("which_number_delete"), reply_markup=UI.cancel_markup())
             UI.activate_prompt(ctx, chat_id, user_id, "await_delete_index", "await_delete_msg_id", msg.message_id)
             sent = True
             skip_cleanup = True
@@ -375,10 +376,10 @@ async def on_button(update, ctx):
         with UI.queue_state.LOCK:
             has_queue = len(UI.queue_state.QUEUE) > 0
         if not has_queue:
-            await q.answer(text="🗒 Queue is empty.")
+            await q.answer(text="🗒 " + t("queue_empty"))
             sent = True
         else:
-            msg = await UI.send_and_track(ctx, chat_id, "💾 Playlist name?", reply_markup=UI.cancel_markup())
+            msg = await UI.send_and_track(ctx, chat_id, t("playlist_name"), reply_markup=UI.cancel_markup())
             UI.activate_prompt(ctx, chat_id, user_id, "await_playlist_save_name", "await_playlist_save_msg_id", msg.message_id)
             sent = True
             skip_cleanup = True
@@ -388,14 +389,14 @@ async def on_button(update, ctx):
             return
         files = UI.playlist_store.list_playlist_files(UI.CFG.playlist_dir)
         if not files:
-            await q.answer(text="📂 No saved playlists found.")
+            await q.answer(text=t("no_saved_playlists"))
             sent = True
         else:
             button_items = [(os.path.splitext(f)[0], i) for i, f in enumerate(files)]
             msg_id = await UI.send_button_selection(
                 ctx,
                 chat_id,
-                "📂 Select a playlist:",
+                t("select_playlist"),
                 button_items,
                 "load_plist"
             )
@@ -415,7 +416,7 @@ async def on_button(update, ctx):
         if ctx.user_data.get("await_radio_search"):
             await q.answer()
             return
-        msg = await UI.send_and_track(ctx, chat_id, "📻 Which station do you want to search for?", reply_markup=UI.cancel_markup())
+        msg = await UI.send_and_track(ctx, chat_id, t("radio_search_prompt"), reply_markup=UI.cancel_markup())
         UI.activate_prompt(ctx, chat_id, user_id, "await_radio_search", "await_radio_search_msg_id", msg.message_id)
         sent = True
         skip_cleanup = True
@@ -423,7 +424,7 @@ async def on_button(update, ctx):
         if ctx.user_data.get("await_tv_search"):
             await q.answer()
             return
-        msg = await UI.send_and_track(ctx, chat_id, "📺 Which TV channel do you want to search for?", reply_markup=UI.cancel_markup())
+        msg = await UI.send_and_track(ctx, chat_id, t("tv_search_prompt"), reply_markup=UI.cancel_markup())
         UI.activate_prompt(ctx, chat_id, user_id, "await_tv_search", "await_tv_search_msg_id", msg.message_id)
         sent = True
         skip_cleanup = True
@@ -431,13 +432,13 @@ async def on_button(update, ctx):
         # Get currently playing item
         pid = await asyncio.to_thread(UI.kodi_api.get_active_playerid)
         if pid is None:
-            await q.answer(text="⚠ Nothing is currently playing.")
+            await q.answer(text=t("nothing_playing"))
             sent = True
         else:
             resp = await asyncio.to_thread(UI.kodi_api.kodi_call, "Player.GetItem", {"playerid": pid, "properties": ["file", "channel", "thumbnail"]})
             item = resp.get("result", {}).get("item", {})
             file_url = item.get("file") or ""
-            channel = item.get("channel") or item.get("label") or "Unknown station"
+            channel = item.get("channel") or item.get("label") or t("unknown")
             logo = item.get("thumbnail") or ""
             
             # Normalize URLs for comparison
@@ -473,15 +474,15 @@ async def on_button(update, ctx):
                             logo = tv_info["logo"]
             
             if not file_url.startswith("http"):
-                await q.answer(text="⚠ This doesn't seem to be a radio stream.")
+                await q.answer(text=t("not_radio_stream"))
                 sent = True
             else:
                 ok_kodi = await asyncio.to_thread(UI.kodi_api.add_to_favourites, channel, file_url, logo)
                 
                 if ok_kodi:
-                    await q.answer(text=f"⭐ {channel} added to favourites.")
+                    await q.answer(text=t("favourite_added", channel=channel))
                 else:
-                    await q.answer(text=f"⚠ {channel} could not be added to favourites.")
+                    await q.answer(text=t("favourite_add_failed", channel=channel))
                 sent = True
     elif cmd == "radio:delete:ask":
         if ctx.user_data.get("await_radio_delete_index"):
@@ -489,14 +490,14 @@ async def on_button(update, ctx):
             return
         favs = await asyncio.to_thread(UI.kodi_api.get_favourites)
         if not favs:
-            await q.answer(text="⭐ No Kodi favourites found.")
+            await q.answer(text=t("no_kodi_favourites_any"))
             sent = True
         else:
             button_items = [(f['title'], i) for i, f in enumerate(favs)]
             msg_id = await UI.send_button_selection(
                 ctx,
                 chat_id,
-                "⭐ Which Kodi favourite do you want to delete?",
+                t("delete_which_favourite"),
                 button_items,
                 "delete_fav"
             )
@@ -518,14 +519,14 @@ async def on_button(update, ctx):
             return
         files = UI.playlist_store.list_playlist_files(UI.CFG.playlist_dir)
         if not files:
-            await q.answer(text="🗑 No saved playlists found.")
+            await q.answer(text=t("no_saved_playlists"))
             sent = True
         else:
             button_items = [(os.path.splitext(f)[0], i) for i, f in enumerate(files)]
             msg_id = await UI.send_button_selection(
                 ctx,
                 chat_id,
-                "🗑 Delete which playlist?",
+                t("delete_which_playlist"),
                 button_items,
                 "delete_plist"
             )
@@ -543,35 +544,35 @@ async def on_button(update, ctx):
             skip_cleanup = True
     elif cmd == "vol:up5":
         ok = await asyncio.to_thread(UI.kodi_api.run_volume_delta, 5)
-        await q.answer(text="🔊 +5" if ok else "⚠ Volume +5 failed")
+        await q.answer(text="🔊 +5" if ok else t("volume_failed", amount="+5"))
         await asyncio.sleep(0.35)
         await UI.refresh_denon_volume_cache(force=True)
         await UI.update_now_playing_message(ctx, chat_id)
         sent = True
     elif cmd == "vol:up10":
         ok = await asyncio.to_thread(UI.kodi_api.run_volume_delta, 10)
-        await q.answer(text="🔊 +10" if ok else "⚠ Volume +10 failed")
+        await q.answer(text="🔊 +10" if ok else t("volume_failed", amount="+10"))
         await asyncio.sleep(0.35)
         await UI.refresh_denon_volume_cache(force=True)
         await UI.update_now_playing_message(ctx, chat_id)
         sent = True
     elif cmd == "vol:down5":
         ok = await asyncio.to_thread(UI.kodi_api.run_volume_delta, -5)
-        await q.answer(text="🔉 -5" if ok else "⚠ Volume -5 failed")
+        await q.answer(text="🔉 -5" if ok else t("volume_failed", amount="-5"))
         await asyncio.sleep(0.35)
         await UI.refresh_denon_volume_cache(force=True)
         await UI.update_now_playing_message(ctx, chat_id)
         sent = True
     elif cmd == "vol:down10":
         ok = await asyncio.to_thread(UI.kodi_api.run_volume_delta, -10)
-        await q.answer(text="🔉 -10" if ok else "⚠ Volume -10 failed")
+        await q.answer(text="🔉 -10" if ok else t("volume_failed", amount="-10"))
         await asyncio.sleep(0.35)
         await UI.refresh_denon_volume_cache(force=True)
         await UI.update_now_playing_message(ctx, chat_id)
         sent = True
     elif cmd == "hifi:on":
         ok = await asyncio.to_thread(UI.kodi_api.run_cec_power, True)
-        await q.answer(text="🔌 Hifi On" if ok else "⚠ Hifi On failed")
+        await q.answer(text=t("hifi_on") if ok else t("hifi_on_failed"))
         if UI.CFG.denon_host:
             UI.schedule_cleanup(ctx, chat_id, prev_id)
             await UI.update_list_message(ctx, chat_id)
@@ -584,7 +585,7 @@ async def on_button(update, ctx):
         sent = True
     elif cmd == "hifi:off":
         ok = await asyncio.to_thread(UI.kodi_api.run_cec_power, False)
-        await q.answer(text="🔌 Hifi Off" if ok else "⚠ Hifi Off failed")
+        await q.answer(text=t("hifi_off") if ok else t("hifi_off_failed"))
         if UI.CFG.denon_host:
             UI.schedule_cleanup(ctx, chat_id, prev_id)
             await UI.update_list_message(ctx, chat_id)
@@ -594,16 +595,28 @@ async def on_button(update, ctx):
         await UI.refresh_hifi_status_cache(force=True)
         await UI.update_now_playing_message(ctx, chat_id)
         sent = True
-    elif cmd == "beamer:on":
-        from kodibot.core.projector import projector
-        ok = await asyncio.to_thread(projector.power_on)
-        await q.answer(text="📽 Beamer On" if ok else "⚠ Beamer On failed")
+    elif cmd == "display:on":
+        from kodibot.core.power import run_display_power
+        label = UI.CFG.display_button_label
+        ok = await asyncio.to_thread(run_display_power, True)
+        await q.answer(text=t("display_on", label=label) if ok else t("display_on_failed", label=label))
         sent = True
-    elif cmd == "beamer:off":
-        from kodibot.core.projector import projector
-        ok = await asyncio.to_thread(projector.power_off)
-        await q.answer(text="📽 Beamer Off" if ok else "⚠ Beamer Off failed")
+    elif cmd == "display:off":
+        from kodibot.core.power import run_display_power
+        label = UI.CFG.display_button_label
+        ok = await asyncio.to_thread(run_display_power, False)
+        await q.answer(text=t("display_off", label=label) if ok else t("display_off_failed", label=label))
         sent = True
+    elif cmd in ("list:prev", "list:next", "list:current"):
+        # Paging only repaints the list message; no cleanup run, or we would
+        # delete the very messages the user is paging through.
+        if cmd == "list:current":
+            UI.unpin_page(chat_id)
+        else:
+            UI.page_step(chat_id, 1 if cmd == "list:next" else -1)
+        await UI.update_list_message(ctx, chat_id)
+        await q.answer()
+        return
     elif cmd == "airplay:kill":
         ok = await asyncio.to_thread(UI.kodi_api.run_airplay_kill)
         status = await asyncio.to_thread(UI.kodi_api.get_airplay_status)
@@ -611,15 +624,15 @@ async def on_button(update, ctx):
         UI.AIRPLAY_STATUS_TS = time.time()
         status_text = UI.AIRPLAY_STATUS_CACHE
         if ok:
-            await q.answer(text=f"☠️ AirPlay Kill | {status_text}")
+            await q.answer(text=t("airplay_killed", status=status_text))
         else:
-            await q.answer(text=f"⚠ AirPlay Kill failed | {status_text}")
+            await q.answer(text=t("airplay_kill_failed", status=status_text))
         await UI.update_now_playing_message(ctx, chat_id)
         sent = True
 
     elif cmd == "ha:menu":
         if not UI.ha.ha_available():
-            await q.answer(text="⚠ Home Assistant is not configured.")
+            await q.answer(text=t("ha_not_configured"))
             sent = True
         else:
             chat_type = getattr(update.effective_chat, "type", "") or ""
@@ -643,6 +656,17 @@ async def on_button(update, ctx):
         await UI.update_now_playing_message(ctx, chat_id)
         await q.answer()
         return
+    elif cmd == "help:show":
+        ok = await UI.show_button_reference(ctx, chat_id)
+        if ok:
+            await q.answer()
+        else:
+            await q.answer(text=t("button_reference_unavailable"))
+        return
+    elif cmd == "help:hide":
+        await UI.hide_button_reference(ctx, chat_id)
+        await q.answer()
+        return
     elif cmd == "ha:back":
         if not UI.ha.ha_available():
             await UI.close_ha_menu_message(ctx, chat_id, q.message.message_id if q.message else None)
@@ -663,7 +687,7 @@ async def on_button(update, ctx):
         return
     elif cmd == "ha:close":
         await UI.close_ha_menu_message(ctx, chat_id, q.message.message_id if q.message else None)
-        await q.answer(text="❌ Cancelled")
+        await q.answer(text=t("cancelled"))
         return
     elif cmd == "ha:noop":
         await q.answer()
@@ -672,10 +696,10 @@ async def on_button(update, ctx):
         ok, new_state = await asyncio.to_thread(UI.ha.toggle_light)
         if ok:
             emoji = "🟢" if new_state == "on" else "🔴"
-            await q.answer(text=f"{emoji} Light: {new_state}")
+            await q.answer(text=t("light_state", emoji=emoji, state=state_label(new_state)))
             await _refresh_ha_menu(ctx, chat_id, update)
         else:
-            await q.answer(text="⚠ Toggle failed.")
+            await q.answer(text=t("toggle_failed"))
         sent = True
         # Menu is refreshed in place; don't let schedule_cleanup delete it.
         skip_cleanup = True
@@ -693,9 +717,9 @@ async def on_button(update, ctx):
             return
         state = await asyncio.to_thread(UI.ha.get_light_state)
         current_pct = UI.ha.brightness_percent_from_ha((state or {}).get("brightness"))
-        prompt = "🔆 Select or enter brightness percent (0-100)"
+        prompt = t("brightness_prompt")
         if current_pct is not None:
-            prompt += f"\nCurrent: {current_pct}%"
+            prompt += "\n" + t("current_value", value=f"{current_pct}%")
         
         button_items = [("0%", 0), ("25%", 25), ("50%", 50), ("75%", 75), ("100%", 100)]
         msg_id = await UI.send_button_selection(ctx, chat_id, prompt, button_items, "ha_brightness_to", items_per_row=5)
@@ -705,7 +729,7 @@ async def on_button(update, ctx):
     elif cmd == "ha:deletecolor:ask":
         colors = await asyncio.to_thread(UI.ha.load_saved_colors)
         if not colors:
-            await q.answer(text="⚠ No saved colors found.")
+            await q.answer(text=t("no_saved_colors"))
             sent = True
         elif ctx.user_data.get("await_ha_delete_color_index"):
             await q.answer()
@@ -715,7 +739,7 @@ async def on_button(update, ctx):
             msg_id = await UI.send_button_selection(
                 ctx,
                 chat_id,
-                "🗑 Delete which saved color?",
+                t("delete_which_color"),
                 button_items,
                 "delete_ha_color"
             )
@@ -735,7 +759,7 @@ async def on_button(update, ctx):
         idx_text = cmd.rsplit(":", 1)[-1]
         colors = await asyncio.to_thread(UI.ha.load_saved_colors)
         if not idx_text.isdigit():
-            await q.answer(text="⚠ Invalid saved color.")
+            await q.answer(text=t("invalid_saved_color"))
         else:
             idx = int(idx_text)
             if 0 <= idx < len(colors):
@@ -746,28 +770,28 @@ async def on_button(update, ctx):
                 ok = await asyncio.to_thread(UI.ha.set_light_color, r, g, b)
                 if ok:
                     await q.answer(
-                        text=f"🎨 Color \"{color.get('name', '?')}\" applied: #{r:02X}{g:02X}{b:02X}",
+                        text=t("named_color_applied", name=color.get("name", "?"), hex=f"{r:02X}{g:02X}{b:02X}"),
                     )
                     await _refresh_ha_menu(ctx, chat_id, update)
                 else:
-                    await q.answer(text="⚠ Color could not be applied.")
+                    await q.answer(text=t("color_apply_failed"))
             else:
-                await q.answer(text="⚠ Saved color not found.")
+                await q.answer(text=t("saved_color_not_found"))
         sent = True
         # Menu is refreshed in place; don't let schedule_cleanup delete it.
         skip_cleanup = True
     elif cmd.startswith("ha:effect:"):
         effect_name = cmd.split(":", 2)[2].strip()
         if not effect_name:
-            await q.answer(text="⚠ Invalid effect.")
+            await q.answer(text=t("invalid_effect"))
         else:
             ok = await asyncio.to_thread(UI.ha.set_light_effect, effect_name)
             if ok:
-                label = "Disco" if effect_name == "colorloop" else effect_name
-                await q.answer(text=f"🪩 Effect enabled: {label}")
+                label = t("disco").replace("🪩 ", "") if effect_name == "colorloop" else effect_name
+                await q.answer(text=t("effect_enabled", label=label))
                 await _refresh_ha_menu(ctx, chat_id, update)
             else:
-                await q.answer(text="⚠ Effect could not be enabled.")
+                await q.answer(text=t("effect_failed"))
         sent = True
         # Menu is refreshed in place; don't let schedule_cleanup delete it.
         skip_cleanup = True
@@ -778,12 +802,12 @@ async def on_button(update, ctx):
             r, g, b = parsed
             ok = await asyncio.to_thread(UI.ha.set_light_color, r, g, b)
             if ok:
-                await q.answer(text=f"🎨 Color applied: #{hex_part}")
+                await q.answer(text=t("color_applied", hex=hex_part))
                 await _refresh_ha_menu(ctx, chat_id, update)
             else:
-                await q.answer(text="⚠ Color could not be applied.")
+                await q.answer(text=t("color_apply_failed"))
         else:
-            await q.answer(text="⚠ Invalid color code.")
+            await q.answer(text=t("invalid_color_code"))
         sent = True
         # Menu is refreshed in place; don't let schedule_cleanup delete it.
         skip_cleanup = True
@@ -791,7 +815,7 @@ async def on_button(update, ctx):
         if ctx.user_data.get("await_ha_hex"):
             await q.answer()
             return
-        msg = await UI.send_and_track(ctx, chat_id, "🔢 Enter a hex code (e.g. #FF5500 or FF5500)", reply_markup=UI.cancel_markup())
+        msg = await UI.send_and_track(ctx, chat_id, t("enter_hex"), reply_markup=UI.cancel_markup())
         UI.activate_prompt(ctx, chat_id, user_id, "await_ha_hex", "await_ha_hex_msg_id", msg.message_id)
         sent = True
         skip_cleanup = True
@@ -802,14 +826,13 @@ async def on_button(update, ctx):
         state = await asyncio.to_thread(UI.ha.get_light_state)
         rgb = (state or {}).get("rgb_color")
         if not rgb or len(rgb) != 3:
-            await q.answer(text="⚠ Current color could not be determined.")
+            await q.answer(text=t("current_color_unknown"))
             sent = True
         else:
             ctx.user_data["ha_save_rgb"] = list(rgb)
             msg = await UI.send_and_track(
                 ctx, chat_id,
-                f"💾 Current color: #{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}\n"
-                "Enter a name for this color:",
+                t("current_color_name_prompt", hex=f"{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"),
                 reply_markup=UI.cancel_markup()
             )
             UI.activate_prompt(
@@ -829,16 +852,16 @@ async def on_button(update, ctx):
             ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, fav.get("target"), fav.get("title"))
             if ok:
                 UI.queue_state.set_last_played_radio(fav.get("target"), fav.get("title"))
-                await q.answer(text=f"⭐ Playing favourite: {fav['title']}")
+                await q.answer(text=t("playing_favourite", title=fav["title"]))
                 if q.message:
                     await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
                 ctx.user_data["await_favourite_index"] = False
                 ctx.user_data.pop("await_favourite_msg_id", None)
                 ctx.user_data.pop("favourites", None)
             else:
-                await q.answer(text="⚠ Favourite could not be played.")
+                await q.answer(text=t("favourite_play_failed"))
         else:
-            await q.answer(text="⚠ Favourite not found.")
+            await q.answer(text=t("favourite_not_found"))
         sent = True
 
     elif cmd.startswith("play_tv:"):
@@ -852,16 +875,16 @@ async def on_button(update, ctx):
             ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, url, name)
             if ok:
                 UI.queue_state.set_last_played_radio(url, name)
-                await q.answer(text=f"📺 Playing channel: {name}")
+                await q.answer(text=t("playing_channel", name=name))
                 if q.message:
                     await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
                 ctx.user_data["await_tv_search"] = False
                 ctx.user_data.pop("await_tv_search_msg_id", None)
                 ctx.user_data.pop("tv_results", None)
             else:
-                await q.answer(text="⚠ Channel could not be played.")
+                await q.answer(text=t("channel_play_failed"))
         else:
-            await q.answer(text="⚠ Channel not found.")
+            await q.answer(text=t("channel_not_found"))
         sent = True
 
     elif cmd.startswith("load_plist:"):
@@ -876,16 +899,16 @@ async def on_button(update, ctx):
                 with UI.queue_state.LOCK:
                     UI.queue_state.QUEUE.extend(items)
                 UI.queue_state.mark_list_dirty()
-                await q.answer(text=f"📂 Loaded: {os.path.splitext(filename)[0]}")
+                await q.answer(text=t("playlist_loaded_colon", name=os.path.splitext(filename)[0]))
                 if q.message:
                     await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
                 ctx.user_data["await_playlist_load_index"] = False
                 ctx.user_data.pop("await_playlist_load_msg_id", None)
                 ctx.user_data.pop("playlist_load_files", None)
             else:
-                await q.answer(text=f"⚠ {items}")
+                await q.answer(text=f"⚠ {store_message(items)}")
         else:
-            await q.answer(text="⚠ Playlist not found.")
+            await q.answer(text=t("playlist_not_found"))
         sent = True
 
     elif cmd.startswith("delete_confirm:"):
@@ -901,7 +924,7 @@ async def on_button(update, ctx):
 
         expired = token and pending_delete and pending_delete.get("token") != token
         if expired:
-            await q.answer(text="⚠ Confirmation expired.")
+            await q.answer(text=t("confirmation_expired"))
             skip_cleanup = True
         else:
             UI.cancel_prompt_timeout(chat_id, user_id, "await_delete_confirm")
@@ -909,10 +932,10 @@ async def on_button(update, ctx):
             ctx.user_data.pop("await_delete_confirm_msg_id", None)
             pending_delete = ctx.user_data.pop("pending_delete", None)
             if choice == "no":
-                await q.answer(text="❌ Cancelled")
+                await q.answer(text=t("cancelled"))
                 skip_cleanup = True
             elif not pending_delete:
-                await q.answer(text="⚠ Nothing to delete.")
+                await q.answer(text=t("nothing_to_delete"))
                 skip_cleanup = True
             else:
                 answer_text, skip_cleanup = await _execute_pending_delete(ctx, chat_id, pending_delete)
@@ -939,12 +962,12 @@ async def on_button(update, ctx):
                 ctx,
                 chat_id,
                 user_id,
-                f"Are you sure you want to delete playlist \"{os.path.splitext(filename)[0]}\"?",
+                t("confirm_delete_playlist", name=os.path.splitext(filename)[0]),
                 {"kind": "playlist_file", "filename": filename},
             )
             skip_cleanup = True
         else:
-            await q.answer(text="⚠ Playlist not found.")
+            await q.answer(text=t("playlist_not_found"))
         sent = True
 
     elif cmd.startswith("delete_fav:"):
@@ -967,12 +990,12 @@ async def on_button(update, ctx):
                 ctx,
                 chat_id,
                 user_id,
-                f"Are you sure you want to delete favourite \"{title}\"?",
+                t("confirm_delete_favourite", title=title),
                 {"kind": "favourite", "title": fav.get("title")},
             )
             skip_cleanup = True
         else:
-            await q.answer(text="⚠ Favourite not found.")
+            await q.answer(text=t("favourite_not_found"))
         sent = True
 
     elif cmd.startswith("media_type:"):
@@ -984,10 +1007,10 @@ async def on_button(update, ctx):
         if mtype == "movies":
             movies = await asyncio.to_thread(UI.kodi_api.list_movies)
             if not movies:
-                await q.answer(text="🎬 No movies found.")
+                await q.answer(text=t("no_movies_found"))
             else:
                 msg_ids = await UI.send_chunked_selection(
-                    ctx, chat_id, "🎬 Select movie:", UI.movie_list_lines(movies),
+                    ctx, chat_id, t("select_movie"), UI.movie_list_lines(movies),
                 )
                 ctx.user_data["media_movies"] = movies
                 UI.activate_prompt(ctx, chat_id, user_id, "await_movie_index", "await_movie_msg_id", msg_ids, extra_keys=("media_movies",))
@@ -995,10 +1018,10 @@ async def on_button(update, ctx):
         elif mtype == "shows":
             shows = await asyncio.to_thread(UI.kodi_api.list_tvshows)
             if not shows:
-                await q.answer(text="📺 No series found.")
+                await q.answer(text=t("no_series_found"))
             else:
                 msg_ids = await UI.send_chunked_selection(
-                    ctx, chat_id, "📺 Select series:", UI.show_list_lines(shows),
+                    ctx, chat_id, t("select_series"), UI.show_list_lines(shows),
                 )
                 ctx.user_data["media_shows"] = shows
                 UI.activate_prompt(ctx, chat_id, user_id, "await_show_index", "await_show_msg_id", msg_ids, extra_keys=("media_shows",))
@@ -1016,26 +1039,26 @@ async def on_button(update, ctx):
         if action == "audio":
             audio_streams = av_state.get("audiostreams") or []
             if not audio_streams:
-                await q.answer(text="⚠ No audio streams available.")
+                await q.answer(text=t("no_audio_streams"))
             else:
-                button_items = [(f"{UI.av_stream_label(s)}{' [active]' if s.get('index') == (av_state.get('currentaudiostream') or {}).get('index') else ''}", i) for i, s in enumerate(audio_streams)]
+                button_items = [(f"{UI.av_stream_label(s)}{t('active_suffix') if s.get('index') == (av_state.get('currentaudiostream') or {}).get('index') else ''}", i) for i, s in enumerate(audio_streams)]
                 msg_id = await UI.send_button_selection(
-                    ctx, chat_id, "🗣 Select audio:", button_items, "set_audio"
+                    ctx, chat_id, t("select_audio"), button_items, "set_audio"
                 )
                 ctx.user_data["audio_streams"] = audio_streams
                 UI.activate_prompt(ctx, chat_id, user_id, "await_audio_index", "await_audio_msg_id", msg_id, extra_keys=("audio_streams",))
                 skip_cleanup = True
         elif action == "subtitles":
             subtitles = av_state.get("subtitles") or []
-            button_items = [("Off", -1)]
+            button_items = [(t("off"), -1)]
             current_index = (av_state.get("currentsubtitle") or {}).get("index")
             for i, s in enumerate(subtitles):
                 active = av_state.get("subtitleenabled") and s.get("index") == current_index
-                label = f"{UI.av_stream_label(s)}{' [active]' if active else ''}"
+                label = f"{UI.av_stream_label(s)}{t('active_suffix') if active else ''}"
                 button_items.append((label, i))
             
             msg_id = await UI.send_button_selection(
-                ctx, chat_id, "💬 Select subtitles:", button_items, "set_subtitle"
+                ctx, chat_id, t("select_subtitles"), button_items, "set_subtitle"
             )
             ctx.user_data["subtitle_streams"] = subtitles
             UI.activate_prompt(ctx, chat_id, user_id, "await_subtitle_index", "await_subtitle_msg_id", msg_id, extra_keys=("subtitle_streams",))
@@ -1049,13 +1072,13 @@ async def on_button(update, ctx):
             resume = (mode == "resume")
             ok = await asyncio.to_thread(UI.kodi_api.play_movie, movie.get("movieid"), resume)
             if ok:
-                await q.answer(text=f"🎬 Playing: {movie.get('title')}")
+                await q.answer(text=t("movie_playing", title=movie.get("title")))
                 if q.message:
                     await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
                 ctx.user_data["await_movie_start_mode"] = False
                 ctx.user_data.pop("media_movie", None)
             else:
-                await q.answer(text="⚠ Movie could not be played.")
+                await q.answer(text=t("movie_play_failed"))
         sent = True
 
     elif cmd.startswith("episode_start_mode:"):
@@ -1065,13 +1088,13 @@ async def on_button(update, ctx):
             resume = (mode == "resume")
             ok = await asyncio.to_thread(UI.kodi_api.play_episode, episode.get("episodeid"), resume)
             if ok:
-                await q.answer(text=f"📺 Playing: {episode.get('title')}")
+                await q.answer(text=t("episode_playing", title=episode.get("title")))
                 if q.message:
                     await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
                 ctx.user_data["await_episode_start_mode"] = False
                 ctx.user_data.pop("media_episode", None)
             else:
-                await q.answer(text="⚠ Episode could not be played.")
+                await q.answer(text=t("episode_play_failed"))
         sent = True
     elif cmd == "play_all_episodes":
         show = ctx.user_data.get("media_show")
@@ -1083,8 +1106,8 @@ async def on_button(update, ctx):
             )
             if ok:
                 UI.queue_state.clear_bot_playback_state()
-                title = show.get("title") if show else "Series"
-                await q.answer(text=f"📺 Playing all episodes: {title}")
+                title = show.get("title") if show else t("series_fallback")
+                await q.answer(text=t("episodes_playing", title=title))
                 if q.message:
                     await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
                 _forget_prompt(
@@ -1093,9 +1116,9 @@ async def on_button(update, ctx):
                     "media_show", "media_episodes",
                 )
             else:
-                await q.answer(text="⚠ Episodes could not be played.")
+                await q.answer(text=t("episodes_play_failed"))
         else:
-            await q.answer(text="⚠ No episodes found.")
+            await q.answer(text=t("no_episodes_found"))
         sent = True
 
     elif cmd.startswith("play_radio:"):
@@ -1109,16 +1132,16 @@ async def on_button(update, ctx):
             ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, url, name)
             if ok:
                 UI.queue_state.set_last_played_radio(url, name)
-                await q.answer(text=f"📻 Playing: {name}")
+                await q.answer(text=t("playing_radio", name=name))
                 if q.message:
                     await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
                 ctx.user_data["await_radio_index"] = False
                 ctx.user_data.pop("await_radio_index_msg_id", None)
                 ctx.user_data.pop("radio_results", None)
             else:
-                await q.answer(text="⚠ Radio station could not be played.")
+                await q.answer(text=t("radio_play_failed"))
         else:
-            await q.answer(text="⚠ Station not found.")
+            await q.answer(text=t("station_not_found"))
         sent = True
 
     elif cmd == "ha:brightness":
@@ -1127,9 +1150,9 @@ async def on_button(update, ctx):
             return
         state = await asyncio.to_thread(UI.ha.get_light_state)
         current_pct = UI.ha.brightness_percent_from_ha((state or {}).get("brightness"))
-        prompt = "🔆 Select or enter brightness percent (0-100)"
+        prompt = t("brightness_prompt")
         if current_pct is not None:
-            prompt += f"\nCurrent: {current_pct}%"
+            prompt += "\n" + t("current_value", value=f"{current_pct}%")
         
         button_items = [("0%", 0), ("25%", 25), ("50%", 50), ("75%", 75), ("100%", 100)]
         msg_id = await UI.send_button_selection(ctx, chat_id, prompt, button_items, "ha_brightness_to", items_per_row=5)
@@ -1141,7 +1164,7 @@ async def on_button(update, ctx):
         pct = int(cmd.split(":")[1])
         ok = await asyncio.to_thread(UI.ha.set_light_brightness, pct)
         if ok:
-            await q.answer(text=f"🔆 Brightness set: {pct}%")
+            await q.answer(text=t("brightness_set", pct=pct))
             if q.message:
                 await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
             ctx.user_data["await_ha_brightness_pct"] = False
@@ -1152,7 +1175,7 @@ async def on_button(update, ctx):
                 state = await asyncio.to_thread(UI.ha.get_light_state)
                 await UI.show_ha_menu(ctx, chat_id, chat_type=q.message.chat.type if q.message else "private", bot_username=ctx.bot.username, state=state, edit_message_id=menu_message_id)
         else:
-            await q.answer(text="⚠ Brightness update failed.")
+            await q.answer(text=t("brightness_update_failed"))
         sent = True
         # The brightness prompt is deleted explicitly above and the menu is
         # refreshed in place; don't let schedule_cleanup delete the menu too.
@@ -1178,12 +1201,12 @@ async def on_button(update, ctx):
                 ctx,
                 chat_id,
                 user_id,
-                f"Are you sure you want to delete color \"{color_name}\"?",
+                t("confirm_delete_color", name=color_name),
                 {"kind": "ha_color", "name": color.get("name", ""), "label": color_name},
             )
             skip_cleanup = True
         else:
-            await q.answer(text="⚠ Color not found.")
+            await q.answer(text=t("color_not_found"))
         sent = True
 
     elif cmd.startswith("set_audio:"):
@@ -1193,14 +1216,14 @@ async def on_button(update, ctx):
             stream = audio_streams[idx]
             ok = await asyncio.to_thread(UI.kodi_api.set_audio_stream, stream.get("index"))
             if ok:
-                await q.answer(text=f"🗣 Audio set: {UI.av_stream_label(stream)}")
+                await q.answer(text=t("audio_set", label=UI.av_stream_label(stream)))
                 if q.message:
                     await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
                 ctx.user_data["await_audio_index"] = False
                 ctx.user_data.pop("await_audio_msg_id", None)
                 ctx.user_data.pop("audio_streams", None)
             else:
-                await q.answer(text="⚠ Audio stream update failed.")
+                await q.answer(text=t("audio_update_failed"))
         sent = True
 
     elif cmd.startswith("set_subtitle:"):
@@ -1208,7 +1231,7 @@ async def on_button(update, ctx):
         subtitles = ctx.user_data.get("subtitle_streams", [])
         if idx == -1:
             ok = await asyncio.to_thread(UI.kodi_api.set_subtitle_stream, "off")
-            label = "Off"
+            label = t("off")
         elif 0 <= idx < len(subtitles):
             stream = subtitles[idx]
             ok = await asyncio.to_thread(UI.kodi_api.set_subtitle_stream, stream.get("index"))
@@ -1218,14 +1241,14 @@ async def on_button(update, ctx):
             label = "?"
             
         if ok:
-            await q.answer(text=f"💬 Subtitles set: {label}")
+            await q.answer(text=t("subtitles_set", label=label))
             if q.message:
                 await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
             ctx.user_data["await_subtitle_index"] = False
             ctx.user_data.pop("await_subtitle_msg_id", None)
             ctx.user_data.pop("subtitle_streams", None)
         else:
-            await q.answer(text="⚠ Subtitle update failed.")
+            await q.answer(text=t("subtitle_update_failed"))
         sent = True
 
     elif cmd.startswith("plist_overwrite:"):
@@ -1236,13 +1259,13 @@ async def on_button(update, ctx):
         if choice == "yes" and name:
             ok, res = await asyncio.to_thread(UI.playlist_store.save_playlist_to_disk_overwrite, UI.CFG.playlist_dir, name, items)
             if ok:
-                await q.answer(text=f"💾 Saved as {os.path.splitext(res)[0]}")
+                await q.answer(text=t("saved_as", name=os.path.splitext(res)[0]))
                 if q.message:
                     await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
             else:
-                await q.answer(text=f"⚠ {res}")
+                await q.answer(text=f"⚠ {store_message(res)}")
         else:
-            await q.answer(text="❌ Cancelled")
+            await q.answer(text=t("cancelled"))
             if q.message:
                 await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
                 
@@ -1279,7 +1302,7 @@ async def on_button(update, ctx):
         for k in keys_to_clear:
             ctx.user_data.pop(k, None)
             
-        await q.answer(text="❌ Cancelled")
+        await q.answer(text=t("cancelled"))
         sent = True
 
     if sent and not skip_cleanup:

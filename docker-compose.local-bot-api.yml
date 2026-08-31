@@ -22,6 +22,7 @@ services:
       - telegram-bot-api
     environment:
       TG_TOKEN: "${TG_TOKEN}"
+      STARTUP_CHAT_ID: "${STARTUP_CHAT_ID}"
       KODI_HOST: "${KODI_HOST}"
       KODI_PORT: "${KODI_PORT:-8080}"
       KODI_WS_PORT: "${KODI_WS_PORT:-9090}"
@@ -31,30 +32,43 @@ services:
       DENON_HOST: "${DENON_HOST}"
       DEBUG_WS: "${DEBUG_WS:-1}"
       SC_CLIENT_ID: "${SC_CLIENT_ID}"
+      SPOTIFY_MAX_TRACKS: "${SPOTIFY_MAX_TRACKS:-100}"
+      SPOTIFY_YT_TIMEOUT: "${SPOTIFY_YT_TIMEOUT:-25}"
+      SPOTIFY_TIMEOUT: "${SPOTIFY_TIMEOUT:-10}"
       MEDIA_BASE_URL: "${MEDIA_BASE_URL}"
+      UI_STATE_FILE: "${UI_STATE_FILE:-/data/state/telegram_ui_state.json}"
       TELEGRAM_LOCAL_MODE: "1"
       TELEGRAM_BASE_URL: "http://127.0.0.1:8081/bot"
       TELEGRAM_BASE_FILE_URL: "http://127.0.0.1:8081/file/bot"
+      BOT_LANGUAGE: "${BOT_LANGUAGE:-en}"
       HA_HOST: "${HA_HOST}"
       HA_PORT: "${HA_PORT:-8123}"
       HA_TOKEN: "${HA_TOKEN}"
       HA_LIGHT_ID: "${HA_LIGHT_ID}"
       HA_WEBAPP_URL: "${HA_WEBAPP_URL}"
       HA_COLORS_FILE: "/data/colors/ha_colors.json"
-      PIGPIO_HOST: "${PIGPIO_HOST}"
-      PIGPIO_PORT: "${PIGPIO_PORT}"
-      PROJECTOR_GPIO: "${PROJECTOR_GPIO}"
-      PROJECTOR_PROTOCOL: "${PROJECTOR_PROTOCOL}"
+      PROJECTOR_LIRC_DEVICE: "${PROJECTOR_LIRC_DEVICE:-/dev/lirc0}"
       PROJECTOR_ADDRESS: "${PROJECTOR_ADDRESS}"
       PROJECTOR_POWER_ON_CODE: "${PROJECTOR_POWER_ON_CODE}"
       PROJECTOR_POWER_OFF_CODE: "${PROJECTOR_POWER_OFF_CODE}"
       PROJECTOR_POWER_ON_REPEATS: "${PROJECTOR_POWER_ON_REPEATS:-4}"
+      DISPLAY_BUTTON_LABEL: "${DISPLAY_BUTTON_LABEL}"
+      DISPLAY_POWER_ON_CMD: "${DISPLAY_POWER_ON_CMD}"
+      DISPLAY_POWER_OFF_CMD: "${DISPLAY_POWER_OFF_CMD}"
+      DISPLAY_COMMAND_TIMEOUT: "${DISPLAY_COMMAND_TIMEOUT:-15}"
+      TV_HOST: "${TV_HOST}"
+      PANEL_SHOW_VOLUME: "${PANEL_SHOW_VOLUME:-true}"
+      PANEL_SHOW_HIFI: "${PANEL_SHOW_HIFI:-true}"
+      PANEL_SHOW_DISPLAY: "${PANEL_SHOW_DISPLAY:-true}"
+      PANEL_SHOW_AIRPLAY: "${PANEL_SHOW_AIRPLAY:-true}"
+      PANEL_SHOW_HA: "${PANEL_SHOW_HA:-true}"
       IPTV_M3U_URL: "${IPTV_M3U_URL}"
       RADIO_API_URL: "${RADIO_API_URL}"
     volumes:
       - /storage/docker/partyqueue/data/kodi.m3u:/data/kodi.m3u
       - /storage/docker/partyqueue:/root/.ssh:ro
       - /storage/docker/partyqueue/playlists:/data/playlists
+      - /storage/docker/partyqueue/state:/data/state
       - /storage/docker/partyqueue/uploads:/data/uploads
       - /storage/docker/partyqueue/colors:/data/colors
       - telegram-bot-api-data:/var/lib/telegram-bot-api:ro

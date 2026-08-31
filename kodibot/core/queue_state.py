@@ -970,6 +970,39 @@ async def queue_playlist_async(pid):
     return len(vids)
 
 
+# Resolve Spotify tracks to YouTube videos and queue every hit.
+#
+# Mirrors queue_playlist_async: everything is resolved first, then the hits go
+# into the queue in playlist order.  Tracks without a confident YouTube match
+# are dropped, so the caller gets (queued, total) to report both numbers.
+async def queue_spotify_async(tracks):
+    if not tracks:
+        return 0, 0
+    sem = asyncio.Semaphore(5)
+
+    async def _resolve(artist, title):
+        async with sem:
+            try:
+                return await asyncio.to_thread(
+                    kodi_api.spotify_track_to_youtube_id, artist, title
+                )
+            except Exception as e:
+                log.warning("spotify track resolve failed for %s - %s: %s", artist, title, e)
+                return ""
+
+    vids = await asyncio.gather(*(_resolve(artist, title) for artist, title in tracks))
+    added = 0
+    for (artist, title), vid in zip(tracks, vids, strict=True):
+        if not vid:
+            log.info("SPOTIFY NO MATCH artist=%r title=%r", artist, title)
+            continue
+        queue_video(vid, title=f"{artist} - {title}")
+        added += 1
+    mark_list_dirty()
+    log.info("SPOTIFY QUEUED tracks=%d queued=%d skipped=%d", len(tracks), added, len(tracks) - added)
+    return added, len(tracks)
+
+
 # Clear the queue and reset indices.
 def clear_queue():
     global CURRENT_INDEX, DISPLAY_INDEX, NEXT_INDEX, LAST_PROGRESS_TS, LAST_PROGRESS_TIME, LAST_PROGRESS_TOTAL, LAST_PROGRESS_INDEX, EXTERNAL_PLAYBACK, BOT_EXPECTING_WS

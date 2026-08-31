@@ -7,6 +7,7 @@ LIRC driver (/dev/lirc0) to send precisely timed NEC IR waveforms.
 import logging
 import os
 import struct
+import sys
 import time
 from kodibot.config import CFG
 
@@ -17,7 +18,7 @@ class ProjectorController:
     """Manages IR signal generation and transmission for the projector."""
 
     def __init__(self):
-        self.device_path = "/dev/lirc0"
+        self.device_path = CFG.projector_lirc_device
 
     def connect(self) -> bool:
         """Verifies that the native LIRC device is available.
@@ -128,3 +129,23 @@ class ProjectorController:
 
 # Singleton instance
 projector = ProjectorController()
+
+
+def main(argv: list[str]) -> int:
+    """Entry point so IR can be driven as a shell command.
+
+    This is what the default DISPLAY_POWER_ON_CMD / DISPLAY_POWER_OFF_CMD
+    invoke, which keeps infrared on the same footing as CEC, HTTP or scripts.
+    """
+    action = argv[1] if len(argv) > 1 else ""
+    if action == "on":
+        return 0 if projector.power_on() else 1
+    if action == "off":
+        return 0 if projector.power_off() else 1
+    print("usage: python -m kodibot.core.projector on|off", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    sys.exit(main(sys.argv))

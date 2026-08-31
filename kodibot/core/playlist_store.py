@@ -3,6 +3,10 @@ import re
 import time
 import json
 
+INTERNAL_JSON_FILES = {
+    "telegram_ui_state.json",
+}
+
 
 def ensure_playlist_dir(path: str) -> bool:
     try:
@@ -77,7 +81,10 @@ def list_playlist_files(dir_path: str):
     if not ensure_playlist_dir(dir_path):
         return []
     try:
-        files = [f for f in os.listdir(dir_path) if f.lower().endswith(".json")]
+        files = [
+            f for f in os.listdir(dir_path)
+            if f.lower().endswith(".json") and f not in INTERNAL_JSON_FILES
+        ]
     except Exception:
         return []
     return sorted(files, key=str.casefold)

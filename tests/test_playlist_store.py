@@ -45,3 +45,12 @@ class TestPlaylistPersistence:
             assert ok3
 
             assert len(playlist_store.list_playlist_files(tmpdir)) == 0
+
+    def test_list_playlist_files_ignores_internal_ui_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with open(os.path.join(tmpdir, "fav.json"), "w", encoding="utf-8") as f:
+                f.write("{}")
+            with open(os.path.join(tmpdir, "telegram_ui_state.json"), "w", encoding="utf-8") as f:
+                f.write("{}")
+
+            assert playlist_store.list_playlist_files(tmpdir) == ["fav.json"]

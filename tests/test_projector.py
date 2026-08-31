@@ -12,8 +12,7 @@ os.environ.setdefault("KODI_WS_PORT", "9090")
 os.environ.setdefault("KODI_USER", "kodi")
 os.environ.setdefault("KODI_PASS", "kodi")
 os.environ.setdefault("TG_TOKEN", "test:token")
-os.environ.setdefault("PROJECTOR_GPIO", "17")
-os.environ.setdefault("PROJECTOR_PROTOCOL", "NEC")
+os.environ.setdefault("PROJECTOR_LIRC_DEVICE", "/dev/lirc0")
 os.environ.setdefault("PROJECTOR_ADDRESS", "0x08")
 os.environ.setdefault("PROJECTOR_POWER_ON_CODE", "0x03")
 os.environ.setdefault("PROJECTOR_POWER_OFF_CODE", "0x00")
@@ -28,12 +27,23 @@ def test_projector_config_loading():
     """Verify that configuration loaded from environment is mapped correctly."""
     from kodibot.config import CFG
 
-    assert CFG.projector_gpio == 17
-    assert CFG.projector_protocol == "NEC"
+    assert CFG.projector_lirc_device == "/dev/lirc0"
     assert CFG.projector_address == 0x08
     assert CFG.projector_power_on_code == 0x03
     assert CFG.projector_power_off_code == 0x00
     assert CFG.projector_power_on_repeats == 4
+
+
+def test_display_power_config_defaults():
+    """Display power settings fall back to the shipped IR commands."""
+    from kodibot.config import CFG
+
+    assert CFG.display_button_label == "📽 Beamer"
+    assert CFG.display_power_on_cmd == "python -m kodibot.core.projector on"
+    assert CFG.display_power_off_cmd == "python -m kodibot.core.projector off"
+    assert CFG.display_command_timeout == 15.0
+    assert CFG.ui_state_file == "/data/state/telegram_ui_state.json"
+    assert CFG.bot_language == "en"
 
 
 def test_projector_connect_missing_device():
@@ -168,3 +178,39 @@ def test_send_command_repeats():
     assert mock_file.call_count == 3
     # Should sleep twice (delay_ms / 1000.0)
     assert slept_durations == [0.05, 0.05]
+
+
+def test_projector_uses_configured_lirc_device(monkeypatch):
+    """The device path comes from configuration, not a hard-coded literal."""
+    import dataclasses
+
+    from kodibot.config import CFG
+
+    monkeypatch.setattr(
+        PJ, "CFG", dataclasses.replace(CFG, projector_lirc_device="/dev/lirc9")
+    )
+    controller = PJ.ProjectorController()
+
+    assert controller.device_path == "/dev/lirc9"
+
+
+def test_main_on_returns_zero_on_success(monkeypatch):
+    monkeypatch.setattr(PJ.projector, "power_on", lambda: True)
+    assert PJ.main(["projector", "on"]) == 0
+
+
+def test_main_on_returns_one_on_failure(monkeypatch):
+    monkeypatch.setattr(PJ.projector, "power_on", lambda: False)
+    assert PJ.main(["projector", "on"]) == 1
+
+
+def test_main_off_calls_power_off(monkeypatch):
+    calls = []
+    monkeypatch.setattr(PJ.projector, "power_off", lambda: calls.append("off") or True)
+    assert PJ.main(["projector", "off"]) == 0
+    assert calls == ["off"]
+
+
+def test_main_rejects_unknown_action():
+    assert PJ.main(["projector", "sideways"]) == 2
+    assert PJ.main(["projector"]) == 2

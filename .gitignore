@@ -4,3 +4,5 @@ test.py
 wimius_ir_codes.json
 .codex
 deploy_libreelec_partyqueue.sh
+scripts/*
+!scripts/.gitkeep

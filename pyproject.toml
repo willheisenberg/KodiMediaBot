@@ -1,0 +1,21 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+exclude = [".venv", "__pycache__", "data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = [
+    "E501",  # long lines are common in URLs and Telegram markup strings
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests must set env defaults before importing kodibot (config reads os.environ
+# at import time), so imports cannot sit at the top of the file.
+"tests/*" = ["E402", "I001"]
+# Facade modules: these re-export names and place imports at the bottom of the
+# file on purpose, to break circular imports between the telegram/core layers.
+"kodibot/core/kodi_api.py" = ["E402", "F401", "I001"]
+"kodibot/telegram/ui.py" = ["E402", "F401", "I001"]
+"kodibot/telegram/panel.py" = ["E402"]
+"kodibot/telegram/webapp.py" = ["F401"]

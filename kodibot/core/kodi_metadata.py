@@ -61,6 +61,9 @@ def normalize_match_text(text):
     norm = unicodedata.normalize("NFKD", text)
     norm = norm.encode("ascii", "ignore").decode().casefold()
     norm = re.sub(r"\[[^\]]*\]|\([^)]*\)|\{[^}]*\}", " ", norm)
+    # Spotify writes "and" where YouTube writes "&"; without this the two
+    # spellings of the same artist never match.
+    norm = norm.replace("&", " and ")
     norm = re.sub(r"\b(ft|feat)\.?\b", " feat ", norm)
     norm = re.sub(
         r"\b(official|audio|video|lyrics?|lyric|visualizer|remaster(?:ed)?|hd|4k|hq|topic|vevo)\b",
@@ -86,7 +89,12 @@ def youtube_result_matches_radio_track(track_title, result_title):
     title_norm = normalize_match_text(title)
     if not artist_norm or not title_norm:
         return False
-    return artist_norm in result_norm and title_norm in result_norm
+    # Collaborations get credited in either order, so match the artist word by
+    # word.  The title still has to appear as a whole, which is what keeps a
+    # cover or a tribute act from slipping through.
+    result_words = set(result_norm.split())
+    artist_ok = all(word in result_words for word in artist_norm.split())
+    return artist_ok and title_norm in result_norm
 
 
 def soundcloud_result_matches_radio_track(track_title, result_title, result_artist=""):
@@ -413,7 +421,7 @@ def cache_soundcloud_link(query_key, link):
     KA.SC_SEARCH_CACHE[query_key] = (link or "", time.time())
 
 
-def search_youtube_link(query, expected_title=""):
+def search_youtube_link(query, expected_title="", timeout=None):
     if not query:
         return ""
     query_key = normalize_title(query)
@@ -433,7 +441,7 @@ def search_youtube_link(query, expected_title=""):
             check=False,
             capture_output=True,
             text=True,
-            timeout=KA.CFG.yt_search_timeout,
+            timeout=timeout or KA.CFG.yt_search_timeout,
         )
         out = (res.stdout or "").strip().splitlines()
         link = ""
@@ -506,6 +514,29 @@ def radio_title_to_youtube_link(track_title):
     else:
         query = clean or track_title
     return search_youtube_link(query, expected_title=clean or track_title)
+
+
+def spotify_track_to_youtube_id(artist, title):
+    """Find the YouTube video id for one Spotify track, or "" when unsure.
+
+    The search query keeps every artist Spotify listed, because that finds the
+    right upload more reliably.  The match check gets the primary artist only:
+    YouTube titles spell feature credits differently ("ft.", "feat.", or not at
+    all), so demanding all of them would reject nearly every correct hit.
+    """
+    artist = (artist or "").strip()
+    title = (title or "").strip()
+    if not artist or not title:
+        return ""
+    primary = artist.split(",")[0].strip() or artist
+    # Spotify resolves a whole playlist in parallel, which slows every single
+    # yt-dlp search down; the radio timeout is far too tight for that.
+    link = search_youtube_link(
+        f"{artist} {title}",
+        expected_title=f"{primary} - {title}",
+        timeout=KA.CFG.spotify_yt_timeout,
+    )
+    return extract_youtube_id(link) if link else ""
 
 
 def radio_title_to_soundcloud_link(track_title):

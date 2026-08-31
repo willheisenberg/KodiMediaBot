@@ -6,6 +6,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
 from kodibot.core import homeassistant as ha
 from kodibot.config import CFG
+from kodibot.telegram.i18n import state_label, t
 from kodibot.telegram import state as S
 from kodibot.telegram.panel import (
     should_recreate_after_edit_error,
@@ -71,8 +72,8 @@ async def close_ha_menu_message(ctx, chat_id, message_id=None):
 def format_ha_state_text(state):
     if not state:
         return ""
-    status = state.get("state", "unknown")
-    name = CFG.ha_light_id or state.get("friendly_name") or "light"
+    status = state_label(state.get("state", "unknown"))
+    name = CFG.ha_light_id or state.get("friendly_name") or t("light_fallback")
     rgb = state.get("rgb_color")
     brightness_pct = ha.brightness_percent_from_ha(state.get("brightness"))
     color_hex = ""
@@ -81,11 +82,12 @@ def format_ha_state_text(state):
         color_hex = f" | #{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
     if brightness_pct is not None:
         brightness_text = f" | {brightness_pct}%"
-    return f"\n\n💡 {name}: {status}{color_hex}{brightness_text}"
+    return t("ha_light_state", name=name, state=status, color_hex=color_hex, brightness=brightness_text)
 
 
 def saved_color_name(color, index):
-    return (color.get("name") or f"Color {index + 1}").strip() or f"Color {index + 1}"
+    fallback = t("color_fallback", index=index + 1)
+    return (color.get("name") or fallback).strip() or fallback
 
 
 def saved_color_button_label(color, index):
@@ -111,37 +113,37 @@ def build_main_mini_app_url(bot_username, start_param="", mode="compact"):
 
 
 def build_ha_main_menu_markup(*, live_color_button=None, extra_rows=None):
-    load_color_button = InlineKeyboardButton("🎨 Load Color", callback_data="ha:loadcolor")
-    brightness_button = InlineKeyboardButton("🔆 Brightness", callback_data="ha:brightness")
+    load_color_button = InlineKeyboardButton(t("load_color"), callback_data="ha:loadcolor")
+    brightness_button = InlineKeyboardButton(t("brightness"), callback_data="ha:brightness")
     rows = []
     if live_color_button is not None:
         rows.append([
-            InlineKeyboardButton("💡 Toggle", callback_data="ha:toggle"),
+            InlineKeyboardButton(t("toggle"), callback_data="ha:toggle"),
             live_color_button,
         ])
         rows.append([
             load_color_button,
-            InlineKeyboardButton("🔢 Set Hex", callback_data="ha:sethex"),
+            InlineKeyboardButton(t("set_hex"), callback_data="ha:sethex"),
         ])
         rows.append([
             brightness_button,
-            InlineKeyboardButton("💾 Save Color", callback_data="ha:savecolor"),
+            InlineKeyboardButton(t("save_color"), callback_data="ha:savecolor"),
         ])
     else:
         rows.append([
-            InlineKeyboardButton("💡 Toggle", callback_data="ha:toggle"),
+            InlineKeyboardButton(t("toggle"), callback_data="ha:toggle"),
             load_color_button,
         ])
         rows.append([
-            InlineKeyboardButton("🔢 Set Hex", callback_data="ha:sethex"),
+            InlineKeyboardButton(t("set_hex"), callback_data="ha:sethex"),
             brightness_button,
         ])
         rows.append([
-            InlineKeyboardButton("💾 Save Color", callback_data="ha:savecolor"),
+            InlineKeyboardButton(t("save_color"), callback_data="ha:savecolor"),
         ])
     rows.extend(extra_rows or ())
     rows.append([
-        InlineKeyboardButton("Cancel", callback_data="ha:close"),
+        InlineKeyboardButton(t("cancel").replace("❌ ", ""), callback_data="ha:close"),
     ])
     return InlineKeyboardMarkup(rows)
 
@@ -149,32 +151,32 @@ def build_ha_main_menu_markup(*, live_color_button=None, extra_rows=None):
 def build_ha_preset_menu_markup(saved_colors):
     rows = [
         [
-            InlineKeyboardButton("🔴 Red", callback_data="ha:color:FF0000"),
-            InlineKeyboardButton("🟢 Green", callback_data="ha:color:00FF00"),
-            InlineKeyboardButton("🔵 Blue", callback_data="ha:color:0000FF"),
+            InlineKeyboardButton(t("red"), callback_data="ha:color:FF0000"),
+            InlineKeyboardButton(t("green"), callback_data="ha:color:00FF00"),
+            InlineKeyboardButton(t("blue"), callback_data="ha:color:0000FF"),
         ],
         [
-            InlineKeyboardButton("🟡 Yellow", callback_data="ha:color:FFD700"),
-            InlineKeyboardButton("🟣 Purple", callback_data="ha:color:8B00FF"),
-            InlineKeyboardButton("🟠 Orange", callback_data="ha:color:FF8C00"),
+            InlineKeyboardButton(t("yellow"), callback_data="ha:color:FFD700"),
+            InlineKeyboardButton(t("purple"), callback_data="ha:color:8B00FF"),
+            InlineKeyboardButton(t("orange"), callback_data="ha:color:FF8C00"),
         ],
         [
-            InlineKeyboardButton("⬜ Warm White", callback_data="ha:color:FFE4B5"),
-            InlineKeyboardButton("❄️ Cool White", callback_data="ha:color:F0F8FF"),
+            InlineKeyboardButton(t("warm_white"), callback_data="ha:color:FFE4B5"),
+            InlineKeyboardButton(t("cool_white"), callback_data="ha:color:F0F8FF"),
         ],
         [
-            InlineKeyboardButton("🌈 Cyan", callback_data="ha:color:00FFFF"),
-            InlineKeyboardButton("🌸 Pink", callback_data="ha:color:FF69B4"),
-            InlineKeyboardButton("🤎 Brown", callback_data="ha:color:8B4513"),
+            InlineKeyboardButton(t("cyan"), callback_data="ha:color:00FFFF"),
+            InlineKeyboardButton(t("pink"), callback_data="ha:color:FF69B4"),
+            InlineKeyboardButton(t("brown"), callback_data="ha:color:8B4513"),
         ],
         [
-            InlineKeyboardButton("🪩 Disco", callback_data="ha:effect:colorloop"),
+            InlineKeyboardButton(t("disco"), callback_data="ha:effect:colorloop"),
         ],
     ]
 
     if saved_colors:
         rows.append([
-            InlineKeyboardButton("💾 Saved Colors", callback_data="ha:noop"),
+            InlineKeyboardButton(t("saved_colors"), callback_data="ha:noop"),
         ])
         for i, color in enumerate(saved_colors):
             rows.append([
@@ -184,16 +186,16 @@ def build_ha_preset_menu_markup(saved_colors):
                 ),
             ])
         rows.append([
-            InlineKeyboardButton("🗑 Delete Color", callback_data="ha:deletecolor:ask"),
+            InlineKeyboardButton(t("delete_color"), callback_data="ha:deletecolor:ask"),
         ])
     else:
         rows.append([
-            InlineKeyboardButton("No saved colors yet", callback_data="ha:noop"),
+            InlineKeyboardButton(t("no_saved_colors_yet"), callback_data="ha:noop"),
         ])
 
     rows.append([
-        InlineKeyboardButton("⬅ Back", callback_data="ha:back"),
-        InlineKeyboardButton("Cancel", callback_data="ha:close"),
+        InlineKeyboardButton(t("back"), callback_data="ha:back"),
+        InlineKeyboardButton(t("cancel").replace("❌ ", ""), callback_data="ha:close"),
     ])
     return InlineKeyboardMarkup(rows)
 
@@ -241,21 +243,18 @@ async def show_ha_menu(ctx, chat_id, *, chat_type, bot_username, state, edit_mes
     extra_rows = []
     live_color_button = None
     if webapp_url and chat_type == "private":
-        live_color_button = InlineKeyboardButton("🎛 Live Color", web_app=WebAppInfo(url=webapp_url))
+        live_color_button = InlineKeyboardButton(t("live_color"), web_app=WebAppInfo(url=webapp_url))
         webapp_hint = ""
     elif webapp_url:
         webapp_hint = ""
         if main_mini_app_url:
             extra_rows.append([
-                InlineKeyboardButton("🎛 Open Live Color", url=main_mini_app_url),
+                InlineKeyboardButton(t("open_live_color"), url=main_mini_app_url),
             ])
     else:
-        webapp_hint = (
-            "\n\nMini App disabled: Telegram only accepts HTTPS here. "
-            "Set `HA_WEBAPP_URL` or use a `MEDIA_BASE_URL` with `https://`."
-        )
+        webapp_hint = t("ha_mini_app_disabled")
 
-    text = f"🏠 Home Assistant Light{format_ha_state_text(state)}{webapp_hint}"
+    text = f"{t('ha_light_title')}{format_ha_state_text(state)}{webapp_hint}"
     markup = build_ha_main_menu_markup(
         live_color_button=live_color_button,
         extra_rows=extra_rows,
@@ -274,7 +273,7 @@ async def show_ha_preset_menu(ctx, chat_id, *, edit_message_id=None):
     await _edit_or_send_ha_message(
         ctx,
         chat_id,
-        "🎨 Load Color\n\nBuilt-in colors above, saved colors below.",
+        t("load_color_text"),
         build_ha_preset_menu_markup(saved_colors),
         edit_message_id=edit_message_id,
     )

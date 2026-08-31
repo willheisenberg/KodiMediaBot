@@ -9,6 +9,7 @@ from kodibot.telegram.ha_webapp import (
     parse_rgb_triplet,
     validate_webapp_init_data,
 )
+from kodibot.telegram.i18n import t
 
 log = logging.getLogger(__name__)
 
@@ -39,12 +40,12 @@ def _ha_webapp_base_url(self) -> str:
 def _validate_webapp_payload(self):
     if not ha.ha_available():
         log.warning("HA webapp request rejected: Home Assistant not configured")
-        self._send_json(503, {"ok": False, "error": "Home Assistant is not configured."})
+        self._send_json(503, {"ok": False, "error": t("ha_not_configured").replace("⚠ ", "")})
         return None, None
     payload = self._read_json_body()
     if not isinstance(payload, dict):
         log.warning("HA webapp request rejected: invalid JSON payload path=%s", self.path)
-        self._send_json(400, {"ok": False, "error": "Invalid JSON payload."})
+        self._send_json(400, {"ok": False, "error": t("invalid_json_payload")})
         return None, None
     init_data = payload.get("init_data") or ""
     parsed = validate_webapp_init_data(
@@ -54,7 +55,7 @@ def _validate_webapp_payload(self):
     )
     if parsed is None:
         log.warning("HA webapp request rejected: initData validation failed path=%s", self.path)
-        self._send_json(403, {"ok": False, "error": "Telegram Mini App validation failed."})
+        self._send_json(403, {"ok": False, "error": t("mini_app_validation_failed")})
         return None, None
     return payload, parsed
 
@@ -63,7 +64,7 @@ def _handle_ha_color_page(self):
     if not ha.ha_available():
         self._send_html(
             503,
-            "<!doctype html><html><body><p>Home Assistant is not configured.</p></body></html>",
+            f"<!doctype html><html><body><p>{t('ha_not_configured').replace('⚠ ', '')}</p></body></html>",
         )
         return
     app_base_url = self._ha_webapp_base_url()
@@ -94,19 +95,19 @@ def _handle_ha_color_apply(self):
     rgb = parse_rgb_triplet(payload)
     if rgb is None:
         log.warning("HA webapp apply rejected: invalid RGB payload=%s", payload)
-        self._send_json(400, {"ok": False, "error": "Invalid RGB values."})
+        self._send_json(400, {"ok": False, "error": t("invalid_rgb_values")})
         return
     brightness_provided = payload.get("brightness_pct") not in (None, "")
     brightness_pct = parse_brightness_percent(payload)
     if brightness_provided and brightness_pct is None:
         log.warning("HA webapp apply rejected: invalid brightness payload=%s", payload)
-        self._send_json(400, {"ok": False, "error": "Invalid brightness value."})
+        self._send_json(400, {"ok": False, "error": t("invalid_brightness_value")})
         return
     log.info("HA webapp apply rgb=%s brightness_pct=%s", rgb, brightness_pct if brightness_pct is not None else "-")
     ok = ha.set_light_color(*rgb, brightness_pct=brightness_pct)
     if not ok:
         log.warning("HA webapp apply failed rgb=%s brightness_pct=%s", rgb, brightness_pct if brightness_pct is not None else "-")
-        self._send_json(502, {"ok": False, "error": "Color could not be applied."})
+        self._send_json(502, {"ok": False, "error": t("color_apply_failed").replace("⚠ ", "")})
         return
     fallback_state = {
         "state": "off" if brightness_pct == 0 else "on",
@@ -132,18 +133,18 @@ def _handle_ha_color_save(self):
     rgb = parse_rgb_triplet(payload)
     if rgb is None:
         log.warning("HA webapp save rejected: invalid RGB payload=%s", payload)
-        self._send_json(400, {"ok": False, "error": "Invalid RGB values."})
+        self._send_json(400, {"ok": False, "error": t("invalid_rgb_values")})
         return
     name = str(payload.get("name") or "").strip()
     if not name:
         log.warning("HA webapp save rejected: missing preset name")
-        self._send_json(400, {"ok": False, "error": "Preset name is required."})
+        self._send_json(400, {"ok": False, "error": t("preset_name_required")})
         return
     log.info("HA webapp save name=%s rgb=%s", name, rgb)
     ok = ha.save_color(name, *rgb)
     if not ok:
         log.warning("HA webapp save failed name=%s rgb=%s", name, rgb)
-        self._send_json(502, {"ok": False, "error": "Preset could not be saved."})
+        self._send_json(502, {"ok": False, "error": t("preset_save_failed")})
         return
     self._send_json(
         200,

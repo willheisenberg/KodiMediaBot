@@ -26,6 +26,7 @@ from kodibot.telegram.ha_webapp_routes import (
     _handle_ha_color_apply,
     _handle_ha_color_save,
 )
+from kodibot.telegram.i18n import t
 
 log = logging.getLogger(__name__)
 SOCIAL_VIDEO_DOMAINS = (
@@ -92,7 +93,7 @@ def sanitize_stem(name: str):
 
 def format_bytes(size: int | None):
     if size is None:
-        return "unknown size"
+        return t("unknown_size")
     units = ("B", "KB", "MB", "GB", "TB")
     value = float(size)
     for unit in units:
@@ -185,7 +186,7 @@ def _create_image_session_dir():
         "kodi_dir": resolve_kodi_media_path(local_dir),
         "count": 0,
         "image_paths": [],
-        "title": "Photo slideshow",
+        "title": t("photo_slideshow"),
     }
 
 
@@ -201,7 +202,7 @@ def _stage_image_into_session(session, item):
     os.replace(src_path, dst_path)
     session["count"] = next_index
     session["image_paths"].append(dst_path)
-    if item.get("title") and session["title"] == "Photo slideshow":
+    if item.get("title") and session["title"] == t("photo_slideshow"):
         session["title"] = item["title"]
     return dst_path
 
@@ -347,7 +348,7 @@ def classify_message(msg):
 
     if msg.voice:
         dt = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
-        title = caption or f"Voice message {dt}"
+        title = caption or t("voice_message", date=dt)
         return {
             "file_id": msg.voice.file_id,
             "file_size": getattr(msg.voice, "file_size", None),
@@ -357,7 +358,7 @@ def classify_message(msg):
         }
 
     if msg.audio:
-        title = caption or msg.audio.title or msg.audio.file_name or "Audio upload"
+        title = caption or msg.audio.title or msg.audio.file_name or t("audio_upload")
         prefix = msg.audio.file_name or title
         return {
             "file_id": msg.audio.file_id,
@@ -368,7 +369,7 @@ def classify_message(msg):
         }
 
     if msg.video:
-        title = caption or msg.video.file_name or "Video upload"
+        title = caption or msg.video.file_name or t("video_upload")
         prefix = msg.video.file_name or title
         return {
             "file_id": msg.video.file_id,
@@ -380,7 +381,7 @@ def classify_message(msg):
 
     if msg.video_note:
         dt = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
-        title = caption or f"Video note {dt}"
+        title = caption or t("video_note", date=dt)
         return {
             "file_id": msg.video_note.file_id,
             "file_size": getattr(msg.video_note, "file_size", None),
@@ -391,7 +392,7 @@ def classify_message(msg):
 
     if msg.photo:
         dt = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
-        title = caption or f"Photo {dt}"
+        title = caption or t("photo", date=dt)
         largest = msg.photo[-1]
         return {
             "file_id": largest.file_id,
@@ -406,15 +407,15 @@ def classify_message(msg):
         if mime_type.startswith("video/"):
             kind = "video"
             fallback_ext = ".mp4"
-            default_title = "Video file"
+            default_title = t("video_file")
         elif mime_type.startswith("audio/") or mime_type == "application/ogg":
             kind = "audio"
             fallback_ext = ".ogg"
-            default_title = "Audio file"
+            default_title = t("audio_file")
         elif mime_type.startswith("image/"):
             kind = "image"
             fallback_ext = ".jpg"
-            default_title = "Image file"
+            default_title = t("image_file")
         else:
             return None
         title = caption or msg.document.file_name or default_title
@@ -506,10 +507,7 @@ async def download_media_item(bot, msg):
     if not CFG.telegram_local_mode and file_size and file_size > CFG.telegram_download_size_limit:
         raise MediaDownloadError(
             (
-                f"⚠ Upload is {format_bytes(file_size)}. "
-                "The standard Telegram Bot API can only download files up to 20 MB. "
-                "For larger uploads, run a local telegram-bot-api server and set "
-                "`CFG.telegram_local_mode=1` plus `TELEGRAM_BASE_URL`/`TELEGRAM_BASE_FILE_URL`."
+                t("upload_too_large", size=format_bytes(file_size))
             ),
             detail=(
                 f"telegram download limit exceeded size={file_size} "
@@ -530,7 +528,7 @@ async def download_media_item(bot, msg):
         if CFG.telegram_local_mode and file_path and os.path.isabs(file_path):
             if not os.path.exists(file_path):
                 raise MediaDownloadError(
-                    "⚠ Upload could not be processed. The local Telegram Bot API file store is not mounted in the bot container.",
+                    t("upload_local_store_missing"),
                     detail=f"local telegram file missing path={file_path}",
                 )
             await to_thread(shutil.copyfile, file_path, target_path)
@@ -541,10 +539,7 @@ async def download_media_item(bot, msg):
         if "file is too big" in err_txt:
             raise MediaDownloadError(
                 (
-                    f"⚠ Upload is {format_bytes(file_size)}. "
-                    "Telegram rejected the download because the bot is using the standard Bot API. "
-                    "For larger uploads, run a local telegram-bot-api server and set "
-                    "`CFG.telegram_local_mode=1` plus `TELEGRAM_BASE_URL`/`TELEGRAM_BASE_FILE_URL`."
+                    t("upload_too_large_rejected", size=format_bytes(file_size))
                 ),
                 detail=f"telegram get_file failed size={file_size} err={e}",
             ) from e
@@ -880,7 +875,7 @@ class _MediaRequestHandler(SimpleHTTPRequestHandler):
         except Exception:
             log.exception("Media server GET failed path=%s", self.path)
             try:
-                self._send_json(500, {"ok": False, "error": "Internal server error."})
+                self._send_json(500, {"ok": False, "error": t("internal_server_error")})
             except Exception:
                 return
 
@@ -896,13 +891,13 @@ class _MediaRequestHandler(SimpleHTTPRequestHandler):
             if req_path == "/app/ha-color/save":
                 self._handle_ha_color_save()
                 return
-            self._send_json(404, {"ok": False, "error": "Not found."})
+            self._send_json(404, {"ok": False, "error": t("not_found")})
         except BrokenPipeError:
             return
         except Exception:
             log.exception("Media server POST failed path=%s", self.path)
             try:
-                self._send_json(500, {"ok": False, "error": "Internal server error."})
+                self._send_json(500, {"ok": False, "error": t("internal_server_error")})
             except Exception:
                 return
 
