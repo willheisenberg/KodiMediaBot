@@ -156,6 +156,7 @@ async def on_button(update, ctx):
     elif cmd == "playpause":
         pid = UI.kodi_api.get_active_playerid()
         if pid is not None:
+            UI.queue_state.cancel_soundcloud_start()
             UI.schedule_playback_action(ctx, chat_id, UI.kodi_api.kodi_call, "Player.PlayPause", {"playerid": pid})
             await q.answer(text="⏯")
             sent = True

@@ -2,9 +2,57 @@ import asyncio
 import html
 import os
 import re
+from urllib.parse import urlparse
 
 from kodibot.telegram import ui as UI
 from kodibot.core import radio_browser
+
+
+def extract_queue_links(text):
+    # Consume Markdown links as a whole so a URL used as the label is not added twice.
+    pattern = r"\[[^\]]*\]\((https?://[^\s)]+)\)|(https?://[^\s<>\[\]()]+)"
+    links = []
+    for match in re.finditer(pattern, text):
+        url = (match.group(1) or match.group(2)).rstrip(".,;!?")
+        host = (urlparse(url).hostname or "").lower()
+        if host in {"soundcloud.com", "www.soundcloud.com", "on.soundcloud.com",
+                    "youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}:
+            links.append(url)
+    return links
+
+
+async def queue_multiple_links(links, ctx, chat_id):
+    for url in links:
+        source_url = url
+        try:
+            if UI.kodi_api.SC_SHORT.search(url):
+                url = await asyncio.to_thread(UI.queue_state.resolve_sc_short, url)
+                if not url:
+                    raise ValueError("SoundCloud short link could not be resolved")
+            if UI.queue_state.is_sc_set_url(url):
+                count = await UI.queue_state.queue_soundcloud_set_async(url)
+                await UI.send_toast_message(ctx, chat_id, UI.t(
+                    "soundcloud_set_added" if count else "soundcloud_set_failed", count=count,
+                ))
+            elif UI.queue_state.is_sc_track_url(url):
+                UI.queue_state.queue_item(UI.queue_state.make_soundcloud(url))
+                await UI.send_toast_message(ctx, chat_id, UI.t("soundcloud_track_added"))
+            else:
+                vid = UI.kodi_api.YT.search(url)
+                playlist = UI.kodi_api.PL.search(url)
+                # A batch represents the supplied tracks. A standalone playlist
+                # expands, while a video URL with list= adds only that video.
+                if vid:
+                    await UI.queue_state.queue_video_async(vid.group(1))
+                    await UI.send_toast_message(ctx, chat_id, UI.t("track_added"))
+                elif playlist:
+                    count = await UI.queue_state.queue_playlist_async(playlist.group(1))
+                    await UI.send_toast_message(ctx, chat_id, UI.t("playlist_added", count=count))
+                else:
+                    raise ValueError("Unsupported track URL")
+        except Exception as e:
+            UI.log.info("QUEUE LINK FAILED chat_id=%s url=%s err=%s", chat_id, source_url, e)
+            await UI.send_toast_message(ctx, chat_id, UI.t("queue_link_failed", url=html.escape(source_url)))
 
 
 async def handle_text(update, ctx):
@@ -1122,6 +1170,13 @@ async def handle_text(update, ctx):
         if sent:
             UI.schedule_cleanup(ctx, chat_id, prev_id)
             await UI.update_list_message(ctx, chat_id)
+        return
+
+    links = extract_queue_links(txt)
+    if len(links) > 1:
+        await queue_multiple_links(links, ctx, chat_id)
+        UI.schedule_cleanup(ctx, chat_id, prev_id)
+        await UI.update_list_message(ctx, chat_id)
         return
 
     spotify_link = UI.spotify.parse_spotify_url(txt)

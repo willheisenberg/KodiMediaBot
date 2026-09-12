@@ -6,6 +6,11 @@
 
 This bot controls Kodi and a CEC device (HiFi/TV) via Telegram.
 
+You can send several YouTube and SoundCloud links in one message, separated by
+spaces or newlines. They are added in message order; a failed link does not stop
+the remaining links. In such a batch, a YouTube video URL with a playlist parameter
+adds the video only; a standalone playlist URL adds the playlist.
+
 Besides YouTube and SoundCloud queue links, the bot can also play Telegram
 voice/video uploads and selected social-media video URLs directly once.
 Those temporary media files are deleted again after playback stops.
