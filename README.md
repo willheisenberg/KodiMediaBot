@@ -101,6 +101,17 @@ Enable Kodi's web server under `Settings -> Services -> Control`. `KODI_USER`,
 `KODI_PASS` and `KODI_PORT` must exactly match that configuration; otherwise the
 bot can show a queued title but cannot start playback or display its runtime.
 
+The optional [Party Video](https://github.com/willheisenberg/visualization-partyvideo)
+addon shows a muted video in an endless loop while music plays. Install it on the
+Kodi host and set `PARTYVIDEO_ENABLED=true` to get the 🌌 Visual page in the panel.
+The default is `false`; enable it only after installing the addon. Recreate the
+bot container after changing the flag so the new environment takes effect.
+The page accepts YouTube links, library movies and uploaded videos, and displays
+install/download progress and playback errors in a message that updates itself.
+Upload cleanup requires confirmation and only removes videos directly inside the
+upload folder; library files, symlinks and the active visual source are preserved.
+An upload kept for a visual can be removed using this menu after stopping it.
+
 The SoundCloud and YouTube addons are required for their respective links. The
 YouTube addon also needs its own API key, client ID and client secret configured
 inside Kodi. Those YouTube credentials are not read from the bot's `.env`.
@@ -210,6 +221,7 @@ services:
       PANEL_SHOW_DISPLAY: "true"
       PANEL_SHOW_AIRPLAY: "true"
       PANEL_SHOW_HA: "true"
+      PARTYVIDEO_ENABLED: "false"
       CEC_HOST: "172.17.0.1"
       DENON_HOST: ""
       DEBUG_WS: "1"
@@ -340,6 +352,12 @@ Notes:
   `PANEL_SHOW_AIRPLAY` and `PANEL_SHOW_HA` accept `true` or `false`. They hide
   only their corresponding panel sections; disabled Hifi, AirPlay and volume
   sections are also omitted from the status line.
+- `PARTYVIDEO_ENABLED` accepts `true` or `false` and defaults to `false`. It adds
+  the 🌌 Visual page to the controls panel, which drives the separate
+  [Party Video](https://github.com/willheisenberg/visualization-partyvideo) Kodi
+  addon: a muted video looping behind your music, from a YouTube link, a library
+  movie or a video uploaded to the chat. Leave it off unless that addon is
+  installed on the Kodi host — without it the buttons have nothing to talk to.
 - `TELEGRAM_LOCAL_MODE=1` enables support for a local `telegram-bot-api` server, which is required if the bot should download Telegram uploads larger than 20 MB.
 - `TELEGRAM_BASE_URL` optionally overrides the Telegram API endpoint, for example `http://127.0.0.1:8081/bot`.
 - `TELEGRAM_BASE_FILE_URL` optionally overrides the Telegram file endpoint, for example `http://127.0.0.1:8081/file/bot`.
@@ -372,7 +390,7 @@ Notes:
 - `ACME_EMAIL` is the email address Caddy uses for Let's Encrypt certificate management.
 - `CADDYFILE_PATH` optionally overrides the host path mounted as `/etc/caddy/Caddyfile`.
 - If `HA_WEBAPP_URL` is not set, the bot falls back to `MEDIA_BASE_URL/app/ha-color` when `MEDIA_BASE_URL` itself is `https://`.
-- If `HA_HOST` is set, a `🏠 Home Assistant` button appears in the panel with options to toggle the light, open `Live Color`, set a hex color, adjust brightness, save the current color, load saved colors, and delete saved colors.
+- If `HA_HOST` is set, a `🏠 Home Assistant` button appears in the panel with options to toggle the light, open `Live Color`, set a hex color, adjust brightness, save the current color, load saved colors, and delete saved colors. The Home Assistant menu replaces the current panel in place; `⬅ Back` restores the main controls. Color presets use the same message, and playback updates keep the open menu visible.
 - In private chats the HA menu shows the embedded `Live Color` Mini App button directly.
 - In group chats the HA menu shows `Open Live Color`, which uses Telegram's Main Mini App deep link and therefore depends on the BotFather Mini App configuration above.
 
