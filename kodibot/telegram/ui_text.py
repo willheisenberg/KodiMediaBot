@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 
 from kodibot.telegram import ui as UI
 from kodibot.core import radio_browser
+from kodibot.core import partyvideo
 
 
 def extract_queue_links(text):
@@ -65,6 +66,17 @@ async def handle_text(update, ctx):
     msg_id = update.message.message_id
     txt = update.message.text.strip()
     txt_lower = txt.lower()
+
+    visual_prompts = ("await_visual_url", "await_visual_movie", "await_visual_upload")
+    if not UI.CFG.partyvideo_enabled and any(ctx.user_data.get(key) for key in visual_prompts):
+        for key in visual_prompts:
+            UI.cancel_prompt_timeout(chat_id, user_id, key)
+            ctx.user_data.pop(key, None)
+            await UI.delete_message_if_present(ctx, chat_id, ctx.user_data.pop(key + "_msg_id", None))
+        ctx.user_data.pop("visual_movies", None)
+        ctx.user_data.pop("visual_uploads", None)
+        await UI.send_toast_message(ctx, chat_id, UI.t("visual_disabled"))
+        return
 
     if ctx.user_data.get("await_ha_hex"):
         UI.cancel_prompt_timeout(chat_id, user_id, "await_ha_hex")
@@ -347,6 +359,53 @@ async def handle_text(update, ctx):
         if sent and not skip_cleanup:
             UI.schedule_cleanup(ctx, chat_id, prev_id)
             await UI.update_list_message(ctx, chat_id)
+            await UI.update_now_playing_message(ctx, chat_id)
+        return
+
+    if ctx.user_data.get("await_visual_url"):
+        UI.cancel_prompt_timeout(chat_id, user_id, "await_visual_url")
+        ctx.user_data["await_visual_url"] = False
+        prompt_id = ctx.user_data.pop("await_visual_url_msg_id", None)
+        await UI.delete_message_if_present(ctx, chat_id, msg_id)
+        if txt_lower == "q":
+            await UI.send_toast_message(ctx, chat_id, UI.t("cancelled_dot"))
+        elif partyvideo.is_youtube_url(txt):
+            await asyncio.to_thread(partyvideo.play_url, txt)
+            await UI.send_toast_message(ctx, chat_id, UI.t("visual_set", title=txt))
+        else:
+            await UI.send_toast_message(ctx, chat_id, UI.t("visual_invalid_url"))
+        sent = True
+        await UI.delete_message_if_present(ctx, chat_id, prompt_id)
+        if sent and not skip_cleanup:
+            UI.schedule_cleanup(ctx, chat_id, prev_id)
+            await UI.update_now_playing_message(ctx, chat_id)
+        return
+
+    if ctx.user_data.get("await_visual_movie") or ctx.user_data.get("await_visual_upload"):
+        is_movie = bool(ctx.user_data.get("await_visual_movie"))
+        state_key = "await_visual_movie" if is_movie else "await_visual_upload"
+        UI.cancel_prompt_timeout(chat_id, user_id, state_key)
+        ctx.user_data[state_key] = False
+        prompt_id = ctx.user_data.pop(f"{state_key}_msg_id", None)
+        items = ctx.user_data.pop("visual_movies" if is_movie else "visual_uploads", [])
+        await UI.delete_message_if_present(ctx, chat_id, msg_id)
+        if txt_lower == "q":
+            await UI.send_toast_message(ctx, chat_id, UI.t("cancelled_dot"))
+        elif txt.isdigit() and 0 <= int(txt) - 1 < len(items):
+            item = items[int(txt) - 1]
+            # Library movies carry "file", uploads the path Kodi sees.
+            path = item.get("file") if is_movie else item.get("kodi_path")
+            title = item.get("title") if is_movie else item.get("name")
+            await asyncio.to_thread(partyvideo.play_path, path)
+            await UI.send_toast_message(ctx, chat_id, UI.t("visual_set", title=title))
+        elif txt.isdigit():
+            await UI.send_toast_message(ctx, chat_id, UI.t("that_number_missing"))
+        else:
+            await UI.send_toast_message(ctx, chat_id, UI.t("enter_number_or_q"))
+        sent = True
+        await UI.delete_message_if_present(ctx, chat_id, prompt_id)
+        if sent and not skip_cleanup:
+            UI.schedule_cleanup(ctx, chat_id, prev_id)
             await UI.update_now_playing_message(ctx, chat_id)
         return
 

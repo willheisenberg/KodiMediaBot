@@ -3,7 +3,7 @@ import os
 import time
 
 from kodibot.telegram import ui as UI
-from kodibot.core import radio_browser
+from kodibot.core import partyvideo, radio_browser
 from kodibot.telegram.i18n import repeat_mode_label, state_label, store_message, t
 
 
@@ -91,6 +91,9 @@ async def on_button(update, ctx):
     q = update.callback_query
     # await q.answer()  <-- Moved to individual branches or end
     cmd = q.data
+    if cmd.startswith(("visual:", "visual_cleanup:")) and not UI.CFG.partyvideo_enabled:
+        await q.answer(text=t("visual_disabled"), show_alert=True)
+        return
     if q.message:
         seen_id = UI.remember_last_seen(update.effective_chat.id, q.message.message_id)
         UI.log.info(
@@ -657,6 +660,94 @@ async def on_button(update, ctx):
         await UI.update_now_playing_message(ctx, chat_id)
         await q.answer()
         return
+    elif cmd == "visual:menu":
+        UI.set_panel_menu_mode(chat_id, "visual")
+        await UI.update_now_playing_message(ctx, chat_id)
+        await q.answer()
+        return
+    elif cmd == "visual:back":
+        UI.set_panel_menu_mode(chat_id, "controls")
+        await UI.update_now_playing_message(ctx, chat_id)
+        await q.answer()
+        return
+    elif cmd == "visual:toggle":
+        await asyncio.to_thread(partyvideo.toggle)
+        # Der Addon-Status kommt asynchron; das Panel zeichnet das Statusereignis neu.
+        await UI.update_now_playing_message(ctx, chat_id)
+        await q.answer()
+        return
+    elif cmd == "visual:youtube":
+        msg_id = await UI.send_and_track(ctx, chat_id, t("visual_ask_url"), reply_markup=UI.cancel_markup())
+        UI.activate_prompt(ctx, chat_id, user_id, "await_visual_url", "await_visual_url_msg_id", msg_id)
+        await q.answer()
+        return
+    elif cmd == "visual:video":
+        msg_id = await UI.send_and_track(ctx, chat_id, t("visual_ask_video"), reply_markup=UI.cancel_markup())
+        UI.activate_prompt(ctx, chat_id, user_id, "await_visual_video", "await_visual_video_msg_id", msg_id)
+        await q.answer()
+        return
+    elif cmd == "visual:movie":
+        movies = await asyncio.to_thread(UI.kodi_api.list_movies_for_visual)
+        if not movies:
+            await q.answer(text=t("no_movies_found"))
+            return
+        msg_ids = await UI.send_chunked_selection(
+            ctx, chat_id, t("visual_select_movie"), UI.visual_movie_lines(movies),
+        )
+        ctx.user_data["visual_movies"] = movies
+        UI.activate_prompt(
+            ctx, chat_id, user_id, "await_visual_movie", "await_visual_movie_msg_id",
+            msg_ids, extra_keys=("visual_movies",),
+        )
+        await q.answer()
+        return
+    elif cmd == "visual:upload":
+        entries = await asyncio.to_thread(UI.media.list_upload_videos)
+        if not entries:
+            await q.answer(text=t("visual_no_uploads"))
+            return
+        msg_ids = await UI.send_chunked_selection(
+            ctx, chat_id, t("visual_select_upload"), UI.visual_upload_lines(entries),
+        )
+        ctx.user_data["visual_uploads"] = entries
+        UI.activate_prompt(
+            ctx, chat_id, user_id, "await_visual_upload", "await_visual_upload_msg_id",
+            msg_ids, extra_keys=("visual_uploads",),
+        )
+        await q.answer()
+        return
+    elif cmd == "visual:cleanup":
+        entries = await asyncio.to_thread(UI.media.list_upload_videos)
+        keep = partyvideo.active_source()
+        removable = [entry for entry in entries if entry["kodi_path"] != keep]
+        if not removable:
+            await q.answer(text=t("visual_cleanup_none"))
+            return
+        total = sum(entry["size"] for entry in removable)
+        await UI.send_button_selection(
+            ctx,
+            chat_id,
+            t("visual_cleanup_ask", count=len(removable), size=UI.human_size(total)),
+            [(t("yes"), "yes"), (t("no"), "no")],
+            "visual_cleanup",
+            items_per_row=2,
+        )
+        await q.answer()
+        return
+    elif cmd.startswith("visual_cleanup:"):
+        if q.message:
+            await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
+        if cmd.split(":", 1)[1] != "yes":
+            await q.answer(text=t("cancelled"))
+            return
+        # Die gerade benutzte Datei bleibt liegen, sonst bricht das laufende Visual ab.
+        keep = partyvideo.active_source()
+        removed, freed = await asyncio.to_thread(UI.media.cleanup_upload_videos, keep)
+        await q.answer(
+            text=t("visual_cleanup_done", count=removed, size=UI.human_size(freed)),
+            show_alert=True,
+        )
+        return
     elif cmd == "help:show":
         ok = await UI.show_button_reference(ctx, chat_id)
         if ok:
@@ -688,7 +779,7 @@ async def on_button(update, ctx):
         return
     elif cmd == "ha:close":
         await UI.close_ha_menu_message(ctx, chat_id, q.message.message_id if q.message else None)
-        await q.answer(text=t("cancelled"))
+        await q.answer()
         return
     elif cmd == "ha:noop":
         await q.answer()
@@ -1297,7 +1388,7 @@ async def on_button(update, ctx):
                     except ValueError:
                         pass
                 keys_to_clear.append(k)
-            elif k.startswith("await_") or k.endswith("_files") or k == "favourites" or k.startswith("media_") or k.startswith("ha_delete_") or k == "audio_streams" or k == "subtitle_streams" or k == "radio_results" or k == "pending_delete":
+            elif k.startswith("await_") or k.endswith("_files") or k == "favourites" or k.startswith("media_") or k.startswith("visual_") or k.startswith("ha_delete_") or k == "audio_streams" or k == "subtitle_streams" or k == "radio_results" or k == "pending_delete":
                 keys_to_clear.append(k)
                 
         for k in keys_to_clear:

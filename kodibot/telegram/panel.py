@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from kodibot.core import kodi_api
+from kodibot.core import partyvideo
 from kodibot.core import queue_state
 from kodibot.core import homeassistant as ha
 from kodibot.config import CFG
@@ -150,7 +151,7 @@ def panel_menu_mode(chat_id=None):
 
 
 def set_panel_menu_mode(chat_id, mode):
-    S.PANEL_MENU_MODE[chat_id] = mode if mode in {"main", "controls"} else "main"
+    S.PANEL_MENU_MODE[chat_id] = mode if mode in {"main", "controls", "visual", "ha"} else "main"
 
 
 def build_main_control_panel(play_label):
@@ -240,7 +241,8 @@ def build_controls_panel():
         ],
         [
             InlineKeyboardButton("📺 🔍", callback_data="tv:ask"),
-        ],
+        ] + ([InlineKeyboardButton(t("visual"), callback_data="visual:menu")]
+             if CFG.partyvideo_enabled else []),
         [
             InlineKeyboardButton(t("buttons"), callback_data="help:show"),
         ],
@@ -250,12 +252,55 @@ def build_controls_panel():
     ]
 
 
+def build_visual_panel():
+    """Party Video page: the first button follows the addon's reported state."""
+    toggle_label = t("visual_off") if partyvideo.is_on() else t("visual_on")
+    return [
+        [
+            InlineKeyboardButton(toggle_label, callback_data="visual:toggle"),
+        ],
+        [
+            InlineKeyboardButton(t("visual_youtube"), callback_data="visual:youtube"),
+            InlineKeyboardButton(t("visual_video"), callback_data="visual:video"),
+        ],
+        [
+            InlineKeyboardButton(t("visual_movie"), callback_data="visual:movie"),
+            InlineKeyboardButton(t("visual_upload"), callback_data="visual:upload"),
+        ],
+        [
+            InlineKeyboardButton(t("visual_cleanup"), callback_data="visual:cleanup"),
+            InlineKeyboardButton(t("back"), callback_data="visual:back"),
+        ],
+    ]
+
+
 def control_panel(chat_id=None, *, mode=None):
     """Build the inline keyboard control panel markup."""
     play_label = "⏸" if kodi_api.WS_STATE == "playing" else "▶"
     resolved_mode = mode or panel_menu_mode(chat_id)
-    rows = build_controls_panel() if resolved_mode == "controls" else build_main_control_panel(play_label)
+    if resolved_mode == "visual" and CFG.partyvideo_enabled:
+        rows = build_visual_panel()
+    elif resolved_mode == "controls":
+        rows = build_controls_panel()
+    else:
+        rows = build_main_control_panel(play_label)
     return InlineKeyboardMarkup(rows)
+
+
+def visual_status_part():
+    """Short Party Video marker for the status line: off, a percentage, on or ⚠."""
+    status = partyvideo.status()
+    state = status.get("state")
+    if state in ("downloading", "installing_tools"):
+        progress = status.get("progress")
+        if isinstance(progress, (int, float)):
+            return f"🌌 {int(progress)}%"
+        return f"🌌 {t('visual_status_short_on')}"
+    if state == "playing":
+        return f"🌌 {t('visual_status_short_on')}"
+    if state == "error":
+        return "🌌 ⚠"
+    return f"🌌 {t('visual_status_short_off')}"
 
 
 def build_panel_status_parts(progress_text=None, min_width=PANEL_STATUS_MIN_WIDTH):
@@ -268,6 +313,8 @@ def build_panel_status_parts(progress_text=None, min_width=PANEL_STATUS_MIN_WIDT
     status_parts.append(t("repeat_status", mode=repeat_mode_label(queue_state.REPEAT_MODE)))
     if CFG.panel_show_volume and hifi_text != t("hifi_standby_status"):
         status_parts.append(S.DENON_VOLUME_CACHE)
+    if CFG.partyvideo_enabled:
+        status_parts.append(visual_status_part())
     if progress_text:
         status_parts.append(f"⏱ {progress_text}")
     status_flag_disabled = not (
@@ -570,6 +617,32 @@ async def send_toast_message(ctx, chat_id, text, delay=2):
     else:
         asyncio.get_running_loop().create_task(_auto_delete())
     return msg
+
+
+def human_size(num_bytes):
+    """Compact size for selection lists: MB below a gigabyte, GB above."""
+    megabytes = (num_bytes or 0) / (1024 * 1024)
+    if megabytes < 1024:
+        return f"{megabytes:.0f} MB"
+    gigabytes = megabytes / 1024
+    return f"{gigabytes:.1f} GB".replace(".0 GB", " GB")
+
+
+def visual_movie_lines(movies):
+    """Numbered movie list; ⚠ marks codecs the addon decodes slowly in software."""
+    lines = []
+    for i, movie in enumerate(movies):
+        title = movie.get("title") or t("unknown")
+        mark = " ⚠" if movie.get("slow") else ""
+        lines.append(f"{i + 1}. {title}{mark}")
+    return lines
+
+
+def visual_upload_lines(entries):
+    lines = []
+    for i, entry in enumerate(entries):
+        lines.append(f"{i + 1}. {entry.get('name')} ({human_size(entry.get('size'))})")
+    return lines
 
 
 def movie_list_lines(movies):
@@ -974,8 +1047,12 @@ async def get_now_playing_text():
 
 async def update_now_playing_message(ctx, chat_id):
     """Update or create the now-playing panel message."""
+    if panel_menu_mode(chat_id) == "ha":
+        return
     msg_id = S.PANEL_MSG_ID.get(chat_id)
     text, progress_text = await get_now_playing_text()
+    if panel_menu_mode(chat_id) == "ha":
+        return
     min_width = panel_status_min_width(text, progress_text)
     status_parts = build_panel_status_parts(progress_text, min_width=min_width)
     full_text = f"{t('now_playing_title')}\n{text}\n{' | '.join(status_parts)}"

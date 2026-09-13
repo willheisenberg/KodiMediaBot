@@ -68,6 +68,12 @@ TG_DYNAMIC_UNTIL = 0.0
 
 # ── Concurrency ──────────────────────────────────────────────────────
 PLAYBACK_TASK_LOCK = asyncio.Lock()
+# ── Party Video progress message ─────────────────────────────────────
+# One self-updating message per chat while the addon downloads or plays.
+VISUAL_PROGRESS_LOCK = asyncio.Lock()
+VISUAL_PROGRESS_LAST_TS = {}
+VISUAL_PROGRESS_MIN_INTERVAL = 2.0
+
 NP_REFRESH_LOCK = threading.Lock()
 NP_REFRESH_FUTURE = None
 NP_REFRESH_LAST_TS = 0.0

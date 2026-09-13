@@ -10,7 +10,7 @@ import traceback
 from telegram.ext import Application, MessageHandler, filters, CallbackQueryHandler, CommandHandler
 from telegram.error import RetryAfter, TimedOut, NetworkError, BadRequest, Forbidden
 
-from kodibot.core import kodi_api
+from kodibot.core import kodi_api, partyvideo
 from kodibot.core import playlist_store
 from kodibot.core import queue_state
 from kodibot.core import spotify
@@ -50,6 +50,9 @@ from kodibot.telegram.panel import (
     send_button_selection,
     send_toast_message,
     movie_list_lines,
+    visual_movie_lines,
+    visual_upload_lines,
+    human_size,
     show_list_lines,
     episode_list_lines,
     av_stream_label,
@@ -165,6 +168,37 @@ def schedule_now_playing_refresh():
             _refresh_playback_ui(CFG.startup_chat_id),
             S.MAIN_LOOP,
         )
+
+def visual_progress_due(chat_id, state, now=None):
+    """Throttle download progress; final states always get through."""
+    if state in ("playing", "error", "idle"):
+        S.VISUAL_PROGRESS_LAST_TS.pop(chat_id, None)
+        return True
+    now = time.time() if now is None else now
+    last = S.VISUAL_PROGRESS_LAST_TS.get(chat_id)
+    if last is not None and now - last < S.VISUAL_PROGRESS_MIN_INTERVAL:
+        return False
+    S.VISUAL_PROGRESS_LAST_TS[chat_id] = now
+    return True
+
+async def _process_visual_status(status):
+    if not CFG.partyvideo_enabled:
+        return
+    chat_id = CFG.startup_chat_id
+    if not chat_id or not visual_progress_due(chat_id, (status or {}).get("state")):
+        return
+    try:
+        # Der Zustand steht in der Statuszeile des Panels, nicht in einer eigenen Nachricht.
+        await update_now_playing_message(S.APP_INSTANCE, chat_id)
+    except Exception:
+        log.exception("Party Video status update failed")
+
+
+def on_visual_status(status):
+    """Called from the WebSocket thread; hops into the Telegram event loop."""
+    if not CFG.partyvideo_enabled or S.APP_INSTANCE is None or S.MAIN_LOOP is None:
+        return
+    asyncio.run_coroutine_threadsafe(_process_visual_status(dict(status)), S.MAIN_LOOP)
 
 
 RECONNECT_TASK = None
@@ -720,6 +754,21 @@ async def play_image_items(ctx, chat_id, message_ids, items):
         schedule_cleanup(ctx, chat_id, LAST_BOT_ID.get(chat_id))
         return
     await update_now_playing_message(ctx, chat_id)
+def visual_video_target(user_data, items):
+    """Local path of an uploaded video that should become the visual, or None.
+
+    Only consumes the prompt when a usable video is present, so an unrelated
+    image does not silently swallow the request.
+    """
+    if not user_data.get("await_visual_video"):
+        return None
+    for item in items or []:
+        if item.get("kind") == "video" and item.get("local_path"):
+            user_data["await_visual_video"] = False
+            return item["local_path"]
+    return None
+
+
 
 
 async def _flush_image_group(ctx, chat_id, group_key):
@@ -757,6 +806,13 @@ async def _flush_image_group(ctx, chat_id, group_key):
             len(images),
             len(others),
         )
+
+        visual_path = visual_video_target(getattr(ctx, "user_data", None) or {}, items)
+        if visual_path:
+            await asyncio.to_thread(partyvideo.play_path, media.resolve_kodi_media_path(visual_path))
+            await send_and_track(ctx, chat_id, t("visual_set", title=os.path.basename(visual_path)))
+            await update_now_playing_message(ctx, chat_id)
+            return
 
         if images:
             # Play slideshow of images
@@ -854,6 +910,7 @@ def run(token: str):
         try:
             S.APP_INSTANCE = app
             S.MAIN_LOOP = asyncio.get_running_loop()
+            partyvideo.set_status_callback(on_visual_status if CFG.partyvideo_enabled else None)
             S.STARTUP_POSTED[CFG.startup_chat_id] = True
             await update_list_message(app, CFG.startup_chat_id)
             await update_now_playing_message(app, CFG.startup_chat_id)
@@ -870,6 +927,7 @@ def run(token: str):
 
     async def _post_shutdown(app):
         global RECONNECT_TASK
+        partyvideo.set_status_callback(None)
         if RECONNECT_TASK and not RECONNECT_TASK.done():
             RECONNECT_TASK.cancel()
         RECONNECT_TASK = None
