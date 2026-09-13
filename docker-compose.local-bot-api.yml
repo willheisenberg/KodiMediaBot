@@ -62,6 +62,7 @@ services:
       PANEL_SHOW_DISPLAY: "${PANEL_SHOW_DISPLAY:-true}"
       PANEL_SHOW_AIRPLAY: "${PANEL_SHOW_AIRPLAY:-true}"
       PANEL_SHOW_HA: "${PANEL_SHOW_HA:-true}"
+      PARTYVIDEO_ENABLED: "${PARTYVIDEO_ENABLED:-false}"
       IPTV_M3U_URL: "${IPTV_M3U_URL}"
       RADIO_API_URL: "${RADIO_API_URL}"
     volumes:
