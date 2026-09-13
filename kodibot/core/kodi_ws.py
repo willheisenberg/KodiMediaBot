@@ -5,6 +5,7 @@ import time
 import websockets
 
 from kodibot.core import kodi_api as KA
+from kodibot.core import partyvideo
 
 
 async def cleanup_image_session_after_stop_delay(stopped_file, delay_s=2.0):
@@ -24,6 +25,8 @@ async def kodi_ws_listener():
             async with websockets.connect(ws_url, ping_interval=20, ping_timeout=20) as ws:
                 KA.WS_CONNECTED = True
                 backoff = 3
+                if KA.CFG.partyvideo_enabled:
+                    await asyncio.to_thread(partyvideo.request_status)
                 async for raw in ws:
                     try:
                         msg = json.loads(raw)
@@ -40,6 +43,9 @@ async def kodi_ws_listener():
                             KA.LAST_WS_YT_ID = vid
                         if playing_file:
                             KA.LAST_WS_PLAYING_FILE = playing_file
+                    if method == "Other.partyvideo_status":
+                        # Visualisierungs-Addon; Other.partyvideo_cmd ist intern und wird ignoriert.
+                        partyvideo.handle_status_event(msg.get("params", {}).get("data", {}) or {})
                     if method in ("Player.OnPlay", "Player.OnAVStart"):
                         KA.WS_PLAYING = True
                         KA.WS_STATE = "playing"

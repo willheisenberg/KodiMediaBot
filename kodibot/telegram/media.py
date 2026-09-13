@@ -74,6 +74,91 @@ def resolve_media_base_url():
     return CFG.resolve_media_base_url()
 
 
+# Videos that Party Video can use as a visual.
+VISUAL_VIDEO_SUFFIXES = (".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v")
+
+
+def visual_source():
+    """Kodi path the Party Video addon is currently using, or "".
+
+    Imported late: partyvideo reaches kodi_api, which imports this module.
+    """
+    try:
+        from kodibot.core import partyvideo
+
+        return partyvideo.active_source()
+    except Exception:
+        return ""
+
+
+def _upload_video_entries():
+    """Regular video files directly inside the upload directory.
+
+    Symlinks are skipped on purpose: the cleanup below deletes what this yields,
+    and a link must never become a path out of the upload directory.
+    """
+    upload_root = os.path.realpath(os.path.abspath(CFG.upload_dir))
+    try:
+        with os.scandir(upload_root) as entries:
+            found = list(entries)
+    except OSError:
+        return []
+
+    result = []
+    for entry in found:
+        if entry.is_symlink() or not entry.is_file(follow_symlinks=False):
+            continue
+        if not entry.name.lower().endswith(VISUAL_VIDEO_SUFFIXES):
+            continue
+        # Belt and braces: the resolved file must still sit inside the upload root.
+        real = os.path.realpath(entry.path)
+        if os.path.dirname(real) != upload_root:
+            continue
+        try:
+            size = entry.stat(follow_symlinks=False).st_size
+        except OSError:
+            continue
+        result.append({"name": entry.name, "path": entry.path, "real": real, "size": size})
+    result.sort(key=lambda item: item["name"].lower())
+    return result
+
+
+def list_upload_videos():
+    """Uploaded videos with the path Kodi sees, for the Party Video source menu."""
+    return [
+        {
+            "name": item["name"],
+            "kodi_path": resolve_kodi_media_path(item["path"]),
+            "size": item["size"],
+        }
+        for item in _upload_video_entries()
+    ]
+
+
+def cleanup_upload_videos(keep=None):
+    """Delete uploaded videos; returns (removed count, freed bytes).
+
+    ``keep`` is the Kodi path of the file currently used as a visual, which is
+    never removed. Only regular video files inside the upload directory are
+    touched — never library movies, never anything behind a symlink.
+    """
+    removed = 0
+    freed = 0
+    for item in _upload_video_entries():
+        if keep and resolve_kodi_media_path(item["path"]) == keep:
+            continue
+        try:
+            os.remove(item["real"])
+        except OSError as e:
+            log.warning("upload cleanup failed for %s: %s", item["name"], e)
+            continue
+        removed += 1
+        freed += item["size"]
+    if removed:
+        log.info("upload cleanup removed=%d bytes=%d", removed, freed)
+    return removed, freed
+
+
 def build_media_url(filename: str):
     return f"{resolve_media_base_url()}/media/{quote(filename)}"
 
@@ -138,6 +223,8 @@ def register_temp_media(path: str, title: str):
         "url": media_url,
         "kind": "video",
         "link": media_url,
+        # Local path for Party Video, which needs a file rather than a URL.
+        "local_path": path,
     }
 
 
@@ -634,8 +721,16 @@ def cleanup_temp_media(url: str):
         return False
     cleanup_paths = entry.get("cleanup_paths") or ()
     cleanup_dirs = entry.get("cleanup_dirs") or ()
+    # Never pull the file out from under a running visual; it would break mid-loop.
+    try:
+        in_use = visual_source()
+    except Exception:
+        in_use = ""
     try:
         for path in cleanup_paths:
+            if in_use and path and resolve_kodi_media_path(path) == in_use:
+                log.info("TEMP MEDIA kept, in use as visual: %s", path)
+                continue
             if path and os.path.exists(path):
                 os.remove(path)
         for path in cleanup_dirs:

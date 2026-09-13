@@ -475,6 +475,7 @@ from kodibot.core.kodi_metadata import (
 from kodibot.core.kodi_library import (
     scan_video_library,
     list_movies,
+    list_movies_for_visual,
     list_tvshows,
     list_tvshow_episodes,
     play_movie,

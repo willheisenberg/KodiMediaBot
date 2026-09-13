@@ -165,3 +165,30 @@ def play_all_episodes(episode_ids):
             return False
     res = KA.kodi_call("Player.Open", {"item": {"playlistid": 1, "position": 0}})
     return "error" not in res
+
+
+def list_movies_for_visual():
+    """Movies for the Party Video source menu, with the codec.
+
+    ``slow`` marks HEVC: the addon decodes in software, so those are likely to
+    stutter on the Pi. They stay selectable — marked, not hidden.
+    """
+    res = KA.kodi_call(
+        "VideoLibrary.GetMovies",
+        {"properties": ["title", "file", "streamdetails"], "sort": {"method": "title"}},
+    )
+    movies = (res.get("result", {}) or {}).get("movies", []) or []
+    result = []
+    for movie in movies:
+        path = movie.get("file")
+        if not path:
+            continue
+        streams = ((movie.get("streamdetails") or {}).get("video") or [{}])[0]
+        codec = (streams.get("codec") or "").lower()
+        result.append({
+            "title": movie.get("title") or path.rsplit("/", 1)[-1],
+            "file": path,
+            "codec": codec,
+            "slow": codec in ("hevc", "h265"),
+        })
+    return result
