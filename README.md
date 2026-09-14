@@ -370,6 +370,9 @@ Notes:
 - `RADIO_M3U_PATH` optionally overrides the M3U path (default: `/data/kodi.m3u`).
 - `RADIO_API_URL` configures the community-driven Radio Browser API mirror (default: `https://de1.api.radio-browser.info/json`).
 - `IPTV_M3U_URL` configures a comma-separated list of M3U stream playlists for the live TV search (default: Kodinerds clean list + iptv-org Germany list).
+- `OPENSUBTITLES_API_KEY`, `OPENSUBTITLES_USER`, and `OPENSUBTITLES_PASS` are optional OpenSubtitles API credentials. Without all three, subtitle auto-download is disabled and the bot behaves exactly as before. `OPENSUBTITLES_API_KEY` is obtained from your profile on [opensubtitles.com](https://opensubtitles.com).
+- `OPENSUBTITLES_LANGUAGES` configures the comma-separated list of languages to search for (default: `de,en`). Whitespace around language codes is trimmed; `de, en , fr` parses as `["de", "en", "fr"]`.
+- **Secrets containing special characters must be wrapped in single quotes** in the `.env` file — this applies to `OPENSUBTITLES_PASS`, `KODI_PASS`, `HA_TOKEN` and `TG_TOKEN` alike. Compose reads `$` as the start of a variable reference, `#` as a comment, and a value containing `"` breaks out of double quotes, so `PASS="se#cr$et"` silently arrives empty in the container while `PASS='se#cr$et'` arrives intact. Single quotes take the value literally; the only character they cannot carry is a single quote itself. Verify without printing the secret: `docker exec kodi-media-bot sh -c 'printf %s "$OPENSUBTITLES_PASS" | wc -c'` must report the expected length.
 - `RADIO_STREAM_MAP` is optional and overrides entries from `kodi.m3u`. Example: `{"Radioactive Sifnos":"https://streamyourdream.org:8050/radioactive"}`.
 - `ICY_TITLE_TTL` (seconds, default `15`) configures how long ICY titles are cached.
 - `ICY_TIMEOUT` (seconds, default `6`) configures the ICY metadata fetch timeout.

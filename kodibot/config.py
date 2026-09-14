@@ -127,6 +127,12 @@ class Config:
     # ── IPTV / TV configuration ───────────────────────────────────────
     iptv_m3u_url: str
 
+    # ── OpenSubtitles ─────────────────────────────────────────────────
+    opensubtitles_api_key: str
+    opensubtitles_user: str
+    opensubtitles_pass: str
+    opensubtitles_languages: str
+
     # ── Derived helpers ──────────────────────────────────────────────
 
     @property
@@ -158,6 +164,22 @@ class Config:
             or "127.0.0.1"
         )
         return f"{self.media_server_scheme}://{public_host}:{self.media_server_port}"
+
+    @property
+    def opensubtitles_enabled(self) -> bool:
+        return bool(
+            self.opensubtitles_api_key
+            and self.opensubtitles_user
+            and self.opensubtitles_pass
+        )
+
+    @property
+    def opensubtitles_language_list(self) -> list[str]:
+        return [
+            part.strip().lower()
+            for part in self.opensubtitles_languages.split(",")
+            if part.strip()
+        ]
 
     # ── Factory ──────────────────────────────────────────────────────
 
@@ -272,6 +294,11 @@ class Config:
                 "IPTV_M3U_URL",
                 "/data/kodi.m3u,https://raw.githubusercontent.com/jnk22/kodinerds-iptv/master/iptv/clean/clean_tv.m3u,https://iptv-org.github.io/iptv/countries/de.m3u",
             ),
+            # OpenSubtitles
+            opensubtitles_api_key=(os.environ.get("OPENSUBTITLES_API_KEY") or "").strip(),
+            opensubtitles_user=(os.environ.get("OPENSUBTITLES_USER") or "").strip(),
+            opensubtitles_pass=(os.environ.get("OPENSUBTITLES_PASS") or "").strip(),
+            opensubtitles_languages=(os.environ.get("OPENSUBTITLES_LANGUAGES") or "de,en").strip(),
         )
 
 

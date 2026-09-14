@@ -65,6 +65,10 @@ services:
       PARTYVIDEO_ENABLED: "${PARTYVIDEO_ENABLED:-false}"
       IPTV_M3U_URL: "${IPTV_M3U_URL}"
       RADIO_API_URL: "${RADIO_API_URL}"
+      OPENSUBTITLES_API_KEY: "${OPENSUBTITLES_API_KEY}"
+      OPENSUBTITLES_USER: "${OPENSUBTITLES_USER}"
+      OPENSUBTITLES_PASS: "${OPENSUBTITLES_PASS}"
+      OPENSUBTITLES_LANGUAGES: "${OPENSUBTITLES_LANGUAGES:-de,en}"
     volumes:
       - /storage/docker/partyqueue/data/kodi.m3u:/data/kodi.m3u
       - /storage/docker/partyqueue:/root/.ssh:ro
