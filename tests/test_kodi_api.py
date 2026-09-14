@@ -1,6 +1,7 @@
 """Tests for pure functions in kodi_api.py"""
 import os
 import sys
+from unittest.mock import patch
 
 # Set required env vars before importing
 os.environ.setdefault("KODI_HOST", "127.0.0.1")
@@ -168,3 +169,28 @@ class TestFavouriteMediaTarget:
         fav = {"type": "window", "windowparameter": "something else"}
         result = kodi_api.favourite_media_target(fav)
         assert result is None
+
+
+@patch("kodibot.core.kodi_api.get_active_playerid")
+@patch("kodibot.core.kodi_api.kodi_call")
+def test_add_subtitle_file_sends_player_add_subtitle(mock_call, mock_pid):
+    mock_pid.return_value = 1
+    mock_call.return_value = {"result": "OK"}
+    assert kodi_api.add_subtitle_file("/storage/videos/x.de.srt") is True
+    method, params = mock_call.call_args.args
+    assert method == "Player.AddSubtitle"
+    assert params == {"playerid": 1, "subtitle": "/storage/videos/x.de.srt"}
+
+
+@patch("kodibot.core.kodi_api.get_active_playerid")
+def test_add_subtitle_file_without_player(mock_pid):
+    mock_pid.return_value = None
+    assert kodi_api.add_subtitle_file("/storage/videos/x.de.srt") is False
+
+
+@patch("kodibot.core.kodi_api.get_active_playerid")
+@patch("kodibot.core.kodi_api.kodi_call")
+def test_add_subtitle_file_reports_kodi_error(mock_call, mock_pid):
+    mock_pid.return_value = 1
+    mock_call.return_value = {"error": {"code": -32100}}
+    assert kodi_api.add_subtitle_file("/storage/videos/x.de.srt") is False

@@ -31,6 +31,9 @@ LAST_PLAYED_RADIO = None
 EXPECTED_STOP = False
 ON_UNEXPECTED_RADIO_STOP = None
 CANCEL_RECONNECT_CB = None
+# Fired on every Player.OnPlay/OnAVStart, bot-initiated or not, so the UI
+# layer can drop any per-playback state it keeps keyed by file path.
+ON_PLAY_STARTED = None
 
 # Timestamp of the last bot-initiated play_index() call.  Used by the panel to
 # show queue track info optimistically for a few seconds after a track change,
@@ -104,13 +107,17 @@ def cache_youtube_title(vid: str, title: str):
         YT_TITLE_CACHE[vid] = (title, time.time())
 
 
-def set_ui_callbacks(schedule_now_playing_refresh, on_unexpected_radio_stop=None, cancel_reconnect_cb=None):
+def set_ui_callbacks(schedule_now_playing_refresh, on_unexpected_radio_stop=None,
+                     cancel_reconnect_cb=None, on_play_started=None):
     global _SCHEDULE_NOW_PLAYING_REFRESH, ON_UNEXPECTED_RADIO_STOP, CANCEL_RECONNECT_CB
+    global ON_PLAY_STARTED
     _SCHEDULE_NOW_PLAYING_REFRESH = schedule_now_playing_refresh
     if on_unexpected_radio_stop is not None:
         ON_UNEXPECTED_RADIO_STOP = on_unexpected_radio_stop
     if cancel_reconnect_cb is not None:
         CANCEL_RECONNECT_CB = cancel_reconnect_cb
+    if on_play_started is not None:
+        ON_PLAY_STARTED = on_play_started
 
 
 def set_last_played_radio(url, title):
@@ -166,6 +173,14 @@ def get_expecting_ws() -> int:
 def _handle_ws_play(*, item, item_params):
     """Called from kodi_api WS listener on Player.OnPlay/OnAVStart."""
     global BOT_EXPECTING_WS
+    # Every play start (bot-initiated or not) begins a fresh playback
+    # session, so any per-file state the UI layer keeps for the previous one
+    # is stale.
+    if ON_PLAY_STARTED:
+        try:
+            ON_PLAY_STARTED()
+        except Exception as e:
+            log.warning("on_play_started callback failed: %s", e)
     # decrement_expecting_ws returns the value AFTER decrement.
     # If before decrement it was > 0, this play was bot-initiated.
     with LOCK:

@@ -1,10 +1,15 @@
 import asyncio
+import logging
 import os
 import time
 
 from kodibot.telegram import ui as UI
-from kodibot.core import partyvideo, radio_browser
+from kodibot.telegram import state as S
+from kodibot.core import kodi_library, opensubtitles, partyvideo, radio_browser
 from kodibot.telegram.i18n import repeat_mode_label, state_label, store_message, t
+from kodibot.telegram.languages import LANG_MAP
+
+log = logging.getLogger(__name__)
 
 
 async def _refresh_ha_menu(ctx, chat_id, update):
@@ -24,6 +29,181 @@ async def _refresh_ha_menu(ctx, chat_id, update):
         state=state,
         edit_message_id=msg_id,
     )
+
+
+def _subtitle_language_name(code):
+    """Readable name for a language code, for chat messages."""
+    entry = LANG_MAP.get((code or "").strip().lower())
+    return entry[1] if entry else (code or "").upper()
+
+
+def _fallback_subtitle_filename(video_path, language):
+    """Name used for a subtitle stored in the shared upload dir.
+
+    Shared by the writer and the cache lookup below so the two can never
+    drift apart.
+    """
+    tail = os.path.basename(video_path) or "subtitle"
+    base = tail.rsplit(".", 1)[0] if "." in tail else tail
+    return f"{base}.{language}.srt"
+
+
+def _fallback_subtitle_cache_paths(video_path, language):
+    """Local (container) and Kodi-visible path for a fallback subtitle."""
+    name = _fallback_subtitle_filename(video_path, language)
+    local_path = os.path.join(UI.CFG.upload_dir, "subs", name)
+    kodi_path = os.path.join(UI.CFG.kodi_upload_dir, "subs", name)
+    return local_path, kodi_path
+
+
+def _write_subtitle_fallback(video_path, language, content):
+    """Store a subtitle in the shared upload dir when SSH writing failed.
+
+    Kodi reads it through KODI_UPLOAD_DIR, so the track works for the running
+    playback but is not kept next to the movie.
+    """
+    local_path, kodi_path = _fallback_subtitle_cache_paths(video_path, language)
+    try:
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        with open(local_path, "wb") as fh:
+            fh.write(content)
+    except OSError as e:
+        log.warning("Subtitle fallback write failed: %s", e)
+        return None
+    return kodi_path
+
+
+async def _store_subtitle(info, language, content):
+    """Put one downloaded subtitle where Kodi can read it.
+
+    Returns ``(path, temporary)``. ``temporary`` is True when the file only
+    landed in the upload dir instead of next to the movie.
+    """
+    path = await asyncio.to_thread(
+        kodi_library.write_subtitle_via_ssh, info["file"], language, content
+    )
+    if path:
+        return path, False
+    path = await asyncio.to_thread(
+        _write_subtitle_fallback, info["file"], language, content
+    )
+    return path, bool(path)
+
+
+async def _fetch_missing_subtitles(ctx, chat_id, av_state):
+    """Pull missing subtitles from OpenSubtitles for the running item.
+
+    Returns a refreshed av_state when tracks were added, otherwise the one
+    passed in.  Never raises — the caller's selection list has to show up
+    either way.
+    """
+    if not UI.CFG.opensubtitles_enabled:
+        return av_state
+    # get_av_settings() reports a JSON-RPC failure by omitting "subtitles"
+    # entirely, which missing_languages() would otherwise read as "every
+    # configured language is missing" — treating a Kodi hiccup as a green
+    # light to burn the daily download quota.
+    if av_state.get("error") or av_state.get("playerid") is None:
+        return av_state
+    missing = opensubtitles.missing_languages(av_state)
+    if not missing:
+        return av_state
+    info = await asyncio.to_thread(kodi_library.now_playing_media_info)
+    if not info or not (info.get("imdb_id") or info.get("parent_imdb_id")):
+        return av_state
+
+    # The guest may only be looking, not choosing: whatever track was active
+    # before we touch anything must still be active afterwards.
+    previous_enabled = bool(av_state.get("subtitleenabled"))
+    previous_index = (av_state.get("currentsubtitle") or {}).get("index")
+    # Paths already attached for this exact file — guards against Kodi
+    # mislabeling an added track and re-attaching it on every menu open.
+    attached = S.SUBTITLE_ATTACHED_PATHS.setdefault(info.get("file"), set())
+
+    try:
+        status = await UI.send_and_track(ctx, chat_id, t("subtitle_search_running"))
+        added = 0
+        temporary = False
+        try:
+            for language in missing:
+                path = None
+                if await asyncio.to_thread(
+                    kodi_library.subtitle_exists_via_ssh, info["file"], language
+                ):
+                    # Already on disk from an earlier run — no download needed.
+                    path = kodi_library.subtitle_path_for(info["file"], language)
+                else:
+                    local_path, kodi_path = _fallback_subtitle_cache_paths(info["file"], language)
+                    if await asyncio.to_thread(os.path.exists, local_path):
+                        # Cached from an earlier run in the fallback dir (e.g. the
+                        # library is smb://-mounted, so the SSH check above never
+                        # sees anything next to the movie).
+                        path = kodi_path
+                        temporary = True
+                    else:
+                        try:
+                            content = await asyncio.to_thread(
+                                opensubtitles.fetch_for,
+                                info.get("imdb_id"),
+                                language,
+                                info.get("season"),
+                                info.get("episode"),
+                                info.get("parent_imdb_id"),
+                            )
+                        except opensubtitles.OpenSubtitlesError as err:
+                            if err.message == "quota_exceeded":
+                                await UI.send_toast_message(
+                                    ctx,
+                                    chat_id,
+                                    t("subtitle_quota_exceeded", reset=err.reset_time or "?"),
+                                    delay=6,
+                                )
+                                break
+                            log.warning(
+                                "OpenSubtitles failed lang=%s err=%s", language, err.message
+                            )
+                            continue
+                        except Exception as e:
+                            log.warning("OpenSubtitles error lang=%s err=%s", language, e)
+                            continue
+                        if not content:
+                            await UI.send_toast_message(
+                                ctx,
+                                chat_id,
+                                t(
+                                    "subtitle_search_none",
+                                    language=_subtitle_language_name(language),
+                                ),
+                                delay=4,
+                            )
+                            continue
+                        path, is_temp = await _store_subtitle(info, language, content)
+                        temporary = temporary or is_temp
+                if path and path not in attached:
+                    if await asyncio.to_thread(UI.kodi_api.add_subtitle_file, path):
+                        added += 1
+                        attached.add(path)
+        finally:
+            await UI.delete_message_if_present(ctx, chat_id, status.message_id)
+
+        if not added:
+            return av_state
+        # AddSubtitle turns the track on; the user asked for nothing to be active.
+        await asyncio.to_thread(UI.kodi_api.disable_subtitles)
+        if previous_enabled and previous_index is not None:
+            # Undo the global mute above for whatever the guest was already
+            # watching — opening this menu must not silently drop it.
+            await asyncio.to_thread(UI.kodi_api.set_subtitle_stream, previous_index)
+        if temporary:
+            await UI.send_toast_message(ctx, chat_id, t("subtitle_added_temporary"), delay=4)
+        # Give Kodi a moment to register the new streams before re-reading indexes.
+        await asyncio.sleep(0.5)
+        return await asyncio.to_thread(UI.kodi_api.get_av_settings)
+    except Exception as e:
+        # Telegram/Kodi calls above can raise (rate.py wrappers let network
+        # errors through) — the subtitle selection list must appear either way.
+        log.warning("Subtitle fetch failed: %s", e)
+        return av_state
 
 
 def _forget_prompt(ctx, chat_id, user_id, state_key, msg_key, *extra_keys):
@@ -1141,6 +1321,7 @@ async def on_button(update, ctx):
                 UI.activate_prompt(ctx, chat_id, user_id, "await_audio_index", "await_audio_msg_id", msg_id, extra_keys=("audio_streams",))
                 skip_cleanup = True
         elif action == "subtitles":
+            av_state = await _fetch_missing_subtitles(ctx, chat_id, av_state)
             subtitles = av_state.get("subtitles") or []
             button_items = [(t("off"), -1)]
             current_index = (av_state.get("currentsubtitle") or {}).get("index")

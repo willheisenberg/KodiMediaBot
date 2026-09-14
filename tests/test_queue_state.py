@@ -2,6 +2,7 @@
 import os
 import sys
 import threading
+from unittest.mock import patch
 
 import pytest
 
@@ -446,3 +447,23 @@ class TestSoundcloudDirectResolve:
         result = queue_state.resolve_soundcloud_stream_url("https://soundcloud.com/artist/track")
 
         assert result == "https://cf-media.sndcdn.com/fallback.mp3"
+
+
+def test_handle_ws_play_runs_on_play_started_hook():
+    """Every playback start must reset the UI layer's per-file state; the
+    hook is how core reaches the telegram layer without importing it."""
+    calls = []
+    with patch("kodibot.core.queue_state.ON_PLAY_STARTED", lambda: calls.append(1)), \
+         patch("kodibot.core.queue_state.BOT_EXPECTING_WS", 1):
+        queue_state._handle_ws_play(item={}, item_params={})
+    assert calls == [1]
+
+
+def test_handle_ws_play_survives_a_failing_on_play_started_hook():
+    """A broken hook must not take the websocket listener down with it."""
+    def boom():
+        raise RuntimeError("hook exploded")
+
+    with patch("kodibot.core.queue_state.ON_PLAY_STARTED", boom), \
+         patch("kodibot.core.queue_state.BOT_EXPECTING_WS", 1):
+        queue_state._handle_ws_play(item={}, item_params={})

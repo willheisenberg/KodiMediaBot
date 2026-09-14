@@ -91,6 +91,14 @@ PANEL_RENDER_CACHE = {}
 LIST_REFRESH_TASK = None
 WS_LISTENER_TASK = None
 
+# ── Subtitle nachladen ───────────────────────────────────────────────
+# Paths already attached to the currently running file via AddSubtitle,
+# keyed by that file's path.  Guards against Kodi mislabeling an added
+# external track (empty/"und" language) as still "missing", which would
+# otherwise re-attach the same file on every menu open.  A file path that
+# stops being the active playback item simply stops being looked up here.
+SUBTITLE_ATTACHED_PATHS = {}
+
 # ── Prompt state ─────────────────────────────────────────────────────
 PROMPT_TIMEOUT_SECONDS = 300
 PROMPT_TIMEOUT_TASKS = {}

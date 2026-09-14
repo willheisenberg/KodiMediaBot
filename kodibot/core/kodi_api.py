@@ -375,6 +375,20 @@ def disable_subtitles():
     return "error" not in res
 
 
+def add_subtitle_file(path):
+    """Load an external subtitle file into the running player.
+
+    Player.AddSubtitle takes no ``enable`` flag and Kodi turns the added track
+    on right away, so callers that want it silent follow up with
+    ``disable_subtitles()``.
+    """
+    playerid = get_active_playerid()
+    if playerid is None or not path:
+        return False
+    res = kodi_call("Player.AddSubtitle", {"playerid": playerid, "subtitle": path})
+    return "error" not in res
+
+
 def pick_playerid(players):
     if not players:
         return None

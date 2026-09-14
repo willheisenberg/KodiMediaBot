@@ -16,9 +16,7 @@ def get_ctimes_via_ssh(files: list) -> dict:
     if not files or not KA.CFG.cec_host:
         return {}
     file_list_str = "\n".join(f for f in files if f) + "\n"
-    host = shlex.quote(KA.CFG.cec_host)
-    ssh = f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@{host}"
-    
+
     script = (
         "import os, sys\n"
         "for f in sys.stdin.read().splitlines():\n"
@@ -35,10 +33,12 @@ def get_ctimes_via_ssh(files: list) -> dict:
         "    except: pass\n"
     )
     remote_cmd = f"python3 -c {shlex.quote(script)}"
-    cmd = f"{ssh} {shlex.quote(remote_cmd)}"
-    
+    cmd = f"{_ssh_prefix()} {shlex.quote(remote_cmd)}"
+
     try:
-        res = subprocess.run(cmd, shell=True, input=file_list_str, text=True, capture_output=True)
+        res = subprocess.run(
+            cmd, shell=True, input=file_list_str, text=True, capture_output=True, timeout=20
+        )
         if res.returncode != 0 and not res.stdout:
             KA.log.warning(f"SSH ctime fetch failed: {res.stderr.strip()}")
             return {}
@@ -54,6 +54,130 @@ def get_ctimes_via_ssh(files: list) -> dict:
     except Exception as e:
         KA.log.warning(f"SSH ctime error: {e}")
         return {}
+
+
+def _ssh_prefix():
+    host = shlex.quote(KA.CFG.cec_host)
+    return (
+        "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+        f"-o BatchMode=yes -o ConnectTimeout=5 root@{host}"
+    )
+
+
+def subtitle_path_for(video_path, language):
+    """Kodi's naming scheme: ``Movie.mkv`` plus ``de`` becomes ``Movie.de.srt``."""
+    if not video_path:
+        return ""
+    tail = video_path.rsplit("/", 1)[-1]
+    base = video_path.rsplit(".", 1)[0] if "." in tail else video_path
+    return f"{base}.{language}.srt"
+
+
+def subtitle_exists_via_ssh(video_path, language):
+    """True when the subtitle already sits next to the video on the Kodi host."""
+    target = subtitle_path_for(video_path, language)
+    if not target or not KA.CFG.cec_host or "://" in video_path:
+        return False
+    script = (
+        "import os, sys\n"
+        "print('yes' if os.path.exists(sys.argv[1]) else 'no')\n"
+    )
+    remote_cmd = f"python3 -c {shlex.quote(script)} {shlex.quote(target)}"
+    cmd = f"{_ssh_prefix()} {shlex.quote(remote_cmd)}"
+    try:
+        res = subprocess.run(
+            cmd, shell=True, capture_output=True, timeout=20, stdin=subprocess.DEVNULL
+        )
+    except Exception as e:
+        KA.log.warning(f"SSH subtitle probe error: {e}")
+        return False
+    return (res.stdout or b"").decode("utf-8", "replace").strip() == "yes"
+
+
+def write_subtitle_via_ssh(video_path, language, content):
+    """Write a subtitle next to the video file on the Kodi host.
+
+    Returns the written path, or None when the host is unreachable or the
+    source is not on its local filesystem (smb://, nfs://).  An existing file
+    is never overwritten and counts as success.
+    """
+    target = subtitle_path_for(video_path, language)
+    if not target or not KA.CFG.cec_host:
+        return None
+    if "://" in video_path:
+        # Network sources do not live on the Kodi host's filesystem.
+        return None
+    script = (
+        "import os, sys\n"
+        "target = sys.argv[1]\n"
+        "data = sys.stdin.buffer.read()\n"
+        "if os.path.exists(target):\n"
+        "    print('exists')\n"
+        "    sys.exit(0)\n"
+        "folder = os.path.dirname(target)\n"
+        "if not os.path.isdir(folder):\n"
+        "    print('nodir')\n"
+        "    sys.exit(1)\n"
+        "with open(target, 'wb') as fh:\n"
+        "    fh.write(data)\n"
+        "print('ok')\n"
+    )
+    remote_cmd = f"python3 -c {shlex.quote(script)} {shlex.quote(target)}"
+    cmd = f"{_ssh_prefix()} {shlex.quote(remote_cmd)}"
+    try:
+        res = subprocess.run(cmd, shell=True, input=content, capture_output=True, timeout=20)
+    except Exception as e:
+        KA.log.warning(f"SSH subtitle write error: {e}")
+        return None
+    out = (res.stdout or b"").decode("utf-8", "replace").strip()
+    if out in ("ok", "exists"):
+        return target
+    KA.log.warning(f"SSH subtitle write failed: rc={res.returncode} out={out}")
+    return None
+
+
+def now_playing_media_info():
+    """Path and IMDb ids of the running item, for subtitle lookups.
+
+    Returns None when nothing plays or the item has no file path.
+    """
+    pid = KA.get_active_playerid()
+    if pid is None:
+        return None
+    res = KA.kodi_call(
+        "Player.GetItem",
+        {
+            "playerid": pid,
+            "properties": ["file", "uniqueid", "season", "episode", "showtitle", "tvshowid"],
+        },
+    )
+    item = ((res.get("result", {}) or {}).get("item") or {})
+    file_path = item.get("file") or ""
+    if not file_path:
+        return None
+    info = {
+        "file": file_path,
+        "imdb_id": (item.get("uniqueid") or {}).get("imdb") or "",
+        "parent_imdb_id": "",
+        "season": None,
+        "episode": None,
+    }
+    if (item.get("type") or "") == "episode":
+        info["season"] = item.get("season")
+        info["episode"] = item.get("episode")
+        tvshowid = item.get("tvshowid")
+        if tvshowid:
+            show = KA.kodi_call(
+                "VideoLibrary.GetTVShowDetails",
+                {"tvshowid": tvshowid, "properties": ["uniqueid", "imdbnumber"]},
+            )
+            details = ((show.get("result", {}) or {}).get("tvshowdetails") or {})
+            info["parent_imdb_id"] = (
+                (details.get("uniqueid") or {}).get("imdb")
+                or details.get("imdbnumber")
+                or ""
+            )
+    return info
 
 
 def list_movies():
