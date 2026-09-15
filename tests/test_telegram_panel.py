@@ -338,6 +338,38 @@ class TestCurrentSubtitleLabel:
         assert panel.current_subtitle_label(av_state) == "🇩🇪 Deutsch · German Forced"
 
 
+class TestForcedTrackLabel:
+    """Kodi eats the word "forced" while parsing an external subtitle's
+    filename, so Movie.de.srt and Movie.de.forced.srt arrive with identical
+    names -- the flag is all that tells them apart."""
+
+    def test_forced_external_subtitle_is_marked(self):
+        stream = {"index": 3, "name": "External", "language": "deu", "isforced": True}
+        assert panel.av_stream_label(stream) == "3. 🇩🇪 Deutsch · External · Forced"
+
+    def test_full_subtitle_of_the_same_language_stays_unmarked(self):
+        stream = {"index": 0, "name": "External", "language": "deu", "isforced": False}
+        assert panel.av_stream_label(stream) == "0. 🇩🇪 Deutsch · External"
+
+    def test_embedded_track_naming_itself_is_not_marked_twice(self):
+        """An embedded stream carries its own name through no parser at all."""
+        stream = {"index": 1, "name": "English forced", "language": "eng", "isforced": True}
+        assert panel.av_stream_label(stream) == "1. 🇬🇧 English · English forced"
+
+    def test_audio_stream_without_the_field_is_unaffected(self):
+        stream = {"index": 0, "name": "Surround", "language": "deu", "codec": "eac3"}
+        assert panel.av_stream_label(stream) == "0. 🇩🇪 Deutsch · Surround · eac3"
+
+    def test_current_subtitle_label_marks_forced(self):
+        av_state = {
+            "subtitleenabled": True,
+            "currentsubtitle": {
+                "index": 3, "name": "External", "language": "deu", "isforced": True
+            },
+        }
+        assert panel.current_subtitle_label(av_state) == "🇩🇪 Deutsch · External · Forced"
+
+
 class TestDisplayPowerButtons:
     def test_buttons_use_configured_label_and_callbacks(self, monkeypatch):
         import dataclasses

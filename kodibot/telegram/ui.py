@@ -895,10 +895,10 @@ def run(token: str):
         on_unexpected_radio_stop=handle_unexpected_radio_stop,
         cancel_reconnect_cb=lambda: cancel_reconnect_action(CFG.startup_chat_id),
         # Player.OnPlay/OnAVStart starts a new playback session — the
-        # subtitle-attach dedup guard is scoped to the previous one and must
-        # not leak into this one (same file stopped and replayed, or the
-        # dict growing without bound over the process lifetime).
-        on_play_started=S.SUBTITLE_ATTACHED_PATHS.clear,
+        # subtitle guards are scoped to the previous one and must not leak
+        # into this one (same file stopped and replayed, or the dicts
+        # growing without bound over the process lifetime).
+        on_play_started=S.reset_subtitle_playback_state,
     )
     queue_state.register_ws_callbacks()
     queue_state.start_autoplay_thread()

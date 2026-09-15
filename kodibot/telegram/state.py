@@ -99,6 +99,25 @@ WS_LISTENER_TASK = None
 # stops being the active playback item simply stops being looked up here.
 SUBTITLE_ATTACHED_PATHS = {}
 
+# (language, forced) pairs OpenSubtitles had no hit for, keyed by the file's
+# path.  Repeating a search that already came back empty costs a round trip
+# on every menu open and can never return anything new within one playback.
+# Only an empty result lands here -- a failed request says nothing about
+# whether the track exists.
+SUBTITLE_SEARCH_MISSES = {}
+
+
+def reset_subtitle_playback_state():
+    """Drop both subtitle guards when a new playback starts.
+
+    Player.OnPlay/OnAVStart opens a new session: the attach guard belongs to
+    the previous one, and a search that found nothing weeks ago deserves
+    another try now that the file is being watched again.
+    """
+    SUBTITLE_ATTACHED_PATHS.clear()
+    SUBTITLE_SEARCH_MISSES.clear()
+
+
 # ── Prompt state ─────────────────────────────────────────────────────
 PROMPT_TIMEOUT_SECONDS = 300
 PROMPT_TIMEOUT_TASKS = {}

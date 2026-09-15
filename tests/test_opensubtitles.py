@@ -55,25 +55,6 @@ def test_normalize_language_maps_iso_639_2():
     assert opensubtitles.normalize_language("") == ""
 
 
-def test_missing_languages_reports_nothing_when_both_present():
-    av_state = {"subtitles": [{"language": "ger"}, {"language": "eng"}]}
-    assert opensubtitles.missing_languages(av_state, ["de", "en"]) == []
-
-
-def test_missing_languages_reports_only_the_missing_one():
-    av_state = {"subtitles": [{"language": "deu"}]}
-    assert opensubtitles.missing_languages(av_state, ["de", "en"]) == ["en"]
-
-
-def test_missing_languages_ignores_unrelated_tracks():
-    av_state = {"subtitles": [{"language": "fre"}, {"language": "spa"}]}
-    assert opensubtitles.missing_languages(av_state, ["de", "en"]) == ["de", "en"]
-
-
-def test_missing_languages_handles_empty_state():
-    assert opensubtitles.missing_languages({}, ["de", "en"]) == ["de", "en"]
-
-
 def _response(status=200, payload=None, content=b""):
     res = MagicMock()
     res.status_code = status
@@ -311,6 +292,7 @@ def test_download_accepts_webvtt_content():
 
 
 from kodibot.telegram import ui as UI  # noqa: F401 (import order avoids circular import below)
+from kodibot.telegram import state as S
 from kodibot.telegram import ui_callbacks
 
 
@@ -334,7 +316,15 @@ def test_fetch_missing_subtitles_skips_when_feature_disabled():
 
 
 def test_fetch_missing_subtitles_skips_when_both_languages_present():
-    av_state = {"playerid": 1, "subtitles": [{"language": "ger"}, {"language": "eng"}]}
+    av_state = {
+        "playerid": 1,
+        "subtitles": [
+            {"language": "ger", "isforced": False},
+            {"language": "ger", "isforced": True},
+            {"language": "eng", "isforced": False},
+            {"language": "eng", "isforced": True},
+        ],
+    }
     with patch("kodibot.telegram.ui.CFG") as cfg, \
          patch("kodibot.core.opensubtitles.CFG") as os_cfg, \
          patch("kodibot.core.kodi_library.now_playing_media_info") as info:
@@ -526,6 +516,8 @@ def test_fetch_missing_subtitles_uses_fallback_cache_before_downloading(tmp_path
     subs_dir.mkdir()
     (subs_dir / "Cached.de.srt").write_bytes(b"cached-de")
     (subs_dir / "Cached.en.srt").write_bytes(b"cached-en")
+    (subs_dir / "Cached.de.forced.srt").write_bytes(b"cached-de-forced")
+    (subs_dir / "Cached.en.forced.srt").write_bytes(b"cached-en-forced")
     status = MagicMock(message_id=5)
     refreshed = {
         "subtitles": [{"language": "deu"}, {"language": "eng"}],
@@ -556,6 +548,8 @@ def test_fetch_missing_subtitles_uses_fallback_cache_before_downloading(tmp_path
     assert called_paths == {
         "/storage/uploads/subs/Cached.de.srt",
         "/storage/uploads/subs/Cached.en.srt",
+        "/storage/uploads/subs/Cached.de.forced.srt",
+        "/storage/uploads/subs/Cached.en.forced.srt",
     }
 
 
@@ -605,14 +599,24 @@ def test_fetch_missing_subtitles_skips_already_attached_path_for_same_file():
         cfg.opensubtitles_enabled = True
         os_cfg.opensubtitles_language_list = ["de", "en"]
         asyncio.run(ui_callbacks._fetch_missing_subtitles(None, 1, av_state))
-        assert sorted(add_calls) == ["/storage/videos/Dup.de.srt", "/storage/videos/Dup.en.srt"]
+        assert sorted(add_calls) == [
+            "/storage/videos/Dup.de.forced.srt",
+            "/storage/videos/Dup.de.srt",
+            "/storage/videos/Dup.en.forced.srt",
+            "/storage/videos/Dup.en.srt",
+        ]
         disable.assert_called_once()
 
         # Second open: Kodi still reports both as missing (mislabeled track),
         # but both paths were already attached for this exact file -- must
         # not add them again.
         result = asyncio.run(ui_callbacks._fetch_missing_subtitles(None, 1, av_state))
-    assert sorted(add_calls) == ["/storage/videos/Dup.de.srt", "/storage/videos/Dup.en.srt"]
+    assert sorted(add_calls) == [
+        "/storage/videos/Dup.de.forced.srt",
+        "/storage/videos/Dup.de.srt",
+        "/storage/videos/Dup.en.forced.srt",
+        "/storage/videos/Dup.en.srt",
+    ]
     disable.assert_called_once()
     assert result is av_state
 
@@ -695,11 +699,275 @@ def test_fetch_missing_subtitles_reattaches_after_playback_restart():
         cfg.opensubtitles_enabled = True
         os_cfg.opensubtitles_language_list = ["de", "en"]
         asyncio.run(ui_callbacks._fetch_missing_subtitles(None, 1, av_state))
-        assert len(add_calls) == 2
+        assert len(add_calls) == 4
 
         # Player.OnPlay fires and clears the guard -- this is what
         # queue_state._handle_ws_play does through its on_play_started hook.
         attached_paths.clear()
 
         asyncio.run(ui_callbacks._fetch_missing_subtitles(None, 1, av_state))
-    assert len(add_calls) == 4
+    assert len(add_calls) == 8
+
+
+def test_is_forced_track_reads_the_kodi_flag():
+    assert opensubtitles.is_forced_track({"language": "ger", "isforced": True}) is True
+    assert opensubtitles.is_forced_track({"language": "ger", "isforced": False}) is False
+
+
+def test_is_forced_track_falls_back_to_the_name():
+    """Kodi below v20 has no isforced field -- the label is all we get."""
+    assert opensubtitles.is_forced_track({"language": "ger", "name": "German Forced"}) is True
+    assert opensubtitles.is_forced_track({"language": "ger", "name": "German"}) is False
+    assert opensubtitles.is_forced_track({"language": "ger"}) is False
+
+
+def test_missing_tracks_wants_both_variants_when_nothing_is_there():
+    assert opensubtitles.missing_tracks({}, ["de", "en"]) == [
+        ("de", False),
+        ("de", True),
+        ("en", False),
+        ("en", True),
+    ]
+
+
+def test_missing_tracks_still_wants_forced_next_to_a_full_track():
+    """The whole point: a present German full track must not hide the forced one."""
+    av_state = {"subtitles": [{"language": "deu", "name": "German"}]}
+    assert opensubtitles.missing_tracks(av_state, ["de"]) == [("de", True)]
+
+
+def test_missing_tracks_still_wants_the_full_track_next_to_a_forced_one():
+    av_state = {"subtitles": [{"language": "deu", "name": "German Forced"}]}
+    assert opensubtitles.missing_tracks(av_state, ["de"]) == [("de", False)]
+
+
+def test_missing_tracks_reports_nothing_when_both_variants_are_present():
+    av_state = {
+        "subtitles": [
+            {"language": "deu", "isforced": False},
+            {"language": "deu", "isforced": True},
+        ]
+    }
+    assert opensubtitles.missing_tracks(av_state, ["de"]) == []
+
+
+def test_missing_tracks_ignores_unrelated_languages():
+    av_state = {"subtitles": [{"language": "fre"}, {"language": "spa"}]}
+    assert opensubtitles.missing_tracks(av_state, ["de"]) == [("de", False), ("de", True)]
+
+
+def test_search_excludes_forced_results_by_default():
+    """Without this the most-downloaded hit can be a 30-line forced track
+    that lands on disk as the full German subtitle."""
+    payload = {"data": [{"attributes": {"files": [{"file_id": 1}]}}]}
+    with patch("kodibot.core.opensubtitles.ensure_token", return_value=True), \
+         patch("kodibot.core.opensubtitles.requests.get") as get:
+        get.return_value = _response(payload=payload)
+        opensubtitles.search("tt1375666", "de")
+    assert get.call_args.kwargs["params"]["foreign_parts_only"] == "exclude"
+
+
+def test_search_asks_for_forced_results_only_when_forced():
+    payload = {"data": [{"attributes": {"files": [{"file_id": 1}]}}]}
+    with patch("kodibot.core.opensubtitles.ensure_token", return_value=True), \
+         patch("kodibot.core.opensubtitles.requests.get") as get:
+        get.return_value = _response(payload=payload)
+        opensubtitles.search("tt1375666", "de", forced=True)
+    assert get.call_args.kwargs["params"]["foreign_parts_only"] == "only"
+
+
+def test_fetch_for_passes_forced_through_to_search():
+    with patch("kodibot.core.opensubtitles.CFG") as cfg, \
+         patch("kodibot.core.opensubtitles.search", return_value=7) as search, \
+         patch("kodibot.core.opensubtitles.download", return_value=b"1\n") as download:
+        _credentials(cfg)
+        assert opensubtitles.fetch_for("tt1375666", "de", forced=True) == b"1\n"
+    assert search.call_args.kwargs["forced"] is True
+    download.assert_called_once_with(7)
+
+
+def test_subtitle_suffix_marks_forced_files():
+    assert opensubtitles.subtitle_suffix("de", False) == "de"
+    assert opensubtitles.subtitle_suffix("de", True) == "de.forced"
+
+
+def test_fetch_missing_subtitles_fetches_forced_next_to_an_existing_full_track():
+    """The feature: German is already there as a full track, the forced one
+    is still missing -- and lands next to the movie under its own name."""
+    av_state = {"playerid": 1, "subtitles": [{"language": "deu", "name": "German"}]}
+    info = {
+        "file": "/storage/videos/Lotr.mkv",
+        "imdb_id": "tt0120737",
+        "parent_imdb_id": None,
+        "season": None,
+        "episode": None,
+    }
+    status = MagicMock(message_id=3)
+    refreshed = {"subtitles": [], "currentsubtitle": {}, "subtitleenabled": False}
+    written = []
+    with patch("kodibot.telegram.state.SUBTITLE_ATTACHED_PATHS", {}), \
+         patch("kodibot.telegram.ui.CFG") as cfg, \
+         patch("kodibot.core.opensubtitles.CFG") as os_cfg, \
+         patch("kodibot.core.kodi_library.now_playing_media_info", return_value=info), \
+         patch("kodibot.core.kodi_library.subtitle_exists_via_ssh", return_value=False), \
+         patch(
+             "kodibot.core.kodi_library.write_subtitle_via_ssh",
+             side_effect=lambda video, lang, content: written.append(lang)
+             or f"/storage/videos/Lotr.{lang}.srt",
+         ), \
+         patch("kodibot.core.opensubtitles.fetch_for", return_value=b"1\n") as fetch_for, \
+         patch("kodibot.telegram.ui.send_and_track", new=AsyncMock(return_value=status)), \
+         patch("kodibot.telegram.ui.send_toast_message", new=AsyncMock()), \
+         patch("kodibot.telegram.ui.delete_message_if_present", new=AsyncMock()), \
+         patch("kodibot.core.kodi_api.add_subtitle_file", return_value=True) as add_file, \
+         patch("kodibot.core.kodi_api.disable_subtitles"), \
+         patch("kodibot.core.kodi_api.set_subtitle_stream"), \
+         patch("kodibot.core.kodi_api.get_av_settings", return_value=refreshed), \
+         patch("asyncio.sleep", new=AsyncMock()):
+        cfg.opensubtitles_enabled = True
+        os_cfg.opensubtitles_language_list = ["de"]
+        asyncio.run(ui_callbacks._fetch_missing_subtitles(None, 1, av_state))
+    assert written == ["de.forced"]
+    assert fetch_for.call_args.args[-1] is True
+    assert add_file.call_args.args[0] == "/storage/videos/Lotr.de.forced.srt"
+
+
+def test_fetch_missing_subtitles_stays_quiet_when_no_forced_track_exists():
+    """Most films have no forced track at all -- a toast for every one of them
+    would bury the chat, while a missing full track must still be reported."""
+    av_state = {"playerid": 1, "subtitles": []}
+    info = {
+        "file": "/storage/videos/Quiet.mkv",
+        "imdb_id": "tt0111161",
+        "parent_imdb_id": None,
+        "season": None,
+        "episode": None,
+    }
+    status = MagicMock(message_id=4)
+    toast = AsyncMock()
+    with patch("kodibot.telegram.state.SUBTITLE_ATTACHED_PATHS", {}), \
+         patch("kodibot.telegram.ui.CFG") as cfg, \
+         patch("kodibot.core.opensubtitles.CFG") as os_cfg, \
+         patch("kodibot.core.kodi_library.now_playing_media_info", return_value=info), \
+         patch("kodibot.core.kodi_library.subtitle_exists_via_ssh", return_value=False), \
+         patch("kodibot.core.opensubtitles.fetch_for", return_value=None), \
+         patch("kodibot.telegram.ui.send_and_track", new=AsyncMock(return_value=status)), \
+         patch("kodibot.telegram.ui.send_toast_message", new=toast), \
+         patch("kodibot.telegram.ui.delete_message_if_present", new=AsyncMock()), \
+         patch("kodibot.core.kodi_api.add_subtitle_file", return_value=True), \
+         patch("asyncio.sleep", new=AsyncMock()):
+        cfg.opensubtitles_enabled = True
+        cfg.upload_dir = "/nonexistent"
+        cfg.kodi_upload_dir = "/storage/uploads"
+        os_cfg.opensubtitles_language_list = ["de"]
+        result = asyncio.run(ui_callbacks._fetch_missing_subtitles(None, 1, av_state))
+    # One toast for the missing full track, none for the missing forced one.
+    assert toast.await_count == 1
+    assert result is av_state
+
+
+def test_reset_subtitle_playback_state_clears_both_guards():
+    """Both are scoped to one playback -- the attach guard and the record of
+    what OpenSubtitles had nothing for."""
+    S.SUBTITLE_ATTACHED_PATHS["/a.mkv"] = {"/a.de.srt"}
+    S.SUBTITLE_SEARCH_MISSES["/a.mkv"] = {("de", True)}
+    S.reset_subtitle_playback_state()
+    assert S.SUBTITLE_ATTACHED_PATHS == {}
+    assert S.SUBTITLE_SEARCH_MISSES == {}
+
+
+def _fetch_twice_counting_searches(av_state, info, misses):
+    """Run the fetch twice for one file and report how often it searched."""
+    status = MagicMock(message_id=9)
+    refreshed = {"subtitles": [], "currentsubtitle": {}, "subtitleenabled": False}
+    with patch("kodibot.telegram.state.SUBTITLE_ATTACHED_PATHS", {}), \
+         patch("kodibot.telegram.state.SUBTITLE_SEARCH_MISSES", misses), \
+         patch("kodibot.telegram.ui.CFG") as cfg, \
+         patch("kodibot.core.opensubtitles.CFG") as os_cfg, \
+         patch("kodibot.core.kodi_library.now_playing_media_info", return_value=info), \
+         patch("kodibot.core.kodi_library.subtitle_exists_via_ssh", return_value=False), \
+         patch("kodibot.core.opensubtitles.fetch_for", return_value=None) as fetch_for, \
+         patch("kodibot.telegram.ui.send_and_track", new=AsyncMock(return_value=status)), \
+         patch("kodibot.telegram.ui.send_toast_message", new=AsyncMock()), \
+         patch("kodibot.telegram.ui.delete_message_if_present", new=AsyncMock()), \
+         patch("kodibot.core.kodi_api.add_subtitle_file", return_value=True), \
+         patch("kodibot.core.kodi_api.get_av_settings", return_value=refreshed), \
+         patch("asyncio.sleep", new=AsyncMock()):
+        cfg.opensubtitles_enabled = True
+        cfg.upload_dir = "/nonexistent"
+        cfg.kodi_upload_dir = "/storage/uploads"
+        os_cfg.opensubtitles_language_list = ["de"]
+        asyncio.run(ui_callbacks._fetch_missing_subtitles(None, 1, av_state))
+        first = fetch_for.call_count
+        asyncio.run(ui_callbacks._fetch_missing_subtitles(None, 1, av_state))
+    return first, fetch_for.call_count
+
+
+def test_fetch_missing_subtitles_searches_a_dead_end_only_once_per_playback():
+    """Opening the menu again during the same playback must not repeat a
+    search that already came back empty -- nothing can have changed since."""
+    av_state = {"playerid": 1, "subtitles": []}
+    info = {
+        "file": "/storage/videos/Nothing.mkv",
+        "imdb_id": "tt0111161",
+        "parent_imdb_id": None,
+        "season": None,
+        "episode": None,
+    }
+    first, total = _fetch_twice_counting_searches(av_state, info, {})
+    # Full and forced on the first open, nothing at all on the second.
+    assert first == 2
+    assert total == 2
+
+
+def test_fetch_missing_subtitles_searches_again_after_a_new_playback():
+    av_state = {"playerid": 1, "subtitles": []}
+    info = {
+        "file": "/storage/videos/Nothing.mkv",
+        "imdb_id": "tt0111161",
+        "parent_imdb_id": None,
+        "season": None,
+        "episode": None,
+    }
+    misses = {}
+    _fetch_twice_counting_searches(av_state, info, misses)
+    assert misses["/storage/videos/Nothing.mkv"] == {("de", False), ("de", True)}
+    # The hook clears the record; the next playback may find a fresh upload.
+    S.reset_subtitle_playback_state()
+    first, total = _fetch_twice_counting_searches(av_state, info, {})
+    assert first == 2
+
+
+def test_fetch_missing_subtitles_does_not_remember_a_failed_request_as_a_miss():
+    """A network or quota error says nothing about whether the track exists --
+    only an empty search result may be remembered."""
+    av_state = {"playerid": 1, "subtitles": []}
+    info = {
+        "file": "/storage/videos/Broken.mkv",
+        "imdb_id": "tt0111161",
+        "parent_imdb_id": None,
+        "season": None,
+        "episode": None,
+    }
+    status = MagicMock(message_id=9)
+    misses = {}
+    with patch("kodibot.telegram.state.SUBTITLE_ATTACHED_PATHS", {}), \
+         patch("kodibot.telegram.state.SUBTITLE_SEARCH_MISSES", misses), \
+         patch("kodibot.telegram.ui.CFG") as cfg, \
+         patch("kodibot.core.opensubtitles.CFG") as os_cfg, \
+         patch("kodibot.core.kodi_library.now_playing_media_info", return_value=info), \
+         patch("kodibot.core.kodi_library.subtitle_exists_via_ssh", return_value=False), \
+         patch(
+             "kodibot.core.opensubtitles.fetch_for",
+             side_effect=opensubtitles.OpenSubtitlesError("request_failed"),
+         ), \
+         patch("kodibot.telegram.ui.send_and_track", new=AsyncMock(return_value=status)), \
+         patch("kodibot.telegram.ui.send_toast_message", new=AsyncMock()), \
+         patch("kodibot.telegram.ui.delete_message_if_present", new=AsyncMock()), \
+         patch("asyncio.sleep", new=AsyncMock()):
+        cfg.opensubtitles_enabled = True
+        cfg.upload_dir = "/nonexistent"
+        cfg.kodi_upload_dir = "/storage/uploads"
+        os_cfg.opensubtitles_language_list = ["de"]
+        asyncio.run(ui_callbacks._fetch_missing_subtitles(None, 1, av_state))
+    assert not any(misses.values())

@@ -125,14 +125,43 @@ def normalize_language(value):
     return _LANG_ALIASES.get(raw, raw[:2])
 
 
-def missing_languages(av_state, wanted=None):
-    """Return the wanted languages that have no subtitle track yet."""
+def is_forced_track(stream):
+    """True when a Kodi subtitle stream only covers foreign-language parts.
+
+    Kodi 20 and up report ``isforced``; older versions leave us with the
+    track label, which carries "Forced" by convention.
+    """
+    flag = (stream or {}).get("isforced")
+    if flag is not None:
+        return bool(flag)
+    return "forced" in ((stream or {}).get("name") or "").lower()
+
+
+def subtitle_suffix(language, forced=False):
+    """Filename part for one track: ``de``, or ``de.forced`` for forced ones.
+
+    Kodi reads the ``.forced`` marker out of external subtitle filenames, and
+    it keeps the two variants of a language from overwriting each other.
+    """
+    return f"{language}.forced" if forced else language
+
+
+def missing_tracks(av_state, wanted=None):
+    """Return the (language, forced) pairs that have no subtitle track yet.
+
+    Both variants are wanted per language: a full track already on the item
+    says nothing about the forced one, and vice versa.
+    """
     targets = list(wanted if wanted is not None else CFG.opensubtitles_language_list)
-    present = {
-        normalize_language(stream.get("language"))
-        for stream in ((av_state or {}).get("subtitles") or [])
-    }
-    return [lang for lang in targets if normalize_language(lang) not in present]
+    present = set()
+    for stream in (av_state or {}).get("subtitles") or []:
+        present.add((normalize_language(stream.get("language")), is_forced_track(stream)))
+    return [
+        (lang, forced)
+        for lang in targets
+        for forced in (False, True)
+        if (normalize_language(lang), forced) not in present
+    ]
 
 
 def strip_tt(imdb_id):
@@ -143,12 +172,18 @@ def strip_tt(imdb_id):
     return raw.lstrip("0")
 
 
-def search(imdb_id, language, season=None, episode=None, parent_imdb_id=None):
-    """Return the most-downloaded file_id for one language, or None."""
+def search(imdb_id, language, season=None, episode=None, parent_imdb_id=None, forced=False):
+    """Return the most-downloaded file_id for one language, or None.
+
+    ``forced`` picks the variant: forced tracks only translate foreign-language
+    passages.  Both directions are stated explicitly -- the API default mixes
+    the two, which would let a forced track land on disk as the full subtitle.
+    """
     params = {
         "languages": language,
         "order_by": "download_count",
         "order_direction": "desc",
+        "foreign_parts_only": "only" if forced else "exclude",
     }
     own = strip_tt(imdb_id)
     if season is not None and episode is not None:
@@ -264,11 +299,11 @@ def download(file_id):
     return content
 
 
-def fetch_for(imdb_id, language, season=None, episode=None, parent_imdb_id=None):
-    """Search and download one language. Returns bytes, or None without a hit."""
+def fetch_for(imdb_id, language, season=None, episode=None, parent_imdb_id=None, forced=False):
+    """Search and download one track. Returns bytes, or None without a hit."""
     if not CFG.opensubtitles_enabled:
         return None
-    file_id = search(imdb_id, language, season, episode, parent_imdb_id)
+    file_id = search(imdb_id, language, season, episode, parent_imdb_id, forced=forced)
     if not file_id:
         return None
     return download(file_id)

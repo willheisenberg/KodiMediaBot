@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from kodibot.core import kodi_api
+from kodibot.core import opensubtitles
 from kodibot.core import partyvideo
 from kodibot.core import queue_state
 from kodibot.core import homeassistant as ha
@@ -813,6 +814,22 @@ def format_av_track(idx, name, lang, codec=None, channels=None):
     return label
 
 
+def forced_suffix(stream):
+    """Mark a forced track, unless its name already says so.
+
+    Kodi consumes the word "forced" while parsing an external subtitle's
+    filename, so ``Movie.de.srt`` and ``Movie.de.forced.srt`` both arrive
+    named "External" and are otherwise indistinguishable in the list.  An
+    embedded stream carries its own name through no parser and often states
+    it itself -- marking that one again would only read as a stutter.
+    """
+    if not opensubtitles.is_forced_track(stream):
+        return ""
+    if "forced" in ((stream or {}).get("name") or "").lower():
+        return ""
+    return t("forced_suffix")
+
+
 def av_stream_label(stream):
     """Format an audio/subtitle stream for display."""
     idx = stream.get("index")
@@ -823,7 +840,7 @@ def av_stream_label(stream):
         stream.get("codec"),
         stream.get("channels")
     )
-    return f"{idx}. {label}"
+    return f"{idx}. {label}{forced_suffix(stream)}"
 
 
 def current_subtitle_label(av_state):
@@ -833,7 +850,7 @@ def current_subtitle_label(av_state):
     idx = sub.get("index")
     if idx is None:
         return t("off")
-    return format_av_track(idx, sub.get("name"), sub.get("language"))
+    return format_av_track(idx, sub.get("name"), sub.get("language")) + forced_suffix(sub)
 
 
 # ── List/panel update ────────────────────────────────────────────────

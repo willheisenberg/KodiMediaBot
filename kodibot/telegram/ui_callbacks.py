@@ -105,11 +105,19 @@ async def _fetch_missing_subtitles(ctx, chat_id, av_state):
     # light to burn the daily download quota.
     if av_state.get("error") or av_state.get("playerid") is None:
         return av_state
-    missing = opensubtitles.missing_languages(av_state)
+    missing = opensubtitles.missing_tracks(av_state)
     if not missing:
         return av_state
     info = await asyncio.to_thread(kodi_library.now_playing_media_info)
     if not info or not (info.get("imdb_id") or info.get("parent_imdb_id")):
+        return av_state
+
+    # Slots an earlier search already came back empty for. Asking again on
+    # every menu open costs a round trip and cannot return anything new —
+    # most films simply have no forced track to find.
+    misses = S.SUBTITLE_SEARCH_MISSES.setdefault(info.get("file"), set())
+    missing = [track for track in missing if track not in misses]
+    if not missing:
         return av_state
 
     # The guest may only be looking, not choosing: whatever track was active
@@ -125,15 +133,19 @@ async def _fetch_missing_subtitles(ctx, chat_id, av_state):
         added = 0
         temporary = False
         try:
-            for language in missing:
+            for language, forced in missing:
                 path = None
+                # "de" for a full track, "de.forced" for a forced one — the
+                # marker Kodi reads out of external subtitle filenames, and
+                # what keeps the two variants off each other's path.
+                suffix = opensubtitles.subtitle_suffix(language, forced)
                 if await asyncio.to_thread(
-                    kodi_library.subtitle_exists_via_ssh, info["file"], language
+                    kodi_library.subtitle_exists_via_ssh, info["file"], suffix
                 ):
                     # Already on disk from an earlier run — no download needed.
-                    path = kodi_library.subtitle_path_for(info["file"], language)
+                    path = kodi_library.subtitle_path_for(info["file"], suffix)
                 else:
-                    local_path, kodi_path = _fallback_subtitle_cache_paths(info["file"], language)
+                    local_path, kodi_path = _fallback_subtitle_cache_paths(info["file"], suffix)
                     if await asyncio.to_thread(os.path.exists, local_path):
                         # Cached from an earlier run in the fallback dir (e.g. the
                         # library is smb://-mounted, so the SSH check above never
@@ -149,6 +161,7 @@ async def _fetch_missing_subtitles(ctx, chat_id, av_state):
                                 info.get("season"),
                                 info.get("episode"),
                                 info.get("parent_imdb_id"),
+                                forced,
                             )
                         except opensubtitles.OpenSubtitlesError as err:
                             if err.message == "quota_exceeded":
@@ -167,6 +180,12 @@ async def _fetch_missing_subtitles(ctx, chat_id, av_state):
                             log.warning("OpenSubtitles error lang=%s err=%s", language, e)
                             continue
                         if not content:
+                            # Nothing there — do not ask again this playback.
+                            misses.add((language, forced))
+                            if forced:
+                                # Most films have no forced track at all —
+                                # saying so every time would be pure noise.
+                                continue
                             await UI.send_toast_message(
                                 ctx,
                                 chat_id,
@@ -177,7 +196,7 @@ async def _fetch_missing_subtitles(ctx, chat_id, av_state):
                                 delay=4,
                             )
                             continue
-                        path, is_temp = await _store_subtitle(info, language, content)
+                        path, is_temp = await _store_subtitle(info, suffix, content)
                         temporary = temporary or is_temp
                 if path and path not in attached:
                     if await asyncio.to_thread(UI.kodi_api.add_subtitle_file, path):
