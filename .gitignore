@@ -5,3 +5,5 @@ wimius_ir_codes.json
 .codex
 scripts/*
 !scripts/.gitkeep
+cookies.txt
+cookie.txt

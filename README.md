@@ -226,6 +226,7 @@ services:
       DENON_HOST: ""
       DEBUG_WS: "1"
       SC_CLIENT_ID: "YOUR_CLIENT_ID"
+      COOKIES_FILE_PATH: "/data/cookies/cookies.txt"
       SPOTIFY_MAX_TRACKS: "100"
       SPOTIFY_TIMEOUT: "10"
       MEDIA_BASE_URL: "http://YOUR_HOST_IP:8765"
@@ -248,6 +249,7 @@ services:
       - /storage/docker/partyqueue/state:/data/state
       - /storage/docker/partyqueue/uploads:/data/uploads
       - /storage/docker/partyqueue/colors:/data/colors
+      - /storage/docker/partyqueue/data/cookies:/data/cookies
       - telegram-bot-api-data:/var/lib/telegram-bot-api:ro
 
   caddy-webapp:
@@ -382,6 +384,8 @@ Notes:
 - Playlists are saved to `/data/playlists` inside the container. Mount a host path to persist them.
 - Telegram uploads are stored temporarily in `/data/uploads` inside the container, deleted again after playback stops, and old leftovers are cleaned up on bot startup.
 - Social-media video links from supported domains like TikTok, Instagram, Facebook and X/Twitter are downloaded once with `yt-dlp`, played directly, and then deleted again.
+- `COOKIES_FILE_PATH` optionally supplies a Netscape-format cookie file for social-media downloads, following the same convention as TelegramSocialMediaVideoBot. Local Python runs default to `cookies.txt` in the working directory; set this variable for another location or filename such as `cookie.txt`. The file is checked before each download, so it can be added or refreshed while the bot is running. If absent, downloads run without cookies.
+- In the supplied Docker Compose configuration, place the cookie file at `/storage/docker/partyqueue/data/cookies/cookies.txt` on the host. That persistent directory is mounted at `/data/cookies`, and `COOKIES_FILE_PATH` defaults to `/data/cookies/cookies.txt` inside the container. Keep it outside `/data/uploads`, which is served as media and cleaned up automatically. The mount is writable because `yt-dlp` also saves cookies. `cookies.txt` and `cookie.txt` are excluded from Git and the Docker build context. For an existing LibreELEC installation, add the cookie volume and environment setting shown above to `/storage/docker-compose.yml` when deploying; the deploy script does not copy the local Compose file or cookie file. Cookies must belong to a session that can access the video; expired cookies, removed posts, and rate limits can still prevent downloads.
 - Use the “Save” and “Load” buttons in the Telegram panel to store or restore the queue.
 - `HA_HOST` is the IP address of your Home Assistant instance.
 - `HA_PORT` is the port of Home Assistant (default `8123`).

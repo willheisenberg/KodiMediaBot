@@ -54,6 +54,9 @@ class Config:
     sc_client_id: str
     sc_client_id_file: str
 
+    # ── Social-media downloads ───────────────────────────────────────
+    cookies_file_path: str
+
     # ── Media server ─────────────────────────────────────────────────
     upload_dir: str
     kodi_upload_dir: str
@@ -225,6 +228,9 @@ class Config:
                 "SC_CLIENT_ID_FILE",
                 "/storage/.kodi/userdata/addon_data/plugin.audio.soundcloud/cache/api-client-id",
             ),
+            # Social-media downloads
+            cookies_file_path=(os.environ.get("COOKIES_FILE_PATH") or "").strip()
+            or os.path.join(os.getcwd(), "cookies.txt"),
             # Media server
             upload_dir=os.environ.get("UPLOAD_DIR", "/data/uploads"),
             kodi_upload_dir=os.environ.get("KODI_UPLOAD_DIR", "/storage/docker/partyqueue/uploads"),

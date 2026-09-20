@@ -1,6 +1,10 @@
 """Tests for pure functions in media.py"""
 import os
 import sys
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
 
 os.environ.setdefault("KODI_HOST", "127.0.0.1")
 os.environ.setdefault("KODI_PORT", "8080")
@@ -12,6 +16,63 @@ os.environ.setdefault("TG_TOKEN", "test:token")
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from kodibot.telegram import media
+from kodibot.config import Config
+
+
+@pytest.mark.parametrize("configured", [None, "", "  ", " /custom/cookie.txt "])
+def test_cookie_file_config(monkeypatch, tmp_path, configured):
+    monkeypatch.chdir(tmp_path)
+    if configured is None:
+        monkeypatch.delenv("COOKIES_FILE_PATH", raising=False)
+    else:
+        monkeypatch.setenv("COOKIES_FILE_PATH", configured)
+    expected = "/custom/cookie.txt" if configured and configured.strip() else str(tmp_path / "cookies.txt")
+    assert Config.from_env().cookies_file_path == expected
+
+
+@pytest.mark.parametrize("cookie_state", ["present", "missing", "directory"])
+def test_social_download_loads_cookies_and_picks_up_replacements(monkeypatch, tmp_path, cookie_state):
+    cookie_path = tmp_path / "cookies.txt"
+
+    def write_cookies(value):
+        cookie_path.write_text(
+            "# Netscape HTTP Cookie File\n"
+            f".instagram.com\tTRUE\t/\tTRUE\t4102444800\tsessionid\t{value}\n"
+        )
+
+    if cookie_state == "present":
+        write_cookies("test-session")
+    elif cookie_state == "directory":
+        cookie_path.mkdir()
+    monkeypatch.setattr(media, "CFG", replace(
+        media.CFG, upload_dir=str(tmp_path / "uploads"), cookies_file_path=str(cookie_path),
+    ))
+    sessions = []
+
+    def extract_info(ydl, url, download):
+        assert url == "https://www.instagram.com/reel/test/"
+        assert download is True
+        # Use yt-dlp's real cookie loader, but never make a network request.
+        sessions.append([cookie.value for cookie in ydl.cookiejar if cookie.name == "sessionid"])
+        info = {"id": "test", "title": "Test reel", "ext": "mp4"}
+        Path(ydl.prepare_filename(info)).write_bytes(b"fake video")
+        return info
+
+    monkeypatch.setattr(media.YoutubeDL, "extract_info", extract_info)
+    monkeypatch.setattr(media, "maybe_faststart_mp4", lambda path, kind: path)
+    monkeypatch.setattr(media, "register_temp_media", lambda path, title: {"path": path, "title": title})
+
+    item = media._download_social_video("https://www.instagram.com/reel/test/")
+    assert Path(item["path"]).is_file()
+    assert item["title"] == "Test reel"
+    assert sessions == ([["test-session"]] if cookie_state == "present" else [[]])
+
+    # Adding or replacing the file takes effect on the next download, without a restart.
+    if cookie_state == "directory":
+        cookie_path.rmdir()
+    write_cookies("refreshed-session")
+    media._download_social_video("https://www.instagram.com/reel/test/")
+    assert sessions[-1] == ["refreshed-session"]
 
 
 class TestSanitizeStem:
@@ -100,5 +161,4 @@ class TestBuildStorageName:
             assert name not in names
             names.add(name)
         assert len(names) == 100
-
 

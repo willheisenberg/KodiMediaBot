@@ -658,6 +658,8 @@ def _download_social_video(url: str):
         "outtmpl": f"{base_path}.%(ext)s",
         "restrictfilenames": True,
     }
+    if os.path.isfile(CFG.cookies_file_path):
+        ydl_opts["cookiefile"] = CFG.cookies_file_path
     with YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
         downloaded = ydl.prepare_filename(info)

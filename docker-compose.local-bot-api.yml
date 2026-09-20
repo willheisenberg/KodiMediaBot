@@ -32,6 +32,7 @@ services:
       DENON_HOST: "${DENON_HOST}"
       DEBUG_WS: "${DEBUG_WS:-1}"
       SC_CLIENT_ID: "${SC_CLIENT_ID}"
+      COOKIES_FILE_PATH: "${COOKIES_FILE_PATH:-/data/cookies/cookies.txt}"
       SPOTIFY_MAX_TRACKS: "${SPOTIFY_MAX_TRACKS:-100}"
       SPOTIFY_YT_TIMEOUT: "${SPOTIFY_YT_TIMEOUT:-25}"
       SPOTIFY_TIMEOUT: "${SPOTIFY_TIMEOUT:-10}"
@@ -76,6 +77,7 @@ services:
       - /storage/docker/partyqueue/state:/data/state
       - /storage/docker/partyqueue/uploads:/data/uploads
       - /storage/docker/partyqueue/colors:/data/colors
+      - /storage/docker/partyqueue/data/cookies:/data/cookies
       - telegram-bot-api-data:/var/lib/telegram-bot-api:ro
 
   caddy-webapp:

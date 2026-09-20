@@ -9,3 +9,5 @@ __pycache__/
 tests/
 test.py
 deploy_libreelec_partyqueue.sh
+cookies.txt
+cookie.txt
