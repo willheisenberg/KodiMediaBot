@@ -286,6 +286,33 @@ async def _execute_pending_delete(ctx, chat_id, pending_delete):
     return t("nothing_to_delete"), True
 
 
+# ⏭/⏮ while Kodi works off its own playlist ("play all episodes"): those
+# episodes never enter the bot queue, so step the Kodi playlist instead of
+# reporting the end of the queue. Returns False only when no such playlist is
+# playing, which leaves the press to the queue handlers below. At the ends of
+# the playlist the press stays handled on purpose — falling through would stop
+# the series and start the bot queue from the top instead.
+async def _goto_kodi_playlist(ctx, chat_id, q, direction, answer_text):
+    with UI.queue_state.LOCK:
+        queue_driving = (
+            UI.queue_state.DISPLAY_INDEX is not None
+            and not UI.queue_state.EXTERNAL_PLAYBACK
+        )
+    if queue_driving:
+        return False
+    status = await asyncio.to_thread(UI.kodi_api.kodi_playlist_goto, direction)
+    if status == "inactive":
+        return False
+    if status != "moved":
+        await q.answer(text=t("end_of_playlist"))
+        return True
+    await q.answer(text=answer_text)
+    # Brief yield so Kodi has switched items before the panel is re-rendered.
+    await asyncio.sleep(0.05)
+    await UI.update_now_playing_message(ctx, chat_id)
+    return True
+
+
 async def on_button(update, ctx):
     q = update.callback_query
     # await q.answer()  <-- Moved to individual branches or end
@@ -313,7 +340,10 @@ async def on_button(update, ctx):
     if cmd == "skip":
         with UI.queue_state.LOCK:
             has_queue = len(UI.queue_state.QUEUE) > 0
-        if not has_queue:
+        if await _goto_kodi_playlist(ctx, chat_id, q, "next", t("next")):
+            sent = True
+            skip_cleanup = True
+        elif not has_queue:
             await q.answer(text=t("end_of_queue"))
             sent = True
         else:
@@ -331,7 +361,10 @@ async def on_button(update, ctx):
     elif cmd == "back":
         with UI.queue_state.LOCK:
             has_queue = len(UI.queue_state.QUEUE) > 0
-        if not has_queue:
+        if await _goto_kodi_playlist(ctx, chat_id, q, "previous", "⏮ " + t("previous")):
+            sent = True
+            skip_cleanup = True
+        elif not has_queue:
             await q.answer(text=t("end_of_queue"))
             sent = True
         else:

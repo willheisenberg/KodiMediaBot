@@ -194,3 +194,87 @@ async def test_on_button_help_hide_removes_the_reference(mock_ui):
 
     mock_ui.hide_button_reference.assert_called_once()
     assert mock_ui.hide_button_reference.call_args[0][1] == 123
+
+
+def _episode_playback(mock_ui, goto_status, queue=()):
+    """Kodi plays its own playlist; the bot queue is not driving playback."""
+    mock_ui.queue_state.QUEUE = list(queue)
+    mock_ui.queue_state.DISPLAY_INDEX = None
+    mock_ui.queue_state.EXTERNAL_PLAYBACK = True
+    mock_ui.kodi_api.kodi_playlist_goto.return_value = goto_status
+    update = MagicMock()
+    update.callback_query.answer = AsyncMock()
+    update.effective_chat.id = 123
+    update.effective_user.id = 789
+    return update
+
+
+@pytest.mark.asyncio
+async def test_on_button_skip_steps_kodi_playlist(mock_ui):
+    update = _episode_playback(mock_ui, "moved")
+    update.callback_query.data = "skip"
+
+    await ui_callbacks.on_button(update, MagicMock())
+
+    mock_ui.kodi_api.kodi_playlist_goto.assert_called_once_with("next")
+    update.callback_query.answer.assert_any_call(text="⏭ Next")
+    assert not mock_ui.schedule_playback_action.called
+
+
+@pytest.mark.asyncio
+async def test_on_button_back_steps_kodi_playlist(mock_ui):
+    update = _episode_playback(mock_ui, "moved")
+    update.callback_query.data = "back"
+
+    await ui_callbacks.on_button(update, MagicMock())
+
+    mock_ui.kodi_api.kodi_playlist_goto.assert_called_once_with("previous")
+    update.callback_query.answer.assert_any_call(text="⏮ Previous")
+    assert not mock_ui.schedule_playback_action.called
+
+
+@pytest.mark.asyncio
+async def test_on_button_skip_keeps_playlist_at_its_end(mock_ui):
+    # The queue holds tracks, but the last episode must not fall through to it.
+    update = _episode_playback(mock_ui, "end", queue=[{}, {}])
+    update.callback_query.data = "skip"
+
+    await ui_callbacks.on_button(update, MagicMock())
+
+    update.callback_query.answer.assert_any_call(text="⏹ End of the Kodi playlist.")
+    assert not mock_ui.schedule_playback_action.called
+
+
+@pytest.mark.asyncio
+async def test_on_button_skip_uses_queue_without_kodi_playlist(mock_ui):
+    update = _episode_playback(mock_ui, "inactive", queue=[{}, {}])
+    update.callback_query.data = "skip"
+
+    await ui_callbacks.on_button(update, MagicMock())
+
+    update.callback_query.answer.assert_any_call(text="⏭ Next")
+    assert mock_ui.schedule_playback_action.call_args[0][2] is mock_ui.queue_state.skip_queue
+
+
+@pytest.mark.asyncio
+async def test_on_button_skip_reports_empty_queue_without_kodi_playlist(mock_ui):
+    update = _episode_playback(mock_ui, "inactive")
+    update.callback_query.data = "skip"
+
+    await ui_callbacks.on_button(update, MagicMock())
+
+    update.callback_query.answer.assert_any_call(text="⏹ End of queue.")
+    assert not mock_ui.schedule_playback_action.called
+
+
+@pytest.mark.asyncio
+async def test_on_button_skip_leaves_the_queue_alone_while_it_plays(mock_ui):
+    update = _episode_playback(mock_ui, "moved", queue=[{}, {}])
+    update.callback_query.data = "skip"
+    mock_ui.queue_state.DISPLAY_INDEX = 0
+    mock_ui.queue_state.EXTERNAL_PLAYBACK = False
+
+    await ui_callbacks.on_button(update, MagicMock())
+
+    assert not mock_ui.kodi_api.kodi_playlist_goto.called
+    assert mock_ui.schedule_playback_action.call_args[0][2] is mock_ui.queue_state.skip_queue

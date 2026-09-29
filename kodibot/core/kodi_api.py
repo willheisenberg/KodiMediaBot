@@ -416,6 +416,45 @@ def stop_video_players():
     kodi_call("Playlist.Clear", {"playlistid": 1})
 
 
+# Step through the Kodi playlist the active player is working off.
+#
+# The bot queue only ever puts a single item into a Kodi playlist and drives
+# the order itself, so a playlist holding more than one entry always belongs to
+# Kodi-side playback such as "play all episodes". Returns:
+#   "moved"    – Kodi switched to the requested item
+#   "end"      – such a playlist is playing but has no item in that direction
+#   "inactive" – no Kodi-driven playlist, so the caller should use the bot queue
+def kodi_playlist_goto(direction):
+    if direction not in ("next", "previous"):
+        return "inactive"
+    pid = get_active_playerid()
+    if pid is None:
+        return "inactive"
+    props = (kodi_call(
+        "Player.GetProperties",
+        {"playerid": pid, "properties": ["playlistid", "position"]},
+    ).get("result") or {})
+    playlistid = props.get("playlistid")
+    if not isinstance(playlistid, int) or playlistid < 0:
+        return "inactive"
+    size = ((kodi_call(
+        "Playlist.GetProperties",
+        {"playlistid": playlistid, "properties": ["size"]},
+    ).get("result") or {}).get("size") or 0)
+    if size < 2:
+        return "inactive"
+    position = props.get("position")
+    if isinstance(position, int) and position >= 0:
+        if direction == "next" and position >= size - 1:
+            return "end"
+        if direction == "previous" and position <= 0:
+            return "end"
+    res = kodi_call("Player.GoTo", {"playerid": pid, "to": direction})
+    # A failed GoTo still means Kodi drives playback: report the boundary
+    # rather than letting the caller start the bot queue over the episodes.
+    return "moved" if "error" not in res else "end"
+
+
 # Stop playback and clear Kodi playlists.
 def stop_player_and_clear_playlists():
     stop_all_players()
