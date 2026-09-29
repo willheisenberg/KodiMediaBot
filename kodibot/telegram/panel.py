@@ -304,7 +304,7 @@ def visual_status_part():
     return f"🌌 {t('visual_status_short_off')}"
 
 
-def build_panel_status_parts(progress_text=None, min_width=PANEL_STATUS_MIN_WIDTH):
+def build_panel_status_parts(progress_text=None, min_width=PANEL_STATUS_MIN_WIDTH, playlist_text=None):
     status_parts = []
     hifi_text = S.HIFI_STATUS_CACHE
     if CFG.panel_show_hifi:
@@ -316,6 +316,8 @@ def build_panel_status_parts(progress_text=None, min_width=PANEL_STATUS_MIN_WIDT
         status_parts.append(S.DENON_VOLUME_CACHE)
     if CFG.partyvideo_enabled:
         status_parts.append(visual_status_part())
+    if playlist_text:
+        status_parts.append(f"📺 {playlist_text}")
     if progress_text:
         status_parts.append(f"⏱ {progress_text}")
     status_flag_disabled = not (
@@ -921,8 +923,31 @@ async def update_list_message(ctx, chat_id):
         queue_state.LIST_DIRTY = False
 
 
+# Position inside a Kodi-driven playlist ("play all episodes"), as "7/12".
+#
+# Returns None unless the playlist holds more than one item: a single episode
+# or a bot queue track never builds one, so those keep the plain title.
+async def kodi_playlist_position_text(props):
+    playlistid = props.get("playlistid")
+    position = props.get("position")
+    if not isinstance(playlistid, int) or playlistid < 0:
+        return None
+    if not isinstance(position, int) or position < 0:
+        return None
+    size = ((await kodi_api.kodi_call_async(
+        "Playlist.GetProperties",
+        {"playlistid": playlistid, "properties": ["size"]},
+    ) or {}).get("result") or {}).get("size") or 0
+    if size < 2:
+        return None
+    return f"{position + 1}/{size}"
+
+
 async def get_now_playing_text():
-    """Assemble the now-playing display text. Returns (html_text, progress_text)."""
+    """Assemble the now-playing display text.
+
+    Returns (html_text, progress_text, playlist_text).
+    """
     name = None
     link = None
     qitem = None
@@ -947,8 +972,8 @@ async def get_now_playing_text():
         safe_name = html.escape(name, quote=False)
         if link:
             safe_link = html.escape(link, quote=True)
-            return f'▶ <a href="{safe_link}">{safe_name}</a>', None
-        return f"▶ {safe_name}", None
+            return f'▶ <a href="{safe_link}">{safe_name}</a>', None, None
+        return f"▶ {safe_name}", None, None
 
     players = await kodi_api.kodi_call_async("Player.GetActivePlayers")
     players = (players or {}).get("result", [])
@@ -957,18 +982,18 @@ async def get_now_playing_text():
             safe_name = html.escape(name, quote=False)
             if link:
                 safe_link = html.escape(link, quote=True)
-                return f'▶ <a href="{safe_link}">{safe_name}</a>', None
-            return f"▶ {safe_name}", None
+                return f'▶ <a href="{safe_link}">{safe_name}</a>', None, None
+            return f"▶ {safe_name}", None, None
         if kodi_api.WS_PLAYING and not name:
-            return t("playing_plain"), None
+            return t("playing_plain"), None, None
         queue_state.EXTERNAL_PLAYBACK = False
         if name:
             safe_name = html.escape(name, quote=False)
             if link:
                 safe_link = html.escape(link, quote=True)
-                return f'▶ <a href="{safe_link}">{safe_name}</a>', None
-            return f"▶ {safe_name}", None
-        return t("nothing_playing_plain"), None
+                return f'▶ <a href="{safe_link}">{safe_name}</a>', None, None
+            return f"▶ {safe_name}", None, None
+        return t("nothing_playing_plain"), None, None
 
     pid = None
     if kodi_api.LAST_WS_PLAYERID is not None:
@@ -980,7 +1005,7 @@ async def get_now_playing_text():
         pid = kodi_api.pick_playerid(players)
     if pid is None:
         queue_state.EXTERNAL_PLAYBACK = False
-        return t("nothing_playing_plain"), None
+        return t("nothing_playing_plain"), None, None
 
     # Fetch properties and item in parallel to halve the Kodi round-trip time.
     need_item = bool(qitem or not name)
@@ -989,7 +1014,7 @@ async def get_now_playing_text():
         props_resp, item_resp = await asyncio.gather(
             kodi_api.kodi_call_async(
                 "Player.GetProperties",
-                {"playerid": pid, "properties": ["time", "totaltime"]},
+                {"playerid": pid, "properties": ["time", "totaltime", "playlistid", "position"]},
             ),
             kodi_api.kodi_call_async(
                 "Player.GetItem",
@@ -1045,9 +1070,10 @@ async def get_now_playing_text():
         # still need time/totaltime for the progress display.
         props = (await kodi_api.kodi_call_async(
             "Player.GetProperties",
-            {"playerid": pid, "properties": ["time", "totaltime"]},
+            {"playerid": pid, "properties": ["time", "totaltime", "playlistid", "position"]},
         )).get("result", {})
 
+    playlist_text = await kodi_playlist_position_text(props)
     cur = kodi_api.format_kodi_time(props.get("time"))
     total = kodi_api.format_kodi_time(props.get("totaltime"))
     queue_state.LAST_PROGRESS_TS = time.time()
@@ -1058,8 +1084,8 @@ async def get_now_playing_text():
     progress_text = f"{cur} / {total}"
     if link:
         safe_link = html.escape(link, quote=True)
-        return f'▶ <a href="{safe_link}">{safe_name}</a>', progress_text
-    return f"▶ {safe_name}", progress_text
+        return f'▶ <a href="{safe_link}">{safe_name}</a>', progress_text, playlist_text
+    return f"▶ {safe_name}", progress_text, playlist_text
 
 
 async def update_now_playing_message(ctx, chat_id):
@@ -1067,11 +1093,13 @@ async def update_now_playing_message(ctx, chat_id):
     if panel_menu_mode(chat_id) == "ha":
         return
     msg_id = S.PANEL_MSG_ID.get(chat_id)
-    text, progress_text = await get_now_playing_text()
+    text, progress_text, playlist_text = await get_now_playing_text()
     if panel_menu_mode(chat_id) == "ha":
         return
     min_width = panel_status_min_width(text, progress_text)
-    status_parts = build_panel_status_parts(progress_text, min_width=min_width)
+    status_parts = build_panel_status_parts(
+        progress_text, min_width=min_width, playlist_text=playlist_text,
+    )
     full_text = f"{t('now_playing_title')}\n{text}\n{' | '.join(status_parts)}"
     panel_markup = control_panel(chat_id)
     render_sig = (

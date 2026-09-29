@@ -123,7 +123,7 @@ class TestNowPlayingText:
 
         monkeypatch.setattr(panel.kodi_api, "kodi_call_async", fake_call)
 
-        text, progress = asyncio.run(panel.get_now_playing_text())
+        text, progress, playlist = asyncio.run(panel.get_now_playing_text())
 
         assert text == "⏸ Es läuft nichts"
         assert progress is None
@@ -164,11 +164,12 @@ class TestNowPlayingText:
         monkeypatch.setattr(panel.kodi_api, "external_item_display", lambda item: ("External Movie", "https://external.example"))
         monkeypatch.setattr(panel.kodi_api, "maybe_cache_soundcloud_url", lambda file_url: None)
 
-        text, progress = asyncio.run(panel.get_now_playing_text())
+        text, progress, playlist = asyncio.run(panel.get_now_playing_text())
 
         assert 'External Movie' in text
         assert 'https://external.example' in text
         assert progress == "00:10 / 01:00"
+        assert playlist is None
         assert queue_state.EXTERNAL_PLAYBACK is True
         assert queue_state.CURRENT_INDEX is None
         assert queue_state.DISPLAY_INDEX is None
@@ -209,7 +210,7 @@ class TestNowPlayingText:
         monkeypatch.setattr(panel.kodi_api, "external_item_display", lambda item: (_ for _ in ()).throw(AssertionError("should not be called")))
         monkeypatch.setattr(panel.kodi_api, "maybe_cache_soundcloud_url", lambda file_url: None)
 
-        text, progress = asyncio.run(panel.get_now_playing_text())
+        text, progress, playlist = asyncio.run(panel.get_now_playing_text())
 
         assert 'Queued Song' in text
         assert 'https://queued.example' in text
@@ -259,13 +260,78 @@ class TestNowPlayingText:
         monkeypatch.setattr(panel.kodi_api, "external_item_display", lambda item: ("External Movie", "https://www.imdb.com/title/tt1234567/"))
         monkeypatch.setattr(panel.kodi_api, "maybe_cache_soundcloud_url", lambda file_url: None)
 
-        text, progress = asyncio.run(panel.get_now_playing_text())
+        text, progress, playlist = asyncio.run(panel.get_now_playing_text())
 
         assert "External Movie" in text
         assert "https://www.imdb.com/title/tt1234567/" in text
         assert "soundcloud.com/artist/track" not in text
         assert progress == "00:12 / 1:30:00"
         assert queue_state.EXTERNAL_PLAYBACK is True
+
+
+    def _episode_playlist_calls(self, position, size):
+        """Kodi plays an episode out of a playlist of ``size`` entries."""
+        async def fake_call(method, params=None):
+            if method == "Player.GetActivePlayers":
+                return {"result": [{"playerid": 1, "type": "video"}]}
+            if method == "Player.GetProperties":
+                return {
+                    "result": {
+                        "time": {"hours": 0, "minutes": 0, "seconds": 10},
+                        "totaltime": {"hours": 0, "minutes": 24, "seconds": 0},
+                        "playlistid": 1,
+                        "position": position,
+                    }
+                }
+            if method == "Player.GetItem":
+                return {
+                    "result": {
+                        "item": {
+                            "type": "episode",
+                            "title": "Blowfish",
+                            "file": "smb://tv/s01e07.mkv",
+                            "label": "Blowfish",
+                        }
+                    }
+                }
+            if method == "Playlist.GetProperties":
+                assert params == {"playlistid": 1, "properties": ["size"]}
+                return {"result": {"size": size}}
+            raise AssertionError(method)
+        return fake_call
+
+    def _patch_episode_playback(self, monkeypatch, position, size):
+        monkeypatch.setattr(panel.kodi_api, "kodi_call_async", self._episode_playlist_calls(position, size))
+        monkeypatch.setattr(panel.kodi_api, "pick_playerid", lambda players: 1)
+        monkeypatch.setattr(
+            panel.kodi_api, "external_item_display",
+            lambda item: ("Common Side Effects S01E07 – Blowfish", None),
+        )
+        monkeypatch.setattr(panel.kodi_api, "maybe_cache_soundcloud_url", lambda file_url: None)
+
+    def test_playlist_position_shown_while_playing_all_episodes(self, monkeypatch):
+        self._patch_episode_playback(monkeypatch, position=6, size=12)
+
+        text, progress, playlist = asyncio.run(panel.get_now_playing_text())
+
+        assert "Blowfish" in text
+        assert playlist == "7/12"
+
+    def test_no_playlist_position_for_a_single_episode(self, monkeypatch):
+        # A single episode never builds a multi-item playlist, so the counter
+        # must stay away.
+        self._patch_episode_playback(monkeypatch, position=0, size=1)
+
+        text, progress, playlist = asyncio.run(panel.get_now_playing_text())
+
+        assert playlist is None
+
+    def test_no_playlist_position_without_a_playlist(self, monkeypatch):
+        self._patch_episode_playback(monkeypatch, position=-1, size=12)
+
+        text, progress, playlist = asyncio.run(panel.get_now_playing_text())
+
+        assert playlist is None
 
 
 class TestAvStreamLabel:
@@ -516,6 +582,33 @@ class TestPanelSectionFlags:
             "🔊 42",
             "⏱ 00:01 / 00:02",
         ]
+
+    def test_status_line_shows_the_playlist_counter_before_the_time(self, monkeypatch):
+        panel.S.HIFI_STATUS_CACHE = "🟢 Hifi: On"
+        panel.S.AIRPLAY_STATUS_CACHE = "AirPlay: On"
+        panel.S.DENON_VOLUME_CACHE = "🔊 42"
+        queue_state.REPEAT_MODE = "off"
+
+        parts = panel.build_panel_status_parts("00:01 / 00:02", playlist_text="7/12")
+
+        assert parts == [
+            "🟢 Hifi: On",
+            "AirPlay: On",
+            "🔁 Repeat: off",
+            "🔊 42",
+            "📺 7/12",
+            "⏱ 00:01 / 00:02",
+        ]
+
+    def test_status_line_omits_the_playlist_counter_without_a_playlist(self, monkeypatch):
+        panel.S.HIFI_STATUS_CACHE = "🟢 Hifi: On"
+        panel.S.AIRPLAY_STATUS_CACHE = "AirPlay: On"
+        panel.S.DENON_VOLUME_CACHE = "🔊 42"
+        queue_state.REPEAT_MODE = "off"
+
+        parts = self._status_parts(monkeypatch, progress_text="00:01 / 00:02")
+
+        assert not any(part.startswith("📺") for part in parts)
 
     def test_status_line_has_no_filler_when_all_flags_are_enabled(self, monkeypatch):
         panel.S.HIFI_STATUS_CACHE = "Hifi: On"
