@@ -385,6 +385,11 @@ def add_subtitle_file(path):
     playerid = get_active_playerid()
     if playerid is None or not path:
         return False
+    # Kodi caches the folder listing when playback starts and refuses to open
+    # any file missing from that cache without ever looking at the disk -- a
+    # subtitle written afterwards fails with "Unable to create subtitle
+    # parser".  Listing the folder again refreshes the cache.
+    kodi_call("Files.GetDirectory", {"directory": path.rsplit("/", 1)[0] + "/", "media": "files"})
     res = kodi_call("Player.AddSubtitle", {"playerid": playerid, "subtitle": path})
     return "error" not in res
 

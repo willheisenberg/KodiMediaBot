@@ -183,6 +183,20 @@ def test_add_subtitle_file_sends_player_add_subtitle(mock_call, mock_pid):
 
 
 @patch("kodibot.core.kodi_api.get_active_playerid")
+@patch("kodibot.core.kodi_api.kodi_call")
+def test_add_subtitle_file_refreshes_the_folder_listing_first(mock_call, mock_pid):
+    # Kodi only opens files present in its cached folder listing; a subtitle
+    # written during playback is missing there until the folder is re-listed.
+    mock_pid.return_value = 1
+    mock_call.return_value = {"result": "OK"}
+    kodi_api.add_subtitle_file("/media/Serien/Show/x.en.srt")
+    methods = [c.args[0] for c in mock_call.call_args_list]
+    assert methods == ["Files.GetDirectory", "Player.AddSubtitle"]
+    params = mock_call.call_args_list[0].args[1]
+    assert params["directory"] == "/media/Serien/Show/"
+
+
+@patch("kodibot.core.kodi_api.get_active_playerid")
 def test_add_subtitle_file_without_player(mock_pid):
     mock_pid.return_value = None
     assert kodi_api.add_subtitle_file("/storage/videos/x.de.srt") is False
