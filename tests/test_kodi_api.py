@@ -196,6 +196,16 @@ def test_add_subtitle_file_refreshes_the_folder_listing_first(mock_call, mock_pi
     assert params["directory"] == "/media/Serien/Show/"
 
 
+@patch("kodibot.core.kodi_api.kodi_call")
+def test_get_video_fps_parses_the_info_label(mock_call):
+    mock_call.return_value = {"result": {"Player.Process(videofps)": "25.000"}}
+    assert kodi_api.get_video_fps() == 25.0
+    mock_call.return_value = {"result": {"Player.Process(videofps)": ""}}
+    assert kodi_api.get_video_fps() is None
+    mock_call.return_value = {"error": {"code": -32100}}
+    assert kodi_api.get_video_fps() is None
+
+
 @patch("kodibot.core.kodi_api.get_active_playerid")
 def test_add_subtitle_file_without_player(mock_pid):
     mock_pid.return_value = None

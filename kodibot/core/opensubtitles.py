@@ -7,6 +7,7 @@ its own.
 
 import codecs
 import logging
+import re
 import threading
 import time
 
@@ -173,7 +174,19 @@ def strip_tt(imdb_id):
 
 
 def search(imdb_id, language, season=None, episode=None, parent_imdb_id=None, forced=False):
-    """Return the most-downloaded file_id for one language, or None.
+    """Return the most-downloaded file_id for one language, or None."""
+    return find_subtitle(imdb_id, language, season, episode, parent_imdb_id, forced)[0]
+
+
+def find_subtitle(
+    imdb_id, language, season=None, episode=None, parent_imdb_id=None, forced=False,
+    video_fps=None,
+):
+    """Return ``(file_id, fps)`` of the best hit for one language, or ``(None, None)``.
+
+    Hits come most-downloaded first; one cut for ``video_fps`` wins over a more
+    popular one for another frame rate.  ``fps`` is what the uploader stated,
+    None when unknown.
 
     ``forced`` picks the variant: forced tracks only translate foreign-language
     passages.  Both directions are stated explicitly -- the API default mixes
@@ -198,10 +211,10 @@ def search(imdb_id, language, season=None, episode=None, parent_imdb_id=None, fo
             params["season_number"] = int(season)
             params["episode_number"] = int(episode)
         else:
-            return None
+            return None, None
     else:
         if not own:
-            return None
+            return None, None
         params["type"] = "movie"
         params["imdb_id"] = own
 
@@ -217,18 +230,70 @@ def search(imdb_id, language, season=None, episode=None, parent_imdb_id=None, fo
         )
     except Exception as e:
         log.warning("OpenSubtitles search error: %s", e)
-        return None
+        return None, None
     if res.status_code != 200:
         log.warning(
             "OpenSubtitles search failed: status=%s lang=%s", res.status_code, language
         )
-        return None
+        return None, None
+    hits = []
     for entry in (res.json() or {}).get("data") or []:
-        for entry_file in ((entry.get("attributes") or {}).get("files") or []):
+        attributes = entry.get("attributes") or {}
+        for entry_file in attributes.get("files") or []:
             file_id = entry_file.get("file_id")
             if file_id:
-                return file_id
-    return None
+                hits.append((file_id, _positive_float(attributes.get("fps"))))
+                break
+    log.info(
+        "OpenSubtitles search lang=%s forced=%s params=%s hits=%d",
+        language, forced, params, len(hits),
+    )
+    if not hits:
+        return None, None
+    if video_fps:
+        for file_id, fps in hits:
+            if fps and not _fps_differs(fps, video_fps):
+                return file_id, fps
+    return hits[0]
+
+
+def _positive_float(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _fps_differs(subtitle_fps, video_fps):
+    """True when the two rates drift apart audibly over an episode.
+
+    23.976 against 24 stays below a second over 20 minutes and is left alone
+    -- uploaders mix those two up all the time.  The PAL speedup (23.976 or
+    24 against 25) is 4 % and puts a subtitle ~50 s off by the end.
+    """
+    return abs(subtitle_fps / video_fps - 1) > 0.01
+
+
+_SRT_TIME_RE = re.compile(rb"(\d{1,2}):(\d{2}):(\d{2})([,.])(\d{3})")
+
+
+def retime(content, factor):
+    """Scale every cue timestamp of an SRT/WebVTT payload by ``factor``."""
+
+    def scale(match):
+        hours, minutes, seconds, sep, millis = match.groups()
+        total = (int(hours) * 3600 + int(minutes) * 60 + int(seconds)) * 1000 + int(millis)
+        total = round(total * factor)
+        hours, rest = divmod(total, 3600_000)
+        minutes, rest = divmod(rest, 60_000)
+        seconds, millis = divmod(rest, 1000)
+        return b"%02d:%02d:%02d%s%03d" % (hours, minutes, seconds, sep, millis)
+
+    lines = content.split(b"\n")
+    return b"\n".join(
+        _SRT_TIME_RE.sub(scale, line) if b"-->" in line else line for line in lines
+    )
 
 
 def _post_download(file_id):
@@ -301,11 +366,27 @@ def download(file_id):
     return content
 
 
-def fetch_for(imdb_id, language, season=None, episode=None, parent_imdb_id=None, forced=False):
-    """Search and download one track. Returns bytes, or None without a hit."""
+def fetch_for(
+    imdb_id, language, season=None, episode=None, parent_imdb_id=None, forced=False,
+    video_fps=None,
+):
+    """Search and download one track. Returns bytes, or None without a hit.
+
+    A track cut for another frame rate is retimed to ``video_fps`` -- German
+    WEB releases often run at 25 fps where the subtitles were made for 23.976.
+    """
     if not CFG.opensubtitles_enabled:
         return None
-    file_id = search(imdb_id, language, season, episode, parent_imdb_id, forced=forced)
+    file_id, subtitle_fps = find_subtitle(
+        imdb_id, language, season, episode, parent_imdb_id, forced, video_fps
+    )
     if not file_id:
         return None
-    return download(file_id)
+    content = download(file_id)
+    if subtitle_fps and video_fps and _fps_differs(subtitle_fps, video_fps):
+        log.info(
+            "OpenSubtitles retime file_id=%s from %.3f to %.3f fps",
+            file_id, subtitle_fps, video_fps,
+        )
+        content = retime(content, subtitle_fps / video_fps)
+    return content

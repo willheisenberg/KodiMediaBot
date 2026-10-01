@@ -127,6 +127,8 @@ async def _fetch_missing_subtitles(ctx, chat_id, av_state):
     # Paths already attached for this exact file — guards against Kodi
     # mislabeling an added track and re-attaching it on every menu open.
     attached = S.SUBTITLE_ATTACHED_PATHS.setdefault(info.get("file"), set())
+    # Lets a download made for another frame rate be retimed to this video.
+    video_fps = await asyncio.to_thread(UI.kodi_api.get_video_fps)
 
     try:
         status = await UI.send_and_track(ctx, chat_id, t("subtitle_search_running"))
@@ -161,7 +163,8 @@ async def _fetch_missing_subtitles(ctx, chat_id, av_state):
                                 info.get("season"),
                                 info.get("episode"),
                                 info.get("parent_imdb_id"),
-                                forced,
+                                forced=forced,
+                                video_fps=video_fps,
                             )
                         except opensubtitles.OpenSubtitlesError as err:
                             if err.message == "quota_exceeded":

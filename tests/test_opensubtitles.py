@@ -797,11 +797,11 @@ def test_search_asks_for_forced_results_only_when_forced():
 
 def test_fetch_for_passes_forced_through_to_search():
     with patch("kodibot.core.opensubtitles.CFG") as cfg, \
-         patch("kodibot.core.opensubtitles.search", return_value=7) as search, \
+         patch("kodibot.core.opensubtitles.find_subtitle", return_value=(7, None)) as find, \
          patch("kodibot.core.opensubtitles.download", return_value=b"1\n") as download:
         _credentials(cfg)
         assert opensubtitles.fetch_for("tt1375666", "de", forced=True) == b"1\n"
-    assert search.call_args.kwargs["forced"] is True
+    assert find.call_args.args[5] is True
     download.assert_called_once_with(7)
 
 
@@ -847,7 +847,7 @@ def test_fetch_missing_subtitles_fetches_forced_next_to_an_existing_full_track()
         os_cfg.opensubtitles_language_list = ["de"]
         asyncio.run(ui_callbacks._fetch_missing_subtitles(None, 1, av_state))
     assert written == ["de.forced"]
-    assert fetch_for.call_args.args[-1] is True
+    assert fetch_for.call_args.kwargs["forced"] is True
     assert add_file.call_args.args[0] == "/storage/videos/Lotr.de.forced.srt"
 
 
@@ -990,3 +990,54 @@ def test_fetch_missing_subtitles_does_not_remember_a_failed_request_as_a_miss():
         os_cfg.opensubtitles_language_list = ["de"]
         asyncio.run(ui_callbacks._fetch_missing_subtitles(None, 1, av_state))
     assert not any(misses.values())
+
+
+def _hits(*entries):
+    """Search payload: one entry per (file_id, fps)."""
+    return {
+        "data": [
+            {"attributes": {"fps": fps, "files": [{"file_id": file_id}]}}
+            for file_id, fps in entries
+        ]
+    }
+
+
+def test_find_subtitle_prefers_a_cut_for_the_video_frame_rate():
+    payload = _hits((1, 23.976), (2, 25.0))
+    with patch("kodibot.core.opensubtitles.ensure_token", return_value=True), \
+         patch("kodibot.core.opensubtitles.requests.get", return_value=_response(payload=payload)):
+        assert opensubtitles.find_subtitle("tt1", "en", video_fps=25.0) == (2, 25.0)
+
+
+def test_find_subtitle_falls_back_to_the_most_downloaded_hit():
+    payload = _hits((1, 23.976), (2, 0))
+    with patch("kodibot.core.opensubtitles.ensure_token", return_value=True), \
+         patch("kodibot.core.opensubtitles.requests.get", return_value=_response(payload=payload)):
+        assert opensubtitles.find_subtitle("tt1", "en", video_fps=25.0) == (1, 23.976)
+
+
+def test_retime_scales_cue_timestamps_only():
+    srt = b"1\n00:00:25,000 --> 00:21:45,055\n12:00:00,000 stays\n"
+    out = opensubtitles.retime(srt, 23.976 / 25)
+    assert out.split(b"\n")[1] == b"00:00:23,976 --> 00:20:51,600"
+    assert out.split(b"\n")[2] == b"12:00:00,000 stays"
+
+
+def test_fetch_for_retimes_a_23976_track_for_a_25_fps_video():
+    # German WEB releases often run PAL-sped-up at 25 fps; an untouched
+    # 23.976 track drifts ~50 s behind by the end of an episode.
+    with patch("kodibot.core.opensubtitles.CFG") as cfg, \
+         patch("kodibot.core.opensubtitles.find_subtitle", return_value=(7, 23.976)), \
+         patch("kodibot.core.opensubtitles.download", return_value=b"1\n00:00:25,000 --> 00:00:26,000\nHi\n"):
+        _credentials(cfg)
+        out = opensubtitles.fetch_for("tt1", "en", video_fps=25.0)
+    assert out.split(b"\n")[1] == b"00:00:23,976 --> 00:00:24,935"
+
+
+def test_fetch_for_leaves_23976_against_24_alone():
+    content = b"1\n00:00:25,000 --> 00:00:26,000\nHi\n"
+    with patch("kodibot.core.opensubtitles.CFG") as cfg, \
+         patch("kodibot.core.opensubtitles.find_subtitle", return_value=(7, 23.976)), \
+         patch("kodibot.core.opensubtitles.download", return_value=content):
+        _credentials(cfg)
+        assert opensubtitles.fetch_for("tt1", "en", video_fps=24.0) == content

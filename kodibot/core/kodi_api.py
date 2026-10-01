@@ -375,6 +375,17 @@ def disable_subtitles():
     return "error" not in res
 
 
+def get_video_fps():
+    """Frame rate of the running video, or None when Kodi does not know it."""
+    res = kodi_call("XBMC.GetInfoLabels", {"labels": ["Player.Process(videofps)"]})
+    raw = ((res.get("result") or {}).get("Player.Process(videofps)") or "").strip()
+    try:
+        fps = float(raw)
+    except ValueError:
+        return None
+    return fps if fps > 0 else None
+
+
 def add_subtitle_file(path):
     """Load an external subtitle file into the running player.
 
