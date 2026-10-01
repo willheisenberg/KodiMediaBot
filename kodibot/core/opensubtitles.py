@@ -188,13 +188,15 @@ def search(imdb_id, language, season=None, episode=None, parent_imdb_id=None, fo
     own = strip_tt(imdb_id)
     if season is not None and episode is not None:
         params["type"] = "episode"
-        params["season_number"] = int(season)
-        params["episode_number"] = int(episode)
         parent = strip_tt(parent_imdb_id)
         if own:
+            # The episode's own id already pins the episode.  Adding season
+            # and episode numbers on top makes the API return nothing at all.
             params["imdb_id"] = own
         elif parent:
             params["parent_imdb_id"] = parent
+            params["season_number"] = int(season)
+            params["episode_number"] = int(episode)
         else:
             return None
     else:

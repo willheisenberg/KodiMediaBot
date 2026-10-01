@@ -138,6 +138,25 @@ def test_search_uses_parent_id_and_numbers_for_episodes():
     assert params["type"] == "episode"
 
 
+def test_search_sends_no_numbers_alongside_an_episode_imdb_id():
+    # The API returns zero hits for imdb_id + season_number/episode_number,
+    # even though the episode id alone finds the subtitles.
+    payload = {"data": [{"attributes": {"files": [{"file_id": 7}]}}]}
+    with patch("kodibot.core.opensubtitles.ensure_token", return_value=True), \
+         patch("kodibot.core.opensubtitles.requests.get") as get:
+        get.return_value = _response(payload=payload)
+        file_id = opensubtitles.search(
+            "tt33042261", "en", season=1, episode=7, parent_imdb_id="tt28093628"
+        )
+    assert file_id == 7
+    params = get.call_args.kwargs["params"]
+    assert params["imdb_id"] == "33042261"
+    assert params["type"] == "episode"
+    assert "season_number" not in params
+    assert "episode_number" not in params
+    assert "parent_imdb_id" not in params
+
+
 def test_search_without_any_id_returns_none():
     with patch("kodibot.core.opensubtitles.ensure_token") as ensure, \
          patch("kodibot.core.opensubtitles.requests.get") as get:
