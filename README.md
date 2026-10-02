@@ -457,6 +457,25 @@ structure is undocumented: if Spotify changes the page layout, reading it breaks
 That case is handled — the bot reports the link as unreadable and keeps running
 normally.
 
+### Spotify Connect (Soloist add-on)
+
+With the separate `service.soloist` Kodi add-on, the box shows up as a device
+in the Spotify app and Spotify plays through Kodi. The bot and Spotify can
+interrupt each other, and nothing is lost:
+
+- **Spotify takes over** → the bot parks its queue instead of dropping it, or
+  remembers the radio station that was playing. The panel shows
+  `Spotify: title – artist`.
+- **The bot takes over**, because someone plays something from the chat → Spotify
+  pauses, and the app shows it paused.
+- **The bot takes back over** when Spotify leaves the box (another device was
+  picked, or the session ended) or stays paused for 30 seconds. The parked
+  queue item continues where it was interrupted, and a parked radio station is
+  restarted. If nothing is parked, a paused Spotify is left alone.
+
+No bot configuration is needed. The bot recognises the add-on's stream at
+`rtp://127.0.0.1:23433`, so keep the add-on's RTP port at its default.
+
 ## Troubleshooting
 - `ssh: not found`: install `openssh-client` in the image.
 - `Host key verification failed`: the bot uses SSH options to skip host key checks.

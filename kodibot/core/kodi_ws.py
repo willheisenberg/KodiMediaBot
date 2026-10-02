@@ -5,7 +5,7 @@ import time
 import websockets
 
 from kodibot.core import kodi_api as KA
-from kodibot.core import partyvideo
+from kodibot.core import partyvideo, spotify_connect
 
 
 async def cleanup_image_session_after_stop_delay(stopped_file, delay_s=2.0):
@@ -15,6 +15,23 @@ async def cleanup_image_session_after_stop_delay(stopped_file, delay_s=2.0):
     picture_active = await asyncio.to_thread(KA.is_picture_player_active)
     if not picture_active:
         await asyncio.to_thread(KA.media.cleanup_temp_media, stopped_file)
+
+
+async def resolve_player_params(player_params):
+    """Replace playerid -1 with the player that is actually active.
+
+    Kodi reports -1 for items a Python add-on starts via xbmc.Player().play()
+    (e.g. the Spotify Connect stream of service.soloist), and Player.GetItem
+    on -1 returns nothing.
+    """
+    pid = player_params.get("playerid")
+    if not isinstance(pid, int) or pid >= 0:
+        return player_params
+    players = ((await KA.kodi_call_async("Player.GetActivePlayers")) or {}).get("result") or []
+    resolved = KA.pick_playerid(players)
+    if resolved is None:
+        return player_params
+    return {**player_params, "playerid": resolved}
 
 
 async def kodi_ws_listener():
@@ -43,6 +60,9 @@ async def kodi_ws_listener():
                             KA.LAST_WS_YT_ID = vid
                         if playing_file:
                             KA.LAST_WS_PLAYING_FILE = playing_file
+                    if spotify_connect.is_takeover_event(method, msg.get("params")):
+                        if KA._ws_on_spotify_takeover:
+                            KA._ws_on_spotify_takeover()
                     if method == "Other.partyvideo_status":
                         # Visualisierungs-Addon; Other.partyvideo_cmd ist intern und wird ignoriert.
                         partyvideo.handle_status_event(msg.get("params", {}).get("data", {}) or {})
@@ -54,6 +74,7 @@ async def kodi_ws_listener():
                         player_params = data.get("player", {}) or {}
                         item_params = data.get("item", {}) or {}
                         item = None
+                        player_params = await resolve_player_params(player_params)
                         if "playerid" in player_params:
                             KA.LAST_WS_PLAYERID = player_params.get("playerid")
                             item = (await KA.kodi_call_async(

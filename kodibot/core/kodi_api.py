@@ -64,17 +64,19 @@ _ws_on_pause = None
 _ws_on_resume = None
 _ws_on_stop = None
 _ws_on_playback_refresh = None
+_ws_on_spotify_takeover = None
 
 
 def set_ws_handlers(*, on_play=None, on_pause=None, on_resume=None,
-                    on_stop=None, on_playback_refresh=None):
+                    on_stop=None, on_playback_refresh=None, on_spotify_takeover=None):
     global _ws_on_play, _ws_on_pause, _ws_on_resume, _ws_on_stop
-    global _ws_on_playback_refresh
+    global _ws_on_playback_refresh, _ws_on_spotify_takeover
     _ws_on_play = on_play
     _ws_on_pause = on_pause
     _ws_on_resume = on_resume
     _ws_on_stop = on_stop
     _ws_on_playback_refresh = on_playback_refresh
+    _ws_on_spotify_takeover = on_spotify_takeover
 
 
 # Send a JSON-RPC request to Kodi and return the response JSON.
