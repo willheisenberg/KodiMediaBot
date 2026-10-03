@@ -53,14 +53,18 @@ def is_takeover_event(method, params) -> bool:
     return method == TAKEOVER_EVENT and (params or {}).get("sender") == ADDON_ID
 
 
-def display_name(item) -> str:
-    """Panel text for the Spotify stream, from the info tag the add-on sets."""
+def artist_title(item):
+    """(artists, title) of the Spotify stream, from the info tag the add-on sets."""
     item = item or {}
-    title = item.get("title") or ""
     artist = item.get("artist") or []
     if isinstance(artist, str):
         artist = [artist]
-    artists = ", ".join(a for a in artist if a)
+    return ", ".join(a for a in artist if a), item.get("title") or ""
+
+
+def display_name(item) -> str:
+    """Panel text for the Spotify stream."""
+    artists, title = artist_title(item)
     if title and artists:
         return f"Spotify: {title} – {artists}"
     if title:

@@ -944,6 +944,33 @@ async def kodi_playlist_position_text(props):
     return f"{position + 1}/{size}"
 
 
+async def _lookup_spotify_track_link(key):
+    try:
+        link = await asyncio.to_thread(kodi_api.spotify_connect_track_link, *key)
+    except Exception as e:
+        log.warning("Spotify Connect link lookup failed for %s: %s", key, e)
+        link = ""
+    finally:
+        S.SPOTIFY_LINK_PENDING.discard(key)
+    if link:
+        queue_state.schedule_now_playing_refresh()
+
+
+def spotify_track_link(item):
+    """YouTube/SoundCloud link for the track Spotify Connect plays, if known.
+
+    The search takes seconds, so it never holds up the panel: an unknown
+    track is looked up in the background and the panel refreshed once the
+    link is there.
+    """
+    key = spotify_connect.artist_title(item)
+    link = kodi_api.cached_spotify_connect_track_link(*key)
+    if link is None and key not in S.SPOTIFY_LINK_PENDING:
+        S.SPOTIFY_LINK_PENDING.add(key)
+        asyncio.create_task(_lookup_spotify_track_link(key))
+    return link or None
+
+
 async def get_now_playing_text():
     """Assemble the now-playing display text.
 
@@ -1052,6 +1079,7 @@ async def get_now_playing_text():
         if spotify_connect.is_stream_item(item):
             spotify = True
             name = spotify_connect.display_name(item)
+            link = spotify_track_link(item)
 
         item_has_identity = bool(
             item and any(item.get(key) for key in ("file", "title", "label", "channel"))

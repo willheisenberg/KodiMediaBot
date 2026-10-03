@@ -12,7 +12,7 @@ os.environ.setdefault("TG_TOKEN", "test:token")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from kodibot.core import kodi_api, queue_state, spotify_connect
+from kodibot.core import kodi_api, kodi_metadata, queue_state, spotify_connect
 from kodibot.telegram import panel
 
 SPOTIFY_ITEM = {
@@ -289,6 +289,7 @@ class TestPanelDuringHandover:
         monkeypatch.setattr(panel.kodi_api, "kodi_call_async", fake_call)
         monkeypatch.setattr(panel.kodi_api, "pick_playerid", lambda players: 0)
         monkeypatch.setattr(panel.kodi_api, "maybe_cache_soundcloud_url", lambda file_url: None)
+        monkeypatch.setattr(panel.kodi_api, "cached_spotify_connect_track_link", lambda artist, title: "")
         monkeypatch.setattr(
             panel.kodi_api, "external_item_display",
             lambda item: (_ for _ in ()).throw(AssertionError("should not be called")),
@@ -413,3 +414,123 @@ def test_handover_end_resets_resume_attempts(monkeypatch):
     finally:
         queue_state.RESUME_ATTEMPTS.clear()
         _reset()
+
+
+class TestSpotifyTrackLink:
+    """The panel links the Spotify track to YouTube/SoundCloud like radio titles."""
+
+    def setup_method(self):
+        panel.S.SPOTIFY_LINK_PENDING.clear()
+        kodi_api.YT_SEARCH_CACHE.clear()
+        kodi_api.SC_SEARCH_CACHE.clear()
+
+    def teardown_method(self):
+        self.setup_method()
+
+    def test_artist_title_from_item(self):
+        assert spotify_connect.artist_title(SPOTIFY_ITEM) == ("Artist A, Artist B", "Song A")
+        assert spotify_connect.artist_title({"artist": "Solo", "title": "T"}) == ("Solo", "T")
+        assert spotify_connect.artist_title(None) == ("", "")
+
+    def test_lookup_prefers_youtube_and_matches_on_primary_artist(self, monkeypatch):
+        calls = []
+
+        def fake_yt(query, expected_title="", timeout=None):
+            calls.append((query, expected_title))
+            return "https://youtu.be/abcdefghijk"
+
+        monkeypatch.setattr(kodi_metadata, "search_youtube_link", fake_yt)
+        monkeypatch.setattr(
+            kodi_metadata, "search_soundcloud_link",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("YouTube already matched")),
+        )
+
+        link = kodi_api.spotify_connect_track_link("Artist A, Artist B", "Song A")
+
+        assert link == "https://youtu.be/abcdefghijk"
+        assert calls == [("Artist A, Artist B Song A", "Artist A - Song A")]
+
+    def test_lookup_falls_back_to_soundcloud(self, monkeypatch):
+        monkeypatch.setattr(kodi_metadata, "search_youtube_link", lambda *a, **k: "")
+        monkeypatch.setattr(
+            kodi_metadata, "search_soundcloud_link",
+            lambda query, expected_title="": f"https://soundcloud.com/x/{query}",
+        )
+
+        assert kodi_api.spotify_connect_track_link("Artist A", "Song A") == (
+            "https://soundcloud.com/x/Artist A - Song A"
+        )
+
+    def test_lookup_needs_artist_and_title(self):
+        assert kodi_api.spotify_connect_track_link("", "Song A") == ""
+        assert kodi_api.cached_spotify_connect_track_link("Artist A", "") == ""
+
+    def test_cache_peek_distinguishes_unknown_from_not_found(self):
+        norm = kodi_api.normalize_title
+        assert kodi_api.cached_spotify_connect_track_link("Artist A", "Song A") is None
+
+        kodi_api.cache_youtube_link(norm("Artist A Song A"), "")
+        # YouTube found nothing; SoundCloud has not been asked yet.
+        assert kodi_api.cached_spotify_connect_track_link("Artist A", "Song A") is None
+
+        kodi_api.cache_soundcloud_link(norm("Artist A - Song A"), "")
+        assert kodi_api.cached_spotify_connect_track_link("Artist A", "Song A") == ""
+
+        kodi_api.cache_youtube_link(norm("Artist A Song A"), "https://youtu.be/abcdefghijk")
+        assert kodi_api.cached_spotify_connect_track_link("Artist A", "Song A") == "https://youtu.be/abcdefghijk"
+
+    def test_known_link_is_returned_without_a_lookup(self, monkeypatch):
+        monkeypatch.setattr(
+            panel.kodi_api, "cached_spotify_connect_track_link",
+            lambda artist, title: "https://youtu.be/abcdefghijk",
+        )
+        monkeypatch.setattr(
+            panel.kodi_api, "spotify_connect_track_link",
+            lambda *a: (_ for _ in ()).throw(AssertionError("no lookup needed")),
+        )
+
+        async def run():
+            return panel.spotify_track_link(SPOTIFY_ITEM)
+
+        assert asyncio.run(run()) == "https://youtu.be/abcdefghijk"
+        assert panel.S.SPOTIFY_LINK_PENDING == set()
+
+    def test_unknown_track_is_looked_up_once_in_the_background(self, monkeypatch):
+        lookups, refreshes = [], []
+        monkeypatch.setattr(panel.kodi_api, "cached_spotify_connect_track_link", lambda artist, title: None)
+        monkeypatch.setattr(
+            panel.kodi_api, "spotify_connect_track_link",
+            lambda artist, title: lookups.append((artist, title)) or "https://youtu.be/abcdefghijk",
+        )
+        monkeypatch.setattr(panel.queue_state, "schedule_now_playing_refresh", lambda: refreshes.append(True))
+
+        async def run():
+            first = panel.spotify_track_link(SPOTIFY_ITEM)
+            second = panel.spotify_track_link(SPOTIFY_ITEM)  # panel refreshed meanwhile
+            pending = set(panel.S.SPOTIFY_LINK_PENDING)
+            await asyncio.sleep(0.2)
+            return first, second, pending
+
+        first, second, pending = asyncio.run(run())
+
+        # The panel is not held up: no link yet, it arrives with the refresh.
+        assert first is None and second is None
+        assert pending == {("Artist A, Artist B", "Song A")}
+        assert lookups == [("Artist A, Artist B", "Song A")]
+        assert refreshes == [True]
+        assert panel.S.SPOTIFY_LINK_PENDING == set()
+
+    def test_failed_lookup_does_not_refresh_the_panel(self, monkeypatch):
+        refreshes = []
+        monkeypatch.setattr(panel.kodi_api, "cached_spotify_connect_track_link", lambda artist, title: None)
+        monkeypatch.setattr(panel.kodi_api, "spotify_connect_track_link", lambda artist, title: "")
+        monkeypatch.setattr(panel.queue_state, "schedule_now_playing_refresh", lambda: refreshes.append(True))
+
+        async def run():
+            panel.spotify_track_link(SPOTIFY_ITEM)
+            await asyncio.sleep(0.2)
+
+        asyncio.run(run())
+
+        assert refreshes == []
+        assert panel.S.SPOTIFY_LINK_PENDING == set()

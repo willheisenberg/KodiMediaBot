@@ -531,6 +531,8 @@ from kodibot.core.kodi_metadata import (
     radio_title_to_youtube_link,
     radio_title_to_soundcloud_link,
     spotify_track_to_youtube_id,
+    spotify_connect_track_link,
+    cached_spotify_connect_track_link,
     resolve_radio_title,
     get_cached_soundcloud_permalink,
     cache_soundcloud_permalink,

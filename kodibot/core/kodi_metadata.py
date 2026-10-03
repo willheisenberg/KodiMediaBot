@@ -539,6 +539,47 @@ def spotify_track_to_youtube_id(artist, title):
     return extract_youtube_id(link) if link else ""
 
 
+def _spotify_connect_queries(artist, title):
+    artist = (artist or "").strip()
+    title = (title or "").strip()
+    if not artist or not title:
+        return None
+    primary = artist.split(",")[0].strip() or artist
+    # Same YouTube query as spotify_track_to_youtube_id, so both share a cache.
+    return f"{artist} {title}", f"{primary} - {title}"
+
+
+def spotify_connect_track_link(artist, title):
+    """Link for the track Spotify Connect is playing, or "" when unsure.
+
+    YouTube first, SoundCloud as fallback — the same order as for radio
+    titles.  Blocks on yt-dlp; run it off the event loop.
+    """
+    queries = _spotify_connect_queries(artist, title)
+    if not queries:
+        return ""
+    yt_query, expected = queries
+    link = search_youtube_link(yt_query, expected_title=expected)
+    if link:
+        return link
+    return search_soundcloud_link(expected, expected_title=expected)
+
+
+def cached_spotify_connect_track_link(artist, title):
+    """spotify_connect_track_link from the search caches only.
+
+    None means "not looked up yet", "" means "looked up, nothing found".
+    """
+    queries = _spotify_connect_queries(artist, title)
+    if not queries:
+        return ""
+    yt_query, expected = queries
+    link = get_cached_youtube_link(normalize_title(yt_query))
+    if link or link is None:
+        return link
+    return get_cached_soundcloud_link(normalize_title(expected))
+
+
 def radio_title_to_soundcloud_link(track_title):
     if not track_title:
         return ""

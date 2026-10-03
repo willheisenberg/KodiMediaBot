@@ -40,6 +40,8 @@ LIST_MSG_ID = {}
 LIST_PAGE = {}
 LIST_PAGE_PINNED = {}
 PANEL_MSG_ID = {}
+# (artists, title) pairs whose Spotify Connect link lookup is still running.
+SPOTIFY_LINK_PENDING = set()
 PANEL_MENU_MODE = {}
 HA_MENU_MSG_ID = {}
 # Button-reference image: message id per chat while it is shown, plus the
