@@ -42,6 +42,14 @@ ON_PLAY_STARTED = None
 PLAY_INDEX_TS = 0.0
 PLAY_INDEX_OPTIMISTIC_WINDOW = 8.0  # seconds
 
+# What play_item() last asked Kodi to open, and when.  A start Kodi never
+# confirms (the YouTube add-on refusing a video, say) leaves no other trace on
+# the bot side, so the autoplay loop reports it once after this many seconds.
+PLAY_START_TS = 0.0
+PLAY_START_ITEM = None
+PLAY_START_REPORTED = False
+PLAY_START_OVERDUE_SEC = 20.0
+
 LAST_PROGRESS_TS = 0.0
 LAST_PROGRESS_TIME = None
 LAST_PROGRESS_TOTAL = None
@@ -167,6 +175,31 @@ def get_expecting_ws() -> int:
     """Read BOT_EXPECTING_WS under LOCK."""
     with LOCK:
         return BOT_EXPECTING_WS
+
+
+def report_overdue_play_start(now=None) -> bool:
+    """Log once when Kodi has not confirmed a bot-initiated play in time."""
+    global PLAY_START_REPORTED
+    now = time.time() if now is None else now
+    with LOCK:
+        if BOT_EXPECTING_WS <= 0 or PLAY_START_REPORTED or not PLAY_START_TS:
+            return False
+        waited = now - PLAY_START_TS
+        if waited < PLAY_START_OVERDUE_SEC:
+            return False
+        PLAY_START_REPORTED = True
+        item = PLAY_START_ITEM or {}
+        expecting = BOT_EXPECTING_WS
+    log.warning(
+        "play_item not confirmed by Kodi after %.0fs expecting_ws=%d kind=%s title=%s url=%s link=%s",
+        waited,
+        expecting,
+        item.get("kind"),
+        item.get("title"),
+        item.get("url"),
+        item.get("link"),
+    )
+    return True
 
 
 # ── WS callback handlers (registered with kodi_api) ────────────────
@@ -573,6 +606,7 @@ def schedule_soundcloud_plugin_fallback(item: dict, source_link: str, resume_tim
 
 def play_item(item: dict, resume_time=None):
     global EXPECTED_STOP, LAST_PLAYED_RADIO, _SC_START_CANCEL
+    global PLAY_START_TS, PLAY_START_ITEM, PLAY_START_REPORTED
     cancel_soundcloud_start()
     start_cancel = threading.Event()
     _SC_START_CANCEL = start_cancel
@@ -597,6 +631,10 @@ def play_item(item: dict, resume_time=None):
     kodi_api.kodi_clear_all_playlists()
     resolver = item.get("resolver")
     set_expecting_ws(2)
+    with LOCK:
+        PLAY_START_TS = time.time()
+        PLAY_START_ITEM = item
+        PLAY_START_REPORTED = False
     log.info(
         "play_item start kind=%s resolver=%s title=%s url=%s",
         item.get("kind"),
@@ -1254,6 +1292,8 @@ def autoplay_loop():
             if not kodi_api.WS_CONNECTED:
                 time.sleep(0.5)
                 continue
+
+            report_overdue_play_start(now)
 
             if not AUTOPLAY_ENABLED:
                 time.sleep(0.5)

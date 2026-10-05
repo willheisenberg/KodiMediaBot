@@ -469,3 +469,38 @@ def test_handle_ws_play_survives_a_failing_on_play_started_hook():
     with patch("kodibot.core.queue_state.ON_PLAY_STARTED", boom), \
          patch("kodibot.core.queue_state.BOT_EXPECTING_WS", 1):
         queue_state._handle_ws_play(item={}, item_params={})
+
+
+class TestOverduePlayStart:
+    """A play Kodi never confirms must show up in the bot log."""
+
+    ITEM = {"kind": "video", "title": "Clip", "url": "plugin://plugin.video.youtube/play/?video_id=abc"}
+
+    def _waiting(self, expecting=2, reported=False):
+        return patch.multiple(
+            "kodibot.core.queue_state",
+            BOT_EXPECTING_WS=expecting,
+            PLAY_START_TS=1000.0,
+            PLAY_START_ITEM=self.ITEM,
+            PLAY_START_REPORTED=reported,
+        )
+
+    def test_reports_once_after_the_deadline(self, caplog):
+        late = 1000.0 + queue_state.PLAY_START_OVERDUE_SEC + 1
+        with self._waiting(), caplog.at_level("WARNING", logger="kodibot.core.queue_state"):
+            assert queue_state.report_overdue_play_start(late) is True
+            assert queue_state.report_overdue_play_start(late + 5) is False
+        messages = [r.getMessage() for r in caplog.records]
+        assert len(messages) == 1
+        assert "video_id=abc" in messages[0]
+
+    def test_silent_before_the_deadline(self, caplog):
+        with self._waiting(), caplog.at_level("WARNING", logger="kodibot.core.queue_state"):
+            assert queue_state.report_overdue_play_start(1005.0) is False
+        assert not caplog.records
+
+    def test_silent_once_kodi_confirmed_the_play(self, caplog):
+        late = 1000.0 + queue_state.PLAY_START_OVERDUE_SEC + 1
+        with self._waiting(expecting=0), caplog.at_level("WARNING", logger="kodibot.core.queue_state"):
+            assert queue_state.report_overdue_play_start(late) is False
+        assert not caplog.records

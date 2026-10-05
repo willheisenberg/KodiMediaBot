@@ -94,9 +94,20 @@ def handle_status_event(data):
     if not isinstance(data, dict):
         return
     with _STATUS_LOCK:
+        previous = (LAST_STATUS.get("state"), LAST_STATUS.get("error"))
         LAST_STATUS.clear()
         LAST_STATUS.update(data)
         status = dict(LAST_STATUS)
+    # The panel only shows a marker for a failed visual; keep the reason in the log.
+    if status.get("state") == "error" and (status.get("state"), status.get("error")) != previous:
+        log.warning(
+            "partyvideo error=%s warning=%s kind=%s source=%s title=%s",
+            status.get("error"),
+            status.get("warning"),
+            status.get("kind"),
+            status.get("source"),
+            status.get("title"),
+        )
     callback = _STATUS_CALLBACK
     if callback is None:
         return

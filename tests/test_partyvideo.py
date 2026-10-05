@@ -120,6 +120,18 @@ class TestStatusEvents:
         partyvideo.handle_status_event({"state": "playing"})
         assert partyvideo.LAST_STATUS["state"] == "playing"
 
+    def test_error_state_is_logged_once_with_its_reason(self, caplog):
+        reset_status()
+        event = {"state": "error", "error": "download_failed", "kind": "youtube", "source": "https://youtu.be/x"}
+        with caplog.at_level("WARNING", logger="kodibot.core.partyvideo"):
+            partyvideo.handle_status_event({"state": "downloading", "progress": 10})
+            partyvideo.handle_status_event(event)
+            partyvideo.handle_status_event(dict(event))
+        messages = [r.getMessage() for r in caplog.records]
+        assert len(messages) == 1
+        assert "download_failed" in messages[0]
+        assert "https://youtu.be/x" in messages[0]
+
     def test_non_dict_event_is_ignored(self):
         reset_status()
         partyvideo.handle_status_event(None)
