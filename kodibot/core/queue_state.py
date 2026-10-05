@@ -268,6 +268,18 @@ def release_spotify_device():
     )
 
 
+def play_radio(url, title=None) -> bool:
+    """Start a station or favourite the user picked in the chat.
+
+    Like any playback the bot starts, this takes the box away from Spotify:
+    left selected, the Spotify device could start playing again and replace
+    the station a few seconds later.
+    """
+    spotify_connect.end()
+    release_spotify_device()
+    return kodi_api.play_favourite_target(url, title)
+
+
 def _spotify_takeback_target() -> bool:
     with LOCK:
         queue_waiting = AUTOPLAY_ENABLED and (
@@ -629,8 +641,9 @@ def play_item(item: dict, resume_time=None):
     with LOCK:
         EXPECTED_STOP = True
         LAST_PLAYED_RADIO = None
-    # The bot takes Kodi back from Spotify; the add-on pauses Spotify.
+    # The bot takes Kodi back from Spotify and hands the device back too.
     spotify_connect.end()
+    release_spotify_device()
     media.cleanup_active_image_session()
     kodi_api.stop_all_players()
     kind = item.get("kind", "video")

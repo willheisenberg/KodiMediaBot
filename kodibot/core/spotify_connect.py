@@ -8,8 +8,8 @@ interrupt the other:
 * The bot takes back over when the Spotify stream stops, or when Spotify
   stays paused for PAUSE_TAKEBACK_SEC.  The queue then resumes where it was
   interrupted, a parked radio station is restarted.
-* Anything the bot starts itself ends the handover; the add-on pauses
-  Spotify on its own when Kodi plays something else.
+* Anything the bot starts itself ends the handover and releases the Spotify
+  Connect device, so Spotify cannot start again underneath it.
 
 This module only holds the handover state; queue_state drives it.  It is
 free of Kodi and Telegram imports so the timing logic is testable alone.
@@ -24,9 +24,9 @@ ADDON_ID = "service.soloist"
 # Sent by the add-on via NotifyAll right before it starts the stream, so the
 # bot hears about the takeover before Kodi reports the old item stopped.
 TAKEOVER_EVENT = "Other.soloist_takeover"
-# Sent by the bot via JSONRPC.NotifyAll when it stops playback: the add-on
-# then releases the Spotify Connect device, so the app moves playback back to
-# the phone instead of keeping the box selected (paused).
+# Sent by the bot via JSONRPC.NotifyAll when it stops playback or starts its
+# own: the add-on then releases the Spotify Connect device, so the app moves
+# playback back to the phone instead of keeping the box selected (paused).
 RELEASE_MESSAGE = "soloist_release"
 
 PAUSE_TAKEBACK_SEC = 30.0

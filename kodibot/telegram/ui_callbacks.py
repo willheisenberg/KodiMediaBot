@@ -1176,7 +1176,7 @@ async def on_button(update, ctx):
         if 0 <= idx < len(favourites):
             fav = favourites[idx]
             UI.queue_state.clear_radio_reconnect_state()
-            ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, fav.get("target"), fav.get("title"))
+            ok = await asyncio.to_thread(UI.queue_state.play_radio, fav.get("target"), fav.get("title"))
             if ok:
                 UI.queue_state.set_last_played_radio(fav.get("target"), fav.get("title"))
                 await q.answer(text=t("playing_favourite", title=fav["title"]))
@@ -1199,7 +1199,7 @@ async def on_button(update, ctx):
             name = channel.get("name")
             url = channel.get("url")
             UI.queue_state.clear_radio_reconnect_state()
-            ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, url, name)
+            ok = await asyncio.to_thread(UI.queue_state.play_radio, url, name)
             if ok:
                 UI.queue_state.set_last_played_radio(url, name)
                 await q.answer(text=t("playing_channel", name=name))
@@ -1457,7 +1457,7 @@ async def on_button(update, ctx):
             name = selected.get("name")
             url = selected.get("url_resolved") or selected.get("url")
             UI.queue_state.clear_radio_reconnect_state()
-            ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, url, name)
+            ok = await asyncio.to_thread(UI.queue_state.play_radio, url, name)
             if ok:
                 UI.queue_state.set_last_played_radio(url, name)
                 await q.answer(text=t("playing_radio", name=name))

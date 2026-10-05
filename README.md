@@ -468,8 +468,9 @@ interrupt each other, and nothing is lost:
   `Spotify: title – artist`, linked to the matching YouTube video (or
   SoundCloud track) when one is found — the same lookup as for radio titles.
   It runs in the background, so the link appears a few seconds after the title.
-- **The bot takes over**, because someone plays something from the chat → Spotify
-  pauses, and the app shows it paused.
+- **The bot takes over**, because someone plays something from the chat → the
+  box gives up the Spotify device, and the app moves playback back to the
+  phone.
 - **The bot takes back over** when Spotify leaves the box (another device was
   picked, or the session ended) or stays paused for 30 seconds. The parked
   queue item continues where it was interrupted, and a parked radio station is

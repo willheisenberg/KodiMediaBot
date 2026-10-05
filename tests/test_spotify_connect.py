@@ -391,6 +391,35 @@ class TestStopReleasesSpotify:
         )
         assert calls[1] == "stop"
 
+    def test_queue_playback_releases_the_spotify_device_before_stopping(self, monkeypatch):
+        calls = self._patch_stop(monkeypatch, [])
+        monkeypatch.setattr(queue_state, "set_expecting_ws", lambda n: None)
+        spotify_connect.begin()
+
+        queue_state.play_item(dict(QUEUED))
+
+        assert calls[0] == (
+            "JSONRPC.NotifyAll",
+            {"sender": "kodibot", "message": spotify_connect.RELEASE_MESSAGE},
+        )
+        assert calls[1] == "stop"
+
+    def test_radio_start_releases_the_spotify_device_and_ends_the_handover(self, monkeypatch):
+        calls = self._patch_stop(monkeypatch, [])
+        monkeypatch.setattr(
+            queue_state.kodi_api, "play_favourite_target",
+            lambda url, title=None: calls.append(("open", url)) or True,
+        )
+        spotify_connect.begin()
+
+        assert queue_state.play_radio("pvr://channels/radio/1", "Radio X")
+
+        assert calls == [
+            ("JSONRPC.NotifyAll", {"sender": "kodibot", "message": spotify_connect.RELEASE_MESSAGE}),
+            ("open", "pvr://channels/radio/1"),
+        ]
+        assert not spotify_connect.is_active()
+
     def test_closing_a_slideshow_over_music_keeps_spotify(self, monkeypatch):
         players = [{"playerid": 2, "type": "picture"}, {"playerid": 0, "type": "audio"}]
         calls = self._patch_stop(monkeypatch, players)

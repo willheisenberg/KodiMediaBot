@@ -153,7 +153,9 @@ class TestSoundcloudPlayback:
         monkeypatch.setattr(queue_state, "schedule_soundcloud_plugin_fallback", lambda *args, **kwargs: events.append("probe"))
         monkeypatch.setattr(queue_state, "schedule_playback_refresh", lambda: None)
         queue_state.play_item(queue_state.make_soundcloud("https://soundcloud.com/artist/new"))
-        assert events == ["stop_requested", "active", "active", "stopped", "clear", "Player.Open", "probe"]
+        assert events == [
+            "JSONRPC.NotifyAll", "stop_requested", "active", "active", "stopped", "clear", "Player.Open", "probe",
+        ]
 
     def test_stop_wait_times_out_or_cancels(self, monkeypatch):
         monkeypatch.setattr(queue_state.kodi_api, "get_active_players", lambda: [{"playerid": 0}])

@@ -971,7 +971,7 @@ async def handle_text(update, ctx):
                 
                 # Play in Kodi
                 UI.queue_state.clear_radio_reconnect_state()
-                ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, url, name)
+                ok = await asyncio.to_thread(UI.queue_state.play_radio, url, name)
                 if ok:
                     UI.queue_state.set_last_played_radio(url, name)
                     UI.queue_state.clear_bot_playback_state()
@@ -1053,7 +1053,7 @@ async def handle_text(update, ctx):
                 
                 # Play in Kodi
                 UI.queue_state.clear_radio_reconnect_state()
-                ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, url, name)
+                ok = await asyncio.to_thread(UI.queue_state.play_radio, url, name)
                 if ok:
                     UI.queue_state.set_last_played_radio(url, name)
                     UI.queue_state.clear_bot_playback_state()
@@ -1128,7 +1128,7 @@ async def handle_text(update, ctx):
             if 0 <= i < len(favourites):
                 selected = favourites[i]
                 UI.queue_state.clear_radio_reconnect_state()
-                ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, selected.get("target"), selected.get("title"))
+                ok = await asyncio.to_thread(UI.queue_state.play_radio, selected.get("target"), selected.get("title"))
                 if ok:
                     UI.queue_state.set_last_played_radio(selected.get("target"), selected.get("title"))
                     UI.queue_state.clear_bot_playback_state()
