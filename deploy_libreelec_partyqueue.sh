@@ -50,6 +50,27 @@ if [ -f \"\$COMPOSE_FILE\" ]; then
   fi
 fi"
 
+log "Stelle eigenen Log-Treiber fuer ${REMOTE_CONTAINER_NAME} in /storage/docker-compose.yml sicher"
+remote_run "REMOTE_CONTAINER_NAME='${REMOTE_CONTAINER_NAME}' sh -s" <<'REMOTE'
+set -eu
+COMPOSE_FILE='/storage/docker-compose.yml'
+# journald fasst auf LibreELEC nur 2 MB und wird von anderen Diensten ueberschrieben
+if [ -f "$COMPOSE_FILE" ] && ! grep -q 'driver: json-file' "$COMPOSE_FILE"; then
+  awk -v name="$REMOTE_CONTAINER_NAME" '
+    { print }
+    $1 == "container_name:" && $2 == name {
+      print "    logging:"
+      print "      driver: json-file"
+      print "      options:"
+      print "        max-size: \"10m\""
+      print "        max-file: \"3\""
+    }
+  ' "$COMPOSE_FILE" > "$COMPOSE_FILE.tmp"
+  cat "$COMPOSE_FILE.tmp" > "$COMPOSE_FILE"
+  rm -f "$COMPOSE_FILE.tmp"
+fi
+REMOTE
+
 log "Kopiere kodi.m3u nach LibreELEC..."
 scp "${SSH_OPTS[@]}" "${LOCAL_ROOT}/data/kodi.m3u" "${SSH_TARGET}:/storage/docker/partyqueue/data/kodi.m3u"
 
