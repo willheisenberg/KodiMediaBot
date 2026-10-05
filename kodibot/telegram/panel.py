@@ -979,10 +979,9 @@ async def get_now_playing_text():
     name = None
     link = None
     qitem = None
-    # During a Spotify Connect handover the queue item is parked, not playing.
-    spotify = spotify_connect.is_active()
+    spotify = False
     with queue_state.LOCK:
-        if not spotify and not queue_state.EXTERNAL_PLAYBACK and queue_state.DISPLAY_INDEX is not None and 0 <= queue_state.DISPLAY_INDEX < len(queue_state.QUEUE):
+        if not queue_state.EXTERNAL_PLAYBACK and queue_state.DISPLAY_INDEX is not None and 0 <= queue_state.DISPLAY_INDEX < len(queue_state.QUEUE):
             qitem = queue_state.QUEUE[queue_state.DISPLAY_INDEX]
             name = qitem.get("title") or None
             link = qitem.get("link")
@@ -1111,8 +1110,7 @@ async def get_now_playing_text():
     playlist_text = await kodi_playlist_position_text(props)
     cur = kodi_api.format_kodi_time(props.get("time"))
     total = kodi_api.format_kodi_time(props.get("totaltime"))
-    # The parked queue item resumes from its last progress; Spotify's stream
-    # time must not overwrite it.
+    # Spotify's stream time is no progress of a queue item.
     if not spotify:
         queue_state.LAST_PROGRESS_TS = time.time()
         queue_state.LAST_PROGRESS_TIME = props.get("time")

@@ -234,3 +234,58 @@ class TestCancelReconnectAction:
         assert len(scheduled) == 1 and scheduled[0][0] == task.cancel
 
 
+def _in_loop(call):
+    """The reconnect callback is only triggered from a running event loop."""
+    async def run():
+        call()
+    asyncio.run(run())
+
+
+class TestFilmIsNoRadioDropout:
+    """A film that replaced the radio must not bring the station back."""
+
+    def setup_method(self):
+        queue_state.LAST_PLAYED_RADIO = None
+        queue_state.EXPECTED_STOP = False
+        queue_state.ON_UNEXPECTED_RADIO_STOP = None
+        queue_state.CANCEL_RECONNECT_CB = None
+        queue_state.ON_PLAY_STARTED = None
+        queue_state.BOT_EXPECTING_WS = 0
+
+    teardown_method = setup_method
+
+    def _reconnects(self, monkeypatch):
+        reconnects = []
+        queue_state.ON_UNEXPECTED_RADIO_STOP = lambda url, title: reconnects.append(url)
+        monkeypatch.setattr(queue_state, "schedule_now_playing_refresh", lambda: None)
+        monkeypatch.setattr(queue_state, "clear_bot_playback_state", lambda: None)
+        return reconnects
+
+    def test_film_end_does_not_reconnect_the_radio(self, monkeypatch):
+        reconnects = self._reconnects(monkeypatch)
+        queue_state.set_last_played_radio("pvr://radio", "Radio X")
+
+        _in_loop(lambda: queue_state._handle_ws_stop(item_params={"id": 84, "type": "movie"}))
+
+        assert reconnects == []
+
+    def test_film_start_forgets_the_radio_and_cancels_a_running_reconnect(self, monkeypatch):
+        self._reconnects(monkeypatch)
+        cancelled = []
+        queue_state.CANCEL_RECONNECT_CB = lambda: cancelled.append(True)
+        queue_state.set_last_played_radio("pvr://radio", "Radio X")
+
+        queue_state._handle_ws_play(item={}, item_params={"id": 84, "type": "movie"})
+
+        assert queue_state.LAST_PLAYED_RADIO is None
+        assert cancelled
+
+    def test_the_radio_itself_keeps_its_reconnect(self, monkeypatch):
+        reconnects = self._reconnects(monkeypatch)
+        queue_state.set_last_played_radio("pvr://radio", "Radio X")
+        channel = {"channeltype": "radio", "id": 671, "title": "Radio X", "type": "channel"}
+
+        queue_state._handle_ws_play(item={}, item_params=channel)
+        _in_loop(lambda: queue_state._handle_ws_stop(item_params=channel))
+
+        assert reconnects == ["pvr://radio"]

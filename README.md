@@ -460,21 +460,19 @@ normally.
 ### Spotify Connect (Soloist add-on)
 
 With the separate `service.soloist` Kodi add-on, the box shows up as a device
-in the Spotify app and Spotify plays through Kodi. The bot and Spotify can
-interrupt each other, and nothing is lost:
+in the Spotify app and Spotify plays through Kodi. The bot and Spotify simply
+replace each other:
 
-- **Spotify takes over** → the bot parks its queue instead of dropping it, or
-  remembers the radio station that was playing. The panel shows
-  `Spotify: title – artist`, linked to the matching YouTube video (or
+- **Spotify takes over** → whatever the bot was playing stops: the queue's
+  playback ends (the queue itself stays) and a radio station is forgotten. The
+  panel shows `Spotify: title – artist`, linked to the matching YouTube video (or
   SoundCloud track) when one is found — the same lookup as for radio titles.
   It runs in the background, so the link appears a few seconds after the title.
 - **The bot takes over**, because someone plays something from the chat → the
   box gives up the Spotify device, and the app moves playback back to the
   phone.
-- **The bot takes back over** when Spotify leaves the box (another device was
-  picked, or the session ended) or stays paused for 30 seconds. The parked
-  queue item continues where it was interrupted, and a parked radio station is
-  restarted. If nothing is parked, a paused Spotify is left alone.
+- **Spotify stops or pauses** → nothing happens on its own. The stop button in
+  the panel releases the Spotify device.
 
 No bot configuration is needed. The bot recognises the add-on's stream at
 `rtp://127.0.0.1:23433`, so keep the add-on's RTP port at its default.

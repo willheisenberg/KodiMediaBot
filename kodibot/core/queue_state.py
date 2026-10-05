@@ -181,20 +181,16 @@ def _handle_ws_play(*, item, item_params):
             ON_PLAY_STARTED()
         except Exception as e:
             log.warning("on_play_started callback failed: %s", e)
-    # Spotify Connect parks the queue instead of replacing it.
     if spotify_connect.is_stream_item(item):
-        begin_spotify_handover()
+        spotify_takeover()
         return
-    if spotify_connect.is_active():
-        if not (item or {}).get("file"):
-            # Unidentified item (Kodi had no active player to ask yet): most
-            # likely the Spotify stream itself, so keep the queue parked.
-            log.info("Spotify Connect handover kept: play event without a file")
-            return
-        # Something other than the bot or Spotify took over Kodi: nothing to
-        # hand back to, so drop the parked radio station with the handover.
-        log.info("Spotify Connect handover ended by external playback")
-        spotify_connect.end()
+    # A film that replaced the radio is no radio any more: its end must not
+    # be read as a dropout of the station.
+    if _is_library_video(item_params) or _is_library_video(item):
+        with LOCK:
+            radio = LAST_PLAYED_RADIO
+        if radio:
+            clear_radio_reconnect_state()
     # decrement_expecting_ws returns the value AFTER decrement.
     # If before decrement it was > 0, this play was bot-initiated.
     with LOCK:
@@ -223,38 +219,27 @@ def _handle_ws_play(*, item, item_params):
 
 
 def _handle_ws_pause():
-    spotify_connect.set_paused(True)
     schedule_now_playing_refresh()
 
 
 def _handle_ws_resume():
-    spotify_connect.set_paused(False)
     schedule_now_playing_refresh()
 
 
-# ── Spotify Connect handover (see spotify_connect) ─────────────────
-def begin_spotify_handover():
-    """Spotify takes over Kodi: park the queue/radio instead of dropping it.
+# ── Spotify Connect (see spotify_connect) ──────────────────────────
+def spotify_takeover():
+    """Spotify takes over Kodi: whatever the bot was playing is over.
 
     Called on the add-on's takeover notification and again on the stream's
-    Player.OnPlay; whichever arrives first wins.
+    Player.OnPlay; the notification comes before Kodi reports the outgoing
+    item stopped, so neither the queue nor the radio is restarted in between.
+    Nothing is resumed when Spotify stops.
     """
-    global EXPECTED_STOP
-    with LOCK:
-        radio = dict(LAST_PLAYED_RADIO) if LAST_PLAYED_RADIO else None
-        # The outgoing radio stream's Player.OnStop is no dropout.
-        EXPECTED_STOP = True
-    if not spotify_connect.begin(radio):
-        return
-    log.info("Spotify Connect takeover radio=%s display_index=%s", radio, DISPLAY_INDEX)
     cancel_soundcloud_start()
-    # The radio stop may have been reported before we heard of Spotify.
-    if CANCEL_RECONNECT_CB:
-        try:
-            CANCEL_RECONNECT_CB()
-        except Exception as e:
-            log.warning("Failed to cancel reconnect callback: %s", e)
-    schedule_playback_refresh()
+    clear_radio_reconnect_state()
+    set_expecting_ws(0)
+    clear_bot_playback_state()
+    schedule_now_playing_refresh()
 
 
 def release_spotify_device():
@@ -275,57 +260,15 @@ def play_radio(url, title=None) -> bool:
     left selected, the Spotify device could start playing again and replace
     the station a few seconds later.
     """
-    spotify_connect.end()
     release_spotify_device()
     return kodi_api.play_favourite_target(url, title)
 
 
-def _spotify_takeback_target() -> bool:
-    with LOCK:
-        queue_waiting = AUTOPLAY_ENABLED and (
-            DISPLAY_INDEX is not None or NEXT_INDEX < len(QUEUE)
-        )
-    return queue_waiting or spotify_connect.parked_radio() is not None
+_LIBRARY_VIDEO_TYPES = ("movie", "episode", "musicvideo")
 
 
-def end_spotify_handover():
-    """Spotify is gone: restart a parked radio station.
-
-    A parked queue needs nothing here — with the handover over, autoplay_loop
-    sees Kodi stopped and resumes the interrupted item at its last position.
-    """
-    radio = spotify_connect.end()
-    log.info("Spotify Connect handover ended radio=%s display_index=%s", radio, DISPLAY_INDEX)
-    # An interruption by Spotify is no failed resume: don't let it use up the
-    # item's resume attempts, or a much-interrupted item would get skipped.
-    with LOCK:
-        RESUME_ATTEMPTS.clear()
-    if radio:
-        if kodi_api.play_favourite_target(radio["url"], radio["title"]):
-            set_last_played_radio(radio["url"], radio["title"])
-        else:
-            log.warning("Could not restart radio '%s' after Spotify", radio["title"])
-    schedule_playback_refresh()
-
-
-def _tick_spotify_handover():
-    """One autoplay_loop pass while Spotify holds Kodi."""
-    state = kodi_api.WS_STATE
-    if state == "stopped":
-        if spotify_connect.settled() and not kodi_api.get_active_players():
-            end_spotify_handover()
-    elif (
-        state == "paused"
-        and spotify_connect.paused_too_long()
-        and _spotify_takeback_target()
-    ):
-        log.info(
-            "Spotify Connect paused for %.0fs, taking playback back",
-            spotify_connect.PAUSE_TAKEBACK_SEC,
-        )
-        # Player.OnStop moves WS_STATE to "stopped"; the next pass ends the
-        # handover. The add-on leaves Spotify paused.
-        kodi_api.stop_all_players()
+def _is_library_video(item) -> bool:
+    return (item or {}).get("type") in _LIBRARY_VIDEO_TYPES
 
 
 def _handle_ws_stop(item_params=None, player_params=None):
@@ -338,7 +281,7 @@ def _handle_ws_stop(item_params=None, player_params=None):
     is_audio_stop = True
     if player_id is not None and player_id != 0:
         is_audio_stop = False
-    elif stopped_type == "picture":
+    elif stopped_type == "picture" or _is_library_video(item_params):
         is_audio_stop = False
         
     with LOCK:
@@ -372,7 +315,7 @@ def register_ws_callbacks():
         on_resume=_handle_ws_resume,
         on_stop=_handle_ws_stop,
         on_playback_refresh=_handle_ws_playback_refresh,
-        on_spotify_takeover=begin_spotify_handover,
+        on_spotify_takeover=spotify_takeover,
     )
 
 
@@ -641,8 +584,7 @@ def play_item(item: dict, resume_time=None):
     with LOCK:
         EXPECTED_STOP = True
         LAST_PLAYED_RADIO = None
-    # The bot takes Kodi back from Spotify and hands the device back too.
-    spotify_connect.end()
+    # The bot takes Kodi from Spotify and hands the device back.
     release_spotify_device()
     media.cleanup_active_image_session()
     kodi_api.stop_all_players()
@@ -730,7 +672,6 @@ def hard_stop_and_clear():
         except Exception as e:
             log.warning("Failed to cancel reconnect callback: %s", e)
     # Stop means stop: release Spotify instead of leaving it paused on the box.
-    spotify_connect.end()
     release_spotify_device()
     media.cleanup_active_image_session()
     kodi_api.stop_all_players()
@@ -1311,12 +1252,6 @@ def autoplay_loop():
             playback_state = kodi_api.WS_STATE
 
             if not kodi_api.WS_CONNECTED:
-                time.sleep(0.5)
-                continue
-
-            # Spotify holds Kodi: keep the queue parked, watch for the takeback.
-            if spotify_connect.is_active():
-                _tick_spotify_handover()
                 time.sleep(0.5)
                 continue
 

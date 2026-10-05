@@ -1,4 +1,4 @@
-"""Tests for the Spotify Connect handover (service.soloist add-on)."""
+"""Tests for Spotify Connect through the service.soloist add-on."""
 import asyncio
 import os
 import sys
@@ -25,7 +25,6 @@ QUEUED = {"title": "Queued Video", "url": "plugin://queued", "kind": "video", "l
 
 
 def _reset():
-    spotify_connect.end()
     queue_state.QUEUE.clear()
     queue_state.CURRENT_INDEX = None
     queue_state.DISPLAY_INDEX = None
@@ -54,10 +53,14 @@ def _queue_playing_at(seconds):
     queue_state.LAST_PROGRESS_TOTAL = {"hours": 0, "minutes": 5, "seconds": 0}
 
 
-class TestHandoverState:
-    def setup_method(self):
-        spotify_connect.end()
+def _in_loop(call):
+    """The reconnect callback is only triggered from a running event loop."""
+    async def run():
+        call()
+    asyncio.run(run())
 
+
+class TestStream:
     def test_stream_detection(self):
         assert spotify_connect.is_stream_item(SPOTIFY_ITEM)
         assert spotify_connect.is_stream(spotify_connect.STREAM_URL + "/")
@@ -72,195 +75,78 @@ class TestHandoverState:
 
     def test_display_name(self):
         assert spotify_connect.display_name(SPOTIFY_ITEM) == "Spotify: Song A – Artist A, Artist B"
-        assert spotify_connect.display_name({"title": "Song A", "artist": []}) == "Spotify: Song A"
+        assert spotify_connect.display_name({"title": "Song A"}) == "Spotify: Song A"
         assert spotify_connect.display_name({}) == "Spotify"
 
-    def test_second_begin_keeps_first_radio_snapshot(self):
-        assert spotify_connect.begin({"url": "u", "title": "Radio"}, now=0)
-        assert not spotify_connect.begin(None, now=1)
-        assert spotify_connect.parked_radio() == {"url": "u", "title": "Radio"}
-        assert spotify_connect.end() == {"url": "u", "title": "Radio"}
-        assert not spotify_connect.is_active()
-        assert spotify_connect.end() is None
 
-    def test_settle_and_pause_timing(self):
-        spotify_connect.begin(now=100)
-        assert not spotify_connect.settled(now=100 + spotify_connect.SETTLE_SEC - 1)
-        assert spotify_connect.settled(now=100 + spotify_connect.SETTLE_SEC)
+class TestTakeover:
+    """Spotify replaces what the bot was playing; nothing comes back after it."""
 
-        spotify_connect.set_paused(True, now=200)
-        # A second pause event must not restart the clock.
-        spotify_connect.set_paused(True, now=210)
-        assert not spotify_connect.paused_too_long(now=200 + spotify_connect.PAUSE_TAKEBACK_SEC - 1)
-        assert spotify_connect.paused_too_long(now=200 + spotify_connect.PAUSE_TAKEBACK_SEC)
-        spotify_connect.set_paused(False)
-        assert not spotify_connect.paused_too_long(now=1000)
-
-    def test_pause_outside_handover_is_ignored(self):
-        spotify_connect.set_paused(True, now=0)
-        spotify_connect.begin(now=1)
-        assert not spotify_connect.paused_too_long(now=1000)
-
-
-class TestQueueStateHandover:
     def setup_method(self):
         _reset()
 
     def teardown_method(self):
         _reset()
 
-    def test_spotify_play_parks_queue_instead_of_clearing_it(self, monkeypatch):
+    def test_takeover_ends_the_queue_playback(self, monkeypatch):
         _queue_playing_at(90)
-        monkeypatch.setattr(queue_state, "schedule_playback_refresh", lambda: None)
-        monkeypatch.setattr(
-            queue_state, "clear_bot_playback_state",
-            lambda: (_ for _ in ()).throw(AssertionError("queue must stay parked")),
-        )
+        monkeypatch.setattr(queue_state, "schedule_now_playing_refresh", lambda: None)
+
+        queue_state.spotify_takeover()
+
+        assert queue_state.AUTOPLAY_ENABLED is False
+        assert queue_state.DISPLAY_INDEX is None
+        assert queue_state.CURRENT_INDEX is None
+        # The queue itself stays; only its playback is over.
+        assert queue_state.QUEUE == [QUEUED]
+
+    def test_spotify_stream_play_event_counts_as_takeover(self, monkeypatch):
+        _queue_playing_at(90)
+        monkeypatch.setattr(queue_state, "schedule_now_playing_refresh", lambda: None)
 
         queue_state._handle_ws_play(item=SPOTIFY_ITEM, item_params={})
 
-        assert spotify_connect.is_active()
-        assert queue_state.AUTOPLAY_ENABLED is True
-        assert queue_state.DISPLAY_INDEX == 0
-        assert queue_state.EXTERNAL_PLAYBACK is False
+        assert queue_state.AUTOPLAY_ENABLED is False
+        assert queue_state.DISPLAY_INDEX is None
 
-    def test_takeover_parks_radio_and_cancels_pending_reconnect(self, monkeypatch):
-        monkeypatch.setattr(queue_state, "schedule_playback_refresh", lambda: None)
+    def test_takeover_forgets_the_radio_and_cancels_a_pending_reconnect(self, monkeypatch):
         cancelled = []
         queue_state.CANCEL_RECONNECT_CB = lambda: cancelled.append(True)
         queue_state.set_last_played_radio("http://radio", "Radio X")
+        monkeypatch.setattr(queue_state, "schedule_now_playing_refresh", lambda: None)
 
-        queue_state.begin_spotify_handover()
+        queue_state.spotify_takeover()
 
-        assert cancelled == [True]
-        assert queue_state.EXPECTED_STOP is True
-        assert spotify_connect.parked_radio() == {"url": "http://radio", "title": "Radio X"}
+        assert queue_state.LAST_PLAYED_RADIO is None
+        assert cancelled
 
     def test_radio_stop_after_takeover_does_not_reconnect(self, monkeypatch):
-        monkeypatch.setattr(queue_state, "schedule_playback_refresh", lambda: None)
-        monkeypatch.setattr(queue_state, "schedule_now_playing_refresh", lambda: None)
         reconnects = []
         queue_state.ON_UNEXPECTED_RADIO_STOP = lambda url, title: reconnects.append(url)
         queue_state.set_last_played_radio("http://radio", "Radio X")
+        monkeypatch.setattr(queue_state, "schedule_now_playing_refresh", lambda: None)
 
-        queue_state.begin_spotify_handover()
-        queue_state._handle_ws_stop(item_params={"type": "song"}, player_params={"playerid": 0})
+        queue_state.spotify_takeover()
+        _in_loop(lambda: queue_state._handle_ws_stop(item_params={"type": "channel", "title": "Radio X"}))
 
         assert reconnects == []
 
-    def test_external_play_during_handover_drops_it(self, monkeypatch):
-        monkeypatch.setattr(queue_state, "schedule_playback_refresh", lambda: None)
-        monkeypatch.setattr(queue_state, "schedule_now_playing_refresh", lambda: None)
-        monkeypatch.setattr(queue_state.kodi_api, "kodi_item_matches_queue", lambda item, qitem: False)
-        spotify_connect.begin({"url": "http://radio", "title": "Radio X"})
-
-        queue_state._handle_ws_play(item={"file": "smb://movie.mkv"}, item_params={})
-
-        assert not spotify_connect.is_active()
-
-    def test_pause_events_feed_the_takeback_timer(self, monkeypatch):
-        monkeypatch.setattr(queue_state, "schedule_now_playing_refresh", lambda: None)
-        spotify_connect.begin(now=0)
-        queue_state._handle_ws_pause()
-        assert spotify_connect._paused_since is not None
-        queue_state._handle_ws_resume()
-        assert spotify_connect._paused_since is None
-
-    def test_spotify_stop_ends_handover_and_restarts_radio(self, monkeypatch):
-        monkeypatch.setattr(queue_state, "schedule_playback_refresh", lambda: None)
-        started = []
-        monkeypatch.setattr(queue_state.kodi_api, "play_favourite_target", lambda url, title: started.append(url) or True)
-        monkeypatch.setattr(queue_state.kodi_api, "get_active_players", lambda: [])
-        monkeypatch.setattr(queue_state.kodi_api, "WS_STATE", "stopped")
-        spotify_connect.begin({"url": "http://radio", "title": "Radio X"}, now=0)
-
-        queue_state._tick_spotify_handover()
-
-        assert started == ["http://radio"]
-        assert not spotify_connect.is_active()
-        assert queue_state.LAST_PLAYED_RADIO == {"url": "http://radio", "title": "Radio X"}
-
-    def test_stop_during_switch_does_not_end_handover(self, monkeypatch):
-        monkeypatch.setattr(queue_state.kodi_api, "WS_STATE", "stopped")
-        monkeypatch.setattr(queue_state.kodi_api, "get_active_players", lambda: [])
-        spotify_connect.begin()  # just now: Kodi is still switching to the stream
-
-        queue_state._tick_spotify_handover()
-
-        assert spotify_connect.is_active()
-
-    def test_stop_with_a_player_still_active_does_not_end_handover(self, monkeypatch):
-        monkeypatch.setattr(queue_state.kodi_api, "WS_STATE", "stopped")
-        monkeypatch.setattr(queue_state.kodi_api, "get_active_players", lambda: [{"playerid": 0}])
-        spotify_connect.begin(now=0)
-
-        queue_state._tick_spotify_handover()
-
-        assert spotify_connect.is_active()
-
-    def test_long_pause_takes_playback_back_for_a_parked_queue(self, monkeypatch):
+    def test_nothing_restarts_when_spotify_stops(self, monkeypatch):
+        reconnects = []
+        queue_state.ON_UNEXPECTED_RADIO_STOP = lambda url, title: reconnects.append(url)
         _queue_playing_at(90)
-        stops = []
-        monkeypatch.setattr(queue_state.kodi_api, "stop_all_players", lambda: stops.append(True))
-        monkeypatch.setattr(queue_state.kodi_api, "WS_STATE", "paused")
-        spotify_connect.begin(now=0)
-        spotify_connect.set_paused(True, now=0)
+        queue_state.set_last_played_radio("http://radio", "Radio X")
+        monkeypatch.setattr(queue_state, "schedule_now_playing_refresh", lambda: None)
+        queue_state.spotify_takeover()
 
-        queue_state._tick_spotify_handover()
+        _in_loop(lambda: queue_state._handle_ws_stop(item_params={"type": "song", "title": "Song A"}))
 
-        assert stops == [True]
-
-    def test_long_pause_without_anything_to_resume_leaves_spotify(self, monkeypatch):
-        stops = []
-        monkeypatch.setattr(queue_state.kodi_api, "stop_all_players", lambda: stops.append(True))
-        monkeypatch.setattr(queue_state.kodi_api, "WS_STATE", "paused")
-        queue_state.AUTOPLAY_ENABLED = False
-        spotify_connect.begin(now=0)
-        spotify_connect.set_paused(True, now=0)
-
-        queue_state._tick_spotify_handover()
-
-        assert stops == []
-
-    def test_short_pause_keeps_spotify(self, monkeypatch):
-        _queue_playing_at(90)
-        stops = []
-        monkeypatch.setattr(queue_state.kodi_api, "stop_all_players", lambda: stops.append(True))
-        monkeypatch.setattr(queue_state.kodi_api, "WS_STATE", "paused")
-        spotify_connect.begin()
-        spotify_connect.set_paused(True)
-
-        queue_state._tick_spotify_handover()
-
-        assert stops == []
-
-    def test_bot_playback_ends_handover(self, monkeypatch):
-        monkeypatch.setattr(queue_state.media, "cleanup_active_image_session", lambda: None)
-        monkeypatch.setattr(queue_state.kodi_api, "stop_all_players", lambda: None)
-        monkeypatch.setattr(queue_state.kodi_api, "kodi_clear_all_playlists", lambda: None)
-        monkeypatch.setattr(queue_state.kodi_api, "kodi_call", lambda m, p=None: {})
-        monkeypatch.setattr(queue_state, "set_expecting_ws", lambda n: None)
-        monkeypatch.setattr(queue_state, "schedule_playback_refresh", lambda: None)
-        spotify_connect.begin({"url": "http://radio", "title": "Radio X"})
-
-        queue_state.play_item(dict(QUEUED))
-
-        assert not spotify_connect.is_active()
-
-    def test_hard_stop_ends_handover(self, monkeypatch):
-        monkeypatch.setattr(queue_state.media, "cleanup_active_image_session", lambda: None)
-        monkeypatch.setattr(queue_state.kodi_api, "get_active_players", lambda: [])
-        monkeypatch.setattr(queue_state.kodi_api, "stop_all_players", lambda: None)
-        monkeypatch.setattr(queue_state.kodi_api, "kodi_clear_all_playlists", lambda: None)
-        monkeypatch.setattr(queue_state, "schedule_playback_refresh", lambda: None)
-        spotify_connect.begin()
-
-        queue_state.hard_stop_and_clear()
-
-        assert not spotify_connect.is_active()
+        assert reconnects == []
+        assert queue_state.AUTOPLAY_ENABLED is False
+        assert queue_state.DISPLAY_INDEX is None
 
 
-class TestPanelDuringHandover:
+class TestPanelShowsSpotify:
     def setup_method(self):
         _reset()
         kodi_api.LAST_WS_PLAYERID = None
@@ -270,10 +156,7 @@ class TestPanelDuringHandover:
     def teardown_method(self):
         _reset()
 
-    def test_panel_shows_spotify_and_keeps_queue_resume_point(self, monkeypatch):
-        _queue_playing_at(90)
-        spotify_connect.begin()
-
+    def test_panel_shows_the_spotify_track(self, monkeypatch):
         async def fake_call(method, params=None):
             if method == "Player.GetActivePlayers":
                 return {"result": [{"playerid": 0, "type": "audio"}]}
@@ -298,35 +181,10 @@ class TestPanelDuringHandover:
         text, progress, playlist = asyncio.run(panel.get_now_playing_text())
 
         assert text == "▶ Spotify: Song A – Artist A, Artist B"
-        # The queue stays parked at its interruption point.
-        assert queue_state.DISPLAY_INDEX == 0
-        assert queue_state.EXTERNAL_PLAYBACK is False
-        assert queue_state.LAST_PROGRESS_TIME == {"hours": 0, "minutes": 0, "seconds": 90}
-        assert queue_state.LAST_PROGRESS_INDEX == 0
 
 
 class TestPlayEventFromPythonAddon:
     """Kodi reports playerid -1 and no file for the add-on's stream."""
-
-    def setup_method(self):
-        _reset()
-
-    def teardown_method(self):
-        _reset()
-
-    def test_play_event_without_file_keeps_handover_and_queue(self, monkeypatch):
-        _queue_playing_at(90)
-        monkeypatch.setattr(queue_state, "schedule_playback_refresh", lambda: None)
-        monkeypatch.setattr(
-            queue_state, "clear_bot_playback_state",
-            lambda: (_ for _ in ()).throw(AssertionError("queue must stay parked")),
-        )
-        queue_state.begin_spotify_handover()
-
-        queue_state._handle_ws_play(item={}, item_params={"title": "Song A", "type": "song"})
-
-        assert spotify_connect.is_active()
-        assert queue_state.DISPLAY_INDEX == 0
 
     def test_playerid_minus_one_resolves_to_the_active_player(self, monkeypatch):
         from kodibot.core import kodi_ws
@@ -363,7 +221,7 @@ class TestPlayEventFromPythonAddon:
         assert asyncio.run(kodi_ws.resolve_player_params({"playerid": -1})) == {"playerid": -1}
 
 
-class TestStopReleasesSpotify:
+class TestBotReleasesSpotify:
     def setup_method(self):
         _reset()
 
@@ -394,7 +252,6 @@ class TestStopReleasesSpotify:
     def test_queue_playback_releases_the_spotify_device_before_stopping(self, monkeypatch):
         calls = self._patch_stop(monkeypatch, [])
         monkeypatch.setattr(queue_state, "set_expecting_ws", lambda n: None)
-        spotify_connect.begin()
 
         queue_state.play_item(dict(QUEUED))
 
@@ -404,13 +261,12 @@ class TestStopReleasesSpotify:
         )
         assert calls[1] == "stop"
 
-    def test_radio_start_releases_the_spotify_device_and_ends_the_handover(self, monkeypatch):
+    def test_radio_start_releases_the_spotify_device_first(self, monkeypatch):
         calls = self._patch_stop(monkeypatch, [])
         monkeypatch.setattr(
             queue_state.kodi_api, "play_favourite_target",
             lambda url, title=None: calls.append(("open", url)) or True,
         )
-        spotify_connect.begin()
 
         assert queue_state.play_radio("pvr://channels/radio/1", "Radio X")
 
@@ -418,7 +274,6 @@ class TestStopReleasesSpotify:
             ("JSONRPC.NotifyAll", {"sender": "kodibot", "message": spotify_connect.RELEASE_MESSAGE}),
             ("open", "pvr://channels/radio/1"),
         ]
-        assert not spotify_connect.is_active()
 
     def test_closing_a_slideshow_over_music_keeps_spotify(self, monkeypatch):
         players = [{"playerid": 2, "type": "picture"}, {"playerid": 0, "type": "audio"}]
@@ -427,22 +282,6 @@ class TestStopReleasesSpotify:
         queue_state.hard_stop_and_clear()
 
         assert not any(isinstance(c, tuple) and c[0] == "JSONRPC.NotifyAll" for c in calls)
-
-
-def test_handover_end_resets_resume_attempts(monkeypatch):
-    _reset()
-    try:
-        _queue_playing_at(90)
-        queue_state.RESUME_ATTEMPTS[0] = queue_state.RESUME_MAX_ATTEMPTS - 1
-        monkeypatch.setattr(queue_state, "schedule_playback_refresh", lambda: None)
-        spotify_connect.begin()
-
-        queue_state.end_spotify_handover()
-
-        assert queue_state.RESUME_ATTEMPTS == {}
-    finally:
-        queue_state.RESUME_ATTEMPTS.clear()
-        _reset()
 
 
 class TestSpotifyTrackLink:
