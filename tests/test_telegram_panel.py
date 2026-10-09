@@ -802,3 +802,24 @@ class TestButtonReference:
 
     def test_shipped_reference_image_exists(self):
         assert os.path.isfile(panel.BUTTON_REFERENCE_PATH)
+
+
+class TestAvTrackKodiMarkup:
+    def test_label_markup_from_addons_is_stripped(self):
+        label = panel.format_av_track(0, "[B]German (translation)[/B]", "de")
+
+        assert "[B]" not in label and "[/B]" not in label
+        assert "German (translation)" in label
+
+    def test_colour_markup_is_stripped(self):
+        label = panel.format_av_track(0, "[COLOR red]English[/COLOR] (auto-generated)", "en")
+
+        assert "COLOR" not in label
+        assert "(auto-generated)" in label
+
+    def test_language_hint_in_brackets_survives(self):
+        # "DD+5.1(ger)" style names feed the language fallback and "[ger]"
+        # is no Kodi markup.
+        label = panel.format_av_track(0, "DD+5.1 [ger]", "")
+
+        assert "[ger]" in label

@@ -34,6 +34,37 @@ async def resolve_player_params(player_params):
     return {**player_params, "playerid": resolved}
 
 
+def is_youtube_playback_file(file_url):
+    """True when Kodi's playing file comes from the YouTube add-on.
+
+    Depending on the stream type Kodi reports the plugin URL itself, the
+    add-on's local MPD manifest, or the resolved googlevideo address.
+    """
+    file_url = file_url or ""
+    return (
+        file_url.startswith("plugin://plugin.video.youtube/")
+        or "/youtube/manifest/" in file_url
+        or "googlevideo.com/" in file_url
+    )
+
+
+async def mute_youtube_subtitles(playerid, item):
+    """Switch subtitles off when a YouTube video has opened its streams.
+
+    The YouTube add-on attaches a track in Kodi's preferred subtitle language
+    (machine-translated when the video only has automatic captions), and Kodi
+    shows a matching track on its own. The tracks stay attached, so the
+    subtitle menu can still turn one on.
+    """
+    if playerid is None or not is_youtube_playback_file((item or {}).get("file")):
+        return False
+    res = await KA.kodi_call_async(
+        "Player.SetSubtitle",
+        {"playerid": playerid, "subtitle": "off", "enable": False},
+    )
+    return "error" not in (res or {})
+
+
 async def kodi_ws_listener():
     ws_url = KA.CFG.kodi_ws_url
     backoff = 3
@@ -101,6 +132,12 @@ async def kodi_ws_listener():
                                 )).get("result", {}).get("item", {})
                         if KA._ws_on_play:
                             KA._ws_on_play(item=item, item_params=item_params)
+                        # Only OnAVStart: at OnPlay the streams are not open
+                        # yet and Kodi picks its default track afterwards.
+                        if method == "Player.OnAVStart":
+                            await mute_youtube_subtitles(
+                                player_params.get("playerid"), item
+                            )
                         if KA._ws_on_playback_refresh:
                             KA._ws_on_playback_refresh()
                     elif method == "Player.OnPause":

@@ -108,9 +108,14 @@ SUBTITLE_ATTACHED_PATHS = {}
 # whether the track exists.
 SUBTITLE_SEARCH_MISSES = {}
 
+# Overlap-free copies of YouTube's automatic captions attached to the running
+# video: Kodi's stream index per language, keyed by the file's path.  Picking
+# the same language again must reuse the copy instead of attaching another.
+YOUTUBE_CLEAN_SUBTITLES = {}
+
 
 def reset_subtitle_playback_state():
-    """Drop both subtitle guards when a new playback starts.
+    """Drop the subtitle guards when a new playback starts.
 
     Player.OnPlay/OnAVStart opens a new session: the attach guard belongs to
     the previous one, and a search that found nothing weeks ago deserves
@@ -118,6 +123,7 @@ def reset_subtitle_playback_state():
     """
     SUBTITLE_ATTACHED_PATHS.clear()
     SUBTITLE_SEARCH_MISSES.clear()
+    YOUTUBE_CLEAN_SUBTITLES.clear()
 
 
 # ── Prompt state ─────────────────────────────────────────────────────

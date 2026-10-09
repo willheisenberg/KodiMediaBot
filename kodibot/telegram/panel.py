@@ -755,9 +755,14 @@ def resolve_single_lang(code):
     return None
 
 
+KODI_LABEL_MARKUP_RE = re.compile(r"\[/?(?:B|I|LIGHT|UPPERCASE|LOWERCASE|CAPITALIZE|COLOR)(?: [^\]]*)?\]")
+
+
 def format_av_track(idx, name, lang, codec=None, channels=None):
     """Format an audio or subtitle track with flag and clear language name."""
-    name = (name or "").strip()
+    # Add-ons hand Kodi names carrying its label markup (the YouTube add-on
+    # sends "[B]German (translation)[/B]"), which Telegram would show as is.
+    name = KODI_LABEL_MARKUP_RE.sub("", name or "").strip()
     lang = (lang or "").strip()
     
     # Try to extract language from name if empty (e.g. "DD+5.1(ger)")

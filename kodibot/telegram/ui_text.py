@@ -5,6 +5,7 @@ import re
 from urllib.parse import urlparse
 
 from kodibot.telegram import ui as UI
+from kodibot.telegram import yt_subtitles
 from kodibot.core import radio_browser
 from kodibot.core import partyvideo
 
@@ -522,7 +523,7 @@ async def handle_text(update, ctx):
                     await UI.send_toast_message(ctx, chat_id, UI.t("subtitle_disable_failed"))
             elif 0 < i <= len(subtitles):
                 selected = subtitles[i - 1]
-                ok = await asyncio.to_thread(UI.kodi_api.set_subtitle_stream, selected.get("index"))
+                ok = await asyncio.to_thread(yt_subtitles.select_subtitle, selected)
                 if ok:
                     await UI.send_toast_message(ctx, chat_id, UI.t("subtitles_set", label=UI.av_stream_label(selected)))
                 else:

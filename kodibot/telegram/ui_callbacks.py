@@ -5,6 +5,7 @@ import time
 
 from kodibot.telegram import ui as UI
 from kodibot.telegram import state as S
+from kodibot.telegram import yt_subtitles
 from kodibot.core import kodi_library, opensubtitles, partyvideo, radio_browser
 from kodibot.telegram.i18n import repeat_mode_label, state_label, store_message, t
 from kodibot.telegram.languages import LANG_MAP
@@ -1562,7 +1563,7 @@ async def on_button(update, ctx):
             label = t("off")
         elif 0 <= idx < len(subtitles):
             stream = subtitles[idx]
-            ok = await asyncio.to_thread(UI.kodi_api.set_subtitle_stream, stream.get("index"))
+            ok = await asyncio.to_thread(yt_subtitles.select_subtitle, stream)
             label = UI.av_stream_label(stream)
         else:
             ok = False
