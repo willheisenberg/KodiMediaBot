@@ -129,6 +129,9 @@ def reset_subtitle_playback_state():
 # ── Prompt state ─────────────────────────────────────────────────────
 PROMPT_TIMEOUT_SECONDS = 300
 PROMPT_TIMEOUT_TASKS = {}
+# (chat_id, user_id, state_key) -> (user_data, msg_key, extra_keys, message_id)
+# for every prompt opened through activate_prompt()
+PROMPT_REGISTRY = {}
 PENDING_TIMEOUT_TASKS = {}
 HA_MENU_TIMEOUT_SECONDS = 300
 HA_MENU_TIMEOUT_TASKS = {}

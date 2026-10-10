@@ -278,3 +278,102 @@ async def test_on_button_skip_leaves_the_queue_alone_while_it_plays(mock_ui):
 
     assert not mock_ui.kodi_api.kodi_playlist_goto.called
     assert mock_ui.schedule_playback_action.call_args[0][2] is mock_ui.queue_state.skip_queue
+
+
+def _seek_update(data):
+    update = MagicMock()
+    update.callback_query.data = data
+    update.callback_query.answer = AsyncMock()
+    update.callback_query.message.message_id = 55
+    update.effective_chat.id = 123
+    update.effective_user.id = 789
+    return update
+
+
+@pytest.mark.asyncio
+async def test_seek_percent_button_reopens_prompt_while_one_is_pending(mock_ui):
+    """A stale prompt must not make the % button dead until it times out."""
+    mock_ui.close_prompt = AsyncMock()
+    mock_ui.send_button_selection = AsyncMock(return_value=77)
+    ctx = MagicMock()
+    ctx.user_data = {"await_seek_percent": True, "await_seek_percent_msg_id": 55}
+
+    await ui_callbacks.on_button(_seek_update("seek:percent"), ctx)
+
+    mock_ui.close_prompt.assert_awaited_once_with(ctx, 123, 789, "await_seek_percent")
+    mock_ui.send_button_selection.assert_awaited_once()
+    mock_ui.activate_prompt.assert_called_once_with(
+        ctx, 123, 789, "await_seek_percent", "await_seek_percent_msg_id", 77
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cmd, state_key, msg_key",
+    [
+        ("radio:ask", "await_radio_search", "await_radio_search_msg_id"),
+        ("tv:ask", "await_tv_search", "await_tv_search_msg_id"),
+        ("ha:sethex", "await_ha_hex", "await_ha_hex_msg_id"),
+    ],
+)
+async def test_text_prompt_button_reopens_prompt_while_one_is_pending(
+    mock_ui, cmd, state_key, msg_key
+):
+    mock_ui.close_prompt = AsyncMock()
+    mock_ui.touch_ha_menu_timeout = MagicMock()
+    mock_ui.send_and_track = AsyncMock(return_value=MagicMock(message_id=77))
+    ctx = MagicMock()
+    ctx.user_data = {state_key: True, msg_key: 55}
+
+    await ui_callbacks.on_button(_seek_update(cmd), ctx)
+
+    mock_ui.close_prompt.assert_awaited_once_with(ctx, 123, 789, state_key)
+    mock_ui.send_and_track.assert_awaited_once()
+    assert mock_ui.activate_prompt.call_args[0][3:6] == (state_key, msg_key, 77)
+
+
+def test_no_prompt_button_ignores_a_repeated_press():
+    """Every prompt button closes its open prompt instead of returning early."""
+    import inspect
+    import re
+
+    source = inspect.getsource(ui_callbacks.on_button)
+
+    guards = re.findall(
+        r'if (?:ctx\.user_data\.get\("await_\w+"\)|UI\.\w+_prompt_active\(ctx\.user_data\)):'
+        r"\s+await q\.answer\(\)\s+return",
+        source,
+    )
+    assert guards == []
+    assert source.count("await UI.close_prompt(") == 17
+
+
+@pytest.mark.asyncio
+async def test_failed_seek_to_closes_the_prompt(mock_ui):
+    mock_ui.queue_state.seek_percent.return_value = False
+    ctx = MagicMock()
+    ctx.user_data = {"await_seek_percent": True, "await_seek_percent_msg_id": 55}
+    update = _seek_update("seek_to:50")
+
+    await ui_callbacks.on_button(update, ctx)
+
+    update.callback_query.answer.assert_any_call(text=ui_callbacks.t("seek_failed"))
+    mock_ui.delete_message_if_present.assert_awaited_once_with(ctx, 123, 55)
+    mock_ui.cancel_prompt_timeout.assert_called_once_with(123, 789, "await_seek_percent")
+    assert not ctx.user_data.get("await_seek_percent")
+    assert "await_seek_percent_msg_id" not in ctx.user_data
+
+
+@pytest.mark.asyncio
+async def test_successful_seek_to_closes_the_prompt(mock_ui):
+    mock_ui.queue_state.seek_percent.return_value = True
+    ctx = MagicMock()
+    ctx.user_data = {"await_seek_percent": True, "await_seek_percent_msg_id": 55}
+    update = _seek_update("seek_to:50")
+
+    await ui_callbacks.on_button(update, ctx)
+
+    update.callback_query.answer.assert_any_call(text=ui_callbacks.t("seeked_to", pct=50))
+    mock_ui.queue_state.seek_percent.assert_called_once_with(50)
+    assert not ctx.user_data.get("await_seek_percent")
+

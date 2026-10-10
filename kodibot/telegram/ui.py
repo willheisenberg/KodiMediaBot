@@ -121,6 +121,7 @@ RESET_PANEL_LOCK = S.RESET_PANEL_LOCK
 RESETTING_CHATS = S.RESETTING_CHATS
 PROMPT_TIMEOUT_SECONDS = S.PROMPT_TIMEOUT_SECONDS
 PROMPT_TIMEOUT_TASKS = S.PROMPT_TIMEOUT_TASKS
+PROMPT_REGISTRY = S.PROMPT_REGISTRY
 PENDING_TIMEOUT_TASKS = S.PENDING_TIMEOUT_TASKS
 HA_MENU_TIMEOUT_SECONDS = S.HA_MENU_TIMEOUT_SECONDS
 HA_MENU_TIMEOUT_TASKS = S.HA_MENU_TIMEOUT_TASKS
@@ -323,6 +324,7 @@ def _prompt_timeout_key(chat_id, user_id, state_key):
 
 
 def cancel_prompt_timeout(chat_id, user_id, state_key):
+    PROMPT_REGISTRY.pop(_prompt_timeout_key(chat_id, user_id, state_key), None)
     task = PROMPT_TIMEOUT_TASKS.pop(_prompt_timeout_key(chat_id, user_id, state_key), None)
     if task is not None and not task.done():
         task.cancel()
@@ -344,7 +346,11 @@ async def _expire_prompt_timeout(ctx, chat_id, user_id, state_key, msg_key, extr
     except asyncio.CancelledError:
         return
     finally:
-        PROMPT_TIMEOUT_TASKS.pop(_prompt_timeout_key(chat_id, user_id, state_key), None)
+        # A replaced prompt's task ends after its successor registered itself
+        key = _prompt_timeout_key(chat_id, user_id, state_key)
+        if PROMPT_TIMEOUT_TASKS.get(key) is asyncio.current_task():
+            PROMPT_TIMEOUT_TASKS.pop(key, None)
+            PROMPT_REGISTRY.pop(key, None)
 
 
 def activate_prompt(ctx, chat_id, user_id, state_key, msg_key, message_id, extra_keys=None):
@@ -354,7 +360,39 @@ def activate_prompt(ctx, chat_id, user_id, state_key, msg_key, message_id, extra
     task = ctx.application.create_task(
         _expire_prompt_timeout(ctx, chat_id, user_id, state_key, msg_key, extra_keys or (), message_id)
     )
-    PROMPT_TIMEOUT_TASKS[_prompt_timeout_key(chat_id, user_id, state_key)] = task
+    key = _prompt_timeout_key(chat_id, user_id, state_key)
+    PROMPT_TIMEOUT_TASKS[key] = task
+    PROMPT_REGISTRY[key] = (ctx.user_data, msg_key, tuple(extra_keys or ()), message_id)
+
+
+# Close open prompts so the button that opened them can open a fresh one.
+async def close_prompt(ctx, chat_id, user_id, *state_keys):
+    for state_key in state_keys:
+        entry = PROMPT_REGISTRY.get(_prompt_timeout_key(chat_id, user_id, state_key))
+        cancel_prompt_timeout(chat_id, user_id, state_key)
+        if not ctx.user_data.pop(state_key, None) or entry is None:
+            continue
+        _, msg_key, extra_keys, _ = entry
+        prompt_id = ctx.user_data.pop(msg_key, None)
+        for key in extra_keys:
+            ctx.user_data.pop(key, None)
+        await delete_message_if_present(ctx, chat_id, prompt_id)
+
+
+# Message ids of prompts that still wait for an answer in this chat.
+def _open_prompt_message_ids(chat_id):
+    ids = set()
+    for (prompt_chat_id, _, state_key), entry in list(PROMPT_REGISTRY.items()):
+        user_data, msg_key, _, message_id = entry
+        if prompt_chat_id != chat_id or not user_data.get(state_key):
+            continue
+        if user_data.get(msg_key) != message_id:
+            continue
+        if isinstance(message_id, (list, tuple, set)):
+            ids.update(message_id)
+        else:
+            ids.add(message_id)
+    return ids
 
 
 async def request_delete_confirmation(ctx, chat_id, user_id, text, payload):
@@ -411,29 +449,27 @@ def queue_delete_target_matches(index, identity):
         return all(item.get(key) == value for key, value in (identity or {}).items())
 
 
+MEDIA_PROMPT_KEYS = (
+    "await_media_type",
+    "await_movie_index",
+    "await_movie_start_mode",
+    "await_show_index",
+    "await_episode_index",
+    "await_episode_start_mode",
+)
+AV_PROMPT_KEYS = (
+    "await_av_action",
+    "await_audio_index",
+    "await_subtitle_index",
+)
+
+
 def media_prompt_active(user_data):
-    return any(
-        user_data.get(key)
-        for key in (
-            "await_media_type",
-            "await_movie_index",
-            "await_movie_start_mode",
-            "await_show_index",
-            "await_episode_index",
-            "await_episode_start_mode",
-        )
-    )
+    return any(user_data.get(key) for key in MEDIA_PROMPT_KEYS)
 
 
 def av_prompt_active(user_data):
-    return any(
-        user_data.get(key)
-        for key in (
-            "await_av_action",
-            "await_audio_index",
-            "await_subtitle_index",
-        )
-    )
+    return any(user_data.get(key) for key in AV_PROMPT_KEYS)
 
 
 def cancel_pending_timeout(user_id):
@@ -532,11 +568,13 @@ def record_last_seen(ctx, update):
 
 # Message ids the list/panel currently occupy; those must survive cleanup.
 def _protected_message_ids(chat_id):
+    # An open prompt deleted under its state flag leaves its button dead
+    # until the prompt times out, so cleanup must not touch it.
     return {
         LIST_MSG_ID.get(chat_id),
         PANEL_MSG_ID.get(chat_id),
         S.HELP_MSG_ID.get(chat_id),
-    }
+    } | _open_prompt_message_ids(chat_id)
 
 
 # Telegram refused this id for good; never spend another API call on it.
