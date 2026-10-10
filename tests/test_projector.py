@@ -17,6 +17,7 @@ os.environ.setdefault("PROJECTOR_ADDRESS", "0x08")
 os.environ.setdefault("PROJECTOR_POWER_ON_CODE", "0x03")
 os.environ.setdefault("PROJECTOR_POWER_OFF_CODE", "0x00")
 os.environ.setdefault("PROJECTOR_POWER_ON_REPEATS", "4")
+os.environ.setdefault("PROJECTOR_POWER_ON_HOLD_SECONDS", "3")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -32,6 +33,7 @@ def test_projector_config_loading():
     assert CFG.projector_power_on_code == 0x03
     assert CFG.projector_power_off_code == 0x00
     assert CFG.projector_power_on_repeats == 4
+    assert CFG.projector_power_on_hold_seconds == 3.0
 
 
 def test_display_power_config_defaults():
@@ -115,7 +117,9 @@ def test_power_on(monkeypatch):
         )
         return True
 
+    held = []
     monkeypatch.setattr(projector, "send_command", mock_send_command)
+    monkeypatch.setattr(projector, "hold_command", lambda *a: held.append(a) or True)
 
     res = projector.power_on()
     assert res is True
@@ -125,6 +129,63 @@ def test_power_on(monkeypatch):
     from kodibot.config import CFG
     assert sent_commands[0]["repeat_count"] == CFG.projector_power_on_repeats
     assert sent_commands[0]["delay_ms"] == 40
+    # The burst is followed by a long press of the same key
+    assert held == [(0x08, 0x03, 3.0)]
+
+
+def test_power_on_without_hold(monkeypatch):
+    """A hold duration of 0 sends the burst alone."""
+    import dataclasses
+
+    from kodibot.config import CFG
+
+    monkeypatch.setattr(
+        PJ, "CFG", dataclasses.replace(CFG, projector_power_on_hold_seconds=0.0)
+    )
+    projector = PJ.ProjectorController()
+    held = []
+    monkeypatch.setattr(projector, "send_command", lambda *a, **k: True)
+    monkeypatch.setattr(projector, "hold_command", lambda *a: held.append(a) or True)
+
+    assert projector.power_on() is True
+    assert held == []
+
+
+def test_power_on_fails_when_hold_fails(monkeypatch):
+    projector = PJ.ProjectorController()
+    monkeypatch.setattr(projector, "send_command", lambda *a, **k: True)
+    monkeypatch.setattr(projector, "hold_command", lambda *a: False)
+
+    assert projector.power_on() is False
+
+
+def test_hold_command_sends_frame_then_repeat_codes():
+    """A held key is one full frame followed by NEC repeat codes every 108 ms."""
+    projector = PJ.ProjectorController()
+
+    mock_file = mock_open()
+    slept_durations = []
+
+    with patch("os.path.exists", return_value=True), \
+         patch("builtins.open", mock_file), \
+         patch("time.sleep", slept_durations.append):
+        assert projector.hold_command(0x08, 0x03, 1.0) is True
+
+    writes = [c.args[0] for c in mock_file().write.call_args_list]
+    # 1.0 s / 108 ms = 9 repeat codes after the frame
+    assert len(writes) == 10
+    assert writes[0] == projector._nec_frame(0x08, 0x03)
+    assert all(w == struct.pack("3I", 9000, 2250, 560) for w in writes[1:])
+    # Every single write stays far below the kernel's 500 ms transmit limit
+    assert all(sum(struct.unpack(f"{len(w) // 4}I", w)) < 500_000 for w in writes)
+    assert len(slept_durations) == 10
+    assert sum(slept_durations) == pytest.approx(0.04 + 9 * 0.096)
+
+
+def test_hold_command_missing_device():
+    projector = PJ.ProjectorController()
+    with patch("os.path.exists", return_value=False):
+        assert projector.hold_command(0x08, 0x03, 1.0) is False
 
 
 def test_power_off(monkeypatch):

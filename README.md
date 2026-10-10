@@ -212,6 +212,7 @@ services:
       PROJECTOR_POWER_ON_CODE: "0x03"
       PROJECTOR_POWER_OFF_CODE: "0x00"
       PROJECTOR_POWER_ON_REPEATS: "4"
+      PROJECTOR_POWER_ON_HOLD_SECONDS: "3"
       DISPLAY_BUTTON_LABEL: "📽 Beamer"
       DISPLAY_POWER_ON_CMD: "python -m kodibot.core.projector on"
       DISPLAY_POWER_OFF_CMD: "python -m kodibot.core.projector off"
@@ -537,8 +538,14 @@ PROJECTOR_ADDRESS=0x08
 PROJECTOR_POWER_ON_CODE=0x03
 PROJECTOR_POWER_OFF_CODE=0x00
 PROJECTOR_POWER_ON_REPEATS=4
+PROJECTOR_POWER_ON_HOLD_SECONDS=3
 ```
 *(Hex values can be provided in `0x` format and will be automatically parsed).*
+
+`PROJECTOR_POWER_ON_HOLD_SECONDS` holds the power-on key after the burst, like a
+long press on the remote. A projector that has been in standby for a long time
+can ignore the short burst and only wake on a held key. Set it to `0` to send
+the burst alone.
 
 The GPIO pin is **not** configured here — it belongs to the kernel overlay
 `dtoverlay=gpio-ir-tx,gpio_pin=17` in `/flash/config.txt` from step 1.

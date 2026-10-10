@@ -103,6 +103,7 @@ class Config:
     projector_power_on_code: int
     projector_power_off_code: int
     projector_power_on_repeats: int
+    projector_power_on_hold_seconds: float
 
     # ── Display power (projector or TV) ───────────────────────────────
     display_button_label: str
@@ -271,6 +272,9 @@ class Config:
             projector_power_on_code=int(os.environ.get("PROJECTOR_POWER_ON_CODE", "0x03"), 16),
             projector_power_off_code=int(os.environ.get("PROJECTOR_POWER_OFF_CODE", "0x00"), 16),
             projector_power_on_repeats=int(os.environ.get("PROJECTOR_POWER_ON_REPEATS", "4")),
+            projector_power_on_hold_seconds=float(
+                os.environ.get("PROJECTOR_POWER_ON_HOLD_SECONDS") or "3"
+            ),
             # Display power (projector or TV)
             display_button_label=(os.environ.get("DISPLAY_BUTTON_LABEL") or "📽 Beamer").strip(),
             display_power_on_cmd=(
