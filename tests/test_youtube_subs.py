@@ -12,7 +12,6 @@ os.environ.setdefault("TG_TOKEN", "test:token")
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from kodibot.core import kodi_api, kodi_library, youtube_subs
-from kodibot.telegram import state as S
 from kodibot.telegram import yt_subtitles
 
 # What YouTube delivers: every line stays up until the next one ends.
@@ -118,14 +117,17 @@ class TestOriginalAutoTrackUrl:
 
 
 class TestSelectSubtitle:
-    def setup_method(self):
-        S.YOUTUBE_CLEAN_SUBTITLES.clear()
-
     def _wire(self, monkeypatch, tmp_path, file_path, content):
-        self.streams = [{"index": 0, "language": "ger"}, {"index": 1, "language": "eng"}]
+        self.tmp_path = tmp_path
+        self.streams = [
+            {"index": 0, "language": "ger", "name": "[B]German (translation)[/B]"},
+            {"index": 1, "language": "eng", "name": "[B]English (auto-generated)[/B]"},
+        ]
+        self.current = None
         self.selected = []
         self.attached = []
         self.fetches = []
+        self.copies_open = True
 
         def fake_fetch(video_id, language):
             self.fetches.append((video_id, language))
@@ -133,7 +135,19 @@ class TestSelectSubtitle:
 
         def fake_add(path):
             self.attached.append(path)
-            self.streams.append({"index": len(self.streams), "language": "eng"})
+            # Kodi names the track after the file's stem, minus the language.
+            stem = os.path.basename(path).split(".")[0]
+            self.streams.append(
+                {"index": len(self.streams), "language": "eng", "name": f"{stem} (External)"}
+            )
+            return True
+
+        def fake_select(index):
+            self.selected.append(self._name(index))
+            stream = next(s for s in self.streams if s["index"] == index)
+            is_copy = "ytclean" in stream["name"]
+            # Kodi answers OK either way and drops the subtitle on failure.
+            self.current = stream if self.copies_open or not is_copy else None
             return True
 
         monkeypatch.setattr(yt_subtitles, "CFG", yt_subtitles.CFG.__class__(**{
@@ -146,54 +160,99 @@ class TestSelectSubtitle:
         )
         monkeypatch.setattr(youtube_subs, "fetch_clean_auto_captions", fake_fetch)
         monkeypatch.setattr(
-            kodi_api, "get_av_settings", lambda: {"subtitles": list(self.streams)}
+            kodi_api,
+            "get_av_settings",
+            lambda: {"subtitles": list(self.streams), "currentsubtitle": self.current},
         )
         monkeypatch.setattr(kodi_api, "add_subtitle_file", fake_add)
-        monkeypatch.setattr(
-            kodi_api, "set_subtitle_stream", lambda i: self.selected.append(i) or True
-        )
+        monkeypatch.setattr(kodi_api, "set_subtitle_stream", fake_select)
         monkeypatch.setattr(yt_subtitles.time, "sleep", lambda s: None)
+
+    def _name(self, index):
+        return next(s["name"] for s in self.streams if s["index"] == index)
+
+    def _stream(self, name_part):
+        return next(s for s in self.streams if name_part in s["name"])
+
+    def _renumber_like_kodi(self):
+        """A quality switch re-adds YouTube's tracks behind the attached files."""
+        self.streams.sort(key=lambda s: "ytclean" not in s["name"])
+        for index, stream in enumerate(self.streams):
+            stream["index"] = index
 
     def test_youtube_track_is_replaced_by_the_clean_copy(self, monkeypatch, tmp_path):
         self._wire(monkeypatch, tmp_path, YOUTUBE_FILE, b"clean")
 
-        assert yt_subtitles.select_subtitle({"index": 1, "language": "eng"})
+        assert yt_subtitles.select_subtitle(self._stream("auto-generated"))
 
         assert self.fetches == [("dYPXINFcvmI", "en")]
-        assert self.attached == ["/kodi/uploads/subs/dYPXINFcvmI.en.srt"]
-        assert (tmp_path / "subs" / "dYPXINFcvmI.en.srt").read_bytes() == b"clean"
-        assert self.selected == [2]
+        assert self.attached == ["/kodi/uploads/subs/dYPXINFcvmI.1/ytclean1.en.srt"]
+        assert (tmp_path / "subs" / "dYPXINFcvmI.1" / "ytclean1.en.srt").read_bytes() == b"clean"
+        assert self.selected == ["ytclean1 (External)"]
 
     def test_picking_the_language_again_reuses_the_copy(self, monkeypatch, tmp_path):
         self._wire(monkeypatch, tmp_path, YOUTUBE_FILE, b"clean")
 
-        yt_subtitles.select_subtitle({"index": 1, "language": "eng"})
-        yt_subtitles.select_subtitle({"index": 1, "language": "eng"})
+        yt_subtitles.select_subtitle(self._stream("auto-generated"))
+        yt_subtitles.select_subtitle(self._stream("auto-generated"))
         # ... and so does picking the copy itself from the list.
-        yt_subtitles.select_subtitle({"index": 2, "language": "eng"})
+        yt_subtitles.select_subtitle(self._stream("ytclean1"))
 
         assert len(self.attached) == 1
-        assert self.selected == [2, 2, 2]
+        assert self.selected == ["ytclean1 (External)"] * 3
+
+    def test_the_copy_is_found_again_after_kodi_renumbers_the_tracks(self, monkeypatch, tmp_path):
+        self._wire(monkeypatch, tmp_path, YOUTUBE_FILE, b"clean")
+        yt_subtitles.select_subtitle(self._stream("auto-generated"))
+        self._renumber_like_kodi()
+        self.selected.clear()
+
+        # YouTube's rolling track now sits at the index the copy had before.
+        assert self._stream("auto-generated")["index"] == 2
+        assert yt_subtitles.select_subtitle(self._stream("auto-generated"))
+
+        assert len(self.attached) == 1
+        assert self.selected == ["ytclean1 (External)"]
+
+    def test_copy_deleted_by_a_bot_restart_is_attached_anew(self, monkeypatch, tmp_path):
+        self._wire(monkeypatch, tmp_path, YOUTUBE_FILE, b"clean")
+        yt_subtitles.select_subtitle(self._stream("auto-generated"))
+        (tmp_path / "subs" / "dYPXINFcvmI.1" / "ytclean1.en.srt").unlink()
+        self.selected.clear()
+
+        # Kodi still lists the dead track; picking it must not end without subtitles.
+        assert yt_subtitles.select_subtitle(self._stream("ytclean1"))
+
+        assert self.attached[-1] == "/kodi/uploads/subs/dYPXINFcvmI.2/ytclean2.en.srt"
+        assert self.selected == ["ytclean2 (External)"]
+        assert self.current["name"] == "ytclean2 (External)"
+
+    def test_rolling_track_is_shown_when_kodi_opens_no_copy(self, monkeypatch, tmp_path):
+        self._wire(monkeypatch, tmp_path, YOUTUBE_FILE, b"clean")
+        self.copies_open = False
+
+        assert yt_subtitles.select_subtitle(self._stream("auto-generated"))
+        assert self.current["name"] == "[B]English (auto-generated)[/B]"
+        # Picking the dead copy itself ends on YouTube's track as well ...
+        assert yt_subtitles.select_subtitle(self._stream("ytclean1"))
+        assert self.current["name"] == "[B]English (auto-generated)[/B]"
+        # ... and the retries stop instead of piling up dead tracks.
+        for _ in range(5):
+            yt_subtitles.select_subtitle(self._stream("auto-generated"))
+        assert len(self.attached) == yt_subtitles.MAX_COPIES
 
     def test_without_a_clean_copy_the_original_track_is_used(self, monkeypatch, tmp_path):
         self._wire(monkeypatch, tmp_path, YOUTUBE_FILE, None)
 
-        assert yt_subtitles.select_subtitle({"index": 0, "language": "ger"})
+        assert yt_subtitles.select_subtitle(self._stream("German"))
 
         assert self.attached == []
-        assert self.selected == [0]
+        assert self.selected == ["[B]German (translation)[/B]"]
 
     def test_library_film_is_never_looked_up_on_youtube(self, monkeypatch, tmp_path):
         self._wire(monkeypatch, tmp_path, "/storage/videos/Film (2020)/Film.mkv", b"clean")
 
-        assert yt_subtitles.select_subtitle({"index": 1, "language": "eng"})
+        assert yt_subtitles.select_subtitle(self._stream("auto-generated"))
 
         assert self.fetches == []
-        assert self.selected == [1]
-
-    def test_new_playback_forgets_the_copies(self):
-        S.YOUTUBE_CLEAN_SUBTITLES[YOUTUBE_FILE] = {"en": 2}
-
-        S.reset_subtitle_playback_state()
-
-        assert S.YOUTUBE_CLEAN_SUBTITLES == {}
+        assert self.selected == ["[B]English (auto-generated)[/B]"]
