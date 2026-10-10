@@ -8,6 +8,9 @@ REMOTE_HOME="/storage"
 REMOTE_CONTAINER_NAME="partyqueue"
 REMOTE_IMAGE_NAME="partyqueue:latest"
 REMOTE_COMPOSE_CMD="bin/docker-compose"
+LOCAL_COMPOSE_FILE="docker-compose.local-bot-api.yml"
+# Services, die im Repo anders heissen als in /storage/docker-compose.yml
+COMPOSE_SERVICE_MAP="kodi-media-bot=partyqueue"
 
 LOCAL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SSH_TARGET="${REMOTE_USER}@${REMOTE_HOST}"
@@ -45,9 +48,6 @@ if [ -f \"\$COMPOSE_FILE\" ]; then
   if ! grep -q '/storage/docker/partyqueue/state:/data/state' \"\$COMPOSE_FILE\"; then
     sed -i '\\#/storage/docker/partyqueue/playlists:/data/playlists#a\\      - /storage/docker/partyqueue/state:/data/state' \"\$COMPOSE_FILE\"
   fi
-  if ! grep -q 'BOT_LANGUAGE:' \"\$COMPOSE_FILE\"; then
-    sed -i '/TELEGRAM_BASE_FILE_URL:/a\\      BOT_LANGUAGE: \"\${BOT_LANGUAGE:-en}\"' \"\$COMPOSE_FILE\"
-  fi
 fi"
 
 log "Stelle eigenen Log-Treiber fuer ${REMOTE_CONTAINER_NAME} in /storage/docker-compose.yml sicher"
@@ -84,7 +84,28 @@ scp "${SSH_OPTS[@]}" -r \
   "${LOCAL_ROOT}/kodibot" \
   "${LOCAL_ROOT}/scripts" \
   "${LOCAL_ROOT}/assets" \
+  "${LOCAL_ROOT}/deploy" \
+  "${LOCAL_ROOT}/${LOCAL_COMPOSE_FILE}" \
   "${SSH_TARGET}:${REMOTE_DIR}/"
+
+log "Ergaenze neue Environment-Variablen aus ${LOCAL_COMPOSE_FILE} in /storage/docker-compose.yml"
+remote_run "REMOTE_DIR='${REMOTE_DIR}' LOCAL_COMPOSE_FILE='${LOCAL_COMPOSE_FILE}' COMPOSE_SERVICE_MAP='${COMPOSE_SERVICE_MAP}' sh -s" <<'REMOTE'
+set -eu
+COMPOSE_FILE='/storage/docker-compose.yml'
+# Nur fehlende Variablen kommen dazu; vorhandene Eintraege bleiben wie sie sind
+if [ -f "$COMPOSE_FILE" ]; then
+  awk -v map="$COMPOSE_SERVICE_MAP" -f "$REMOTE_DIR/deploy/sync_compose_env.awk" \
+    "$REMOTE_DIR/$LOCAL_COMPOSE_FILE" "$COMPOSE_FILE" "$COMPOSE_FILE" > "$COMPOSE_FILE.tmp"
+  # Der Abgleich fuegt nur Zeilen hinzu; alles andere waere ein Fehler
+  if [ "$(wc -l < "$COMPOSE_FILE.tmp")" -lt "$(wc -l < "$COMPOSE_FILE")" ]; then
+    echo "Abgleich hat $COMPOSE_FILE verkuerzt, breche ab." >&2
+    rm -f "$COMPOSE_FILE.tmp"
+    exit 1
+  fi
+  cat "$COMPOSE_FILE.tmp" > "$COMPOSE_FILE"
+  rm -f "$COMPOSE_FILE.tmp"
+fi
+REMOTE
 
 log "Entferne Python-Bytecode und pycache aus ${REMOTE_DIR}"
 remote_run "REMOTE_DIR='${REMOTE_DIR}' sh -s" <<'REMOTE_SCRIPT'
