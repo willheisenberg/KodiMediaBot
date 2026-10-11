@@ -292,7 +292,7 @@ def control_panel(chat_id=None, *, mode=None):
 def visual_status_part():
     """Short Party Video marker for the status line: off, a percentage, on or ⚠."""
     status = partyvideo.status()
-    state = status.get("state")
+    state = partyvideo.display_state()
     if state in ("downloading", "installing_tools"):
         progress = status.get("progress")
         if isinstance(progress, (int, float)):

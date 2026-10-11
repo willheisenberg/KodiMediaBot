@@ -132,6 +132,34 @@ class TestStatusEvents:
         assert "download_failed" in messages[0]
         assert "https://youtu.be/x" in messages[0]
 
+    def test_error_is_offered_for_reporting_exactly_once(self):
+        reset_status()
+        event = {"state": "error", "error": "download_failed", "source": "/media/film.mkv"}
+        partyvideo.handle_status_event({"state": "downloading"})
+        partyvideo.handle_status_event(event)
+        assert partyvideo.take_error() == "download_failed"
+        partyvideo.mark_error_reported()
+        # The addon repeats the stale error on every status request.
+        partyvideo.handle_status_event(dict(event))
+        assert partyvideo.take_error() == ""
+        assert partyvideo.display_state() == "playing"
+
+    def test_error_already_present_at_startup_is_not_reported(self):
+        reset_status()
+        partyvideo.handle_status_event({"state": "error", "error": "download_failed", "source": ""})
+        assert partyvideo.take_error() == ""
+        assert partyvideo.display_state() == "idle"
+
+    def test_a_new_failure_after_recovery_is_reported_again(self):
+        reset_status()
+        event = {"state": "error", "error": "download_failed", "source": ""}
+        partyvideo.handle_status_event({"state": "downloading"})
+        partyvideo.handle_status_event(event)
+        partyvideo.mark_error_reported()
+        partyvideo.handle_status_event({"state": "downloading"})
+        partyvideo.handle_status_event(dict(event))
+        assert partyvideo.take_error() == "download_failed"
+
     def test_non_dict_event_is_ignored(self):
         reset_status()
         partyvideo.handle_status_event(None)

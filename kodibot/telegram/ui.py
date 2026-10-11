@@ -182,6 +182,9 @@ def visual_progress_due(chat_id, state, now=None):
     S.VISUAL_PROGRESS_LAST_TS[chat_id] = now
     return True
 
+VISUAL_ERROR_TOAST_SECONDS = 30
+
+
 async def _process_visual_status(status):
     if not CFG.partyvideo_enabled:
         return
@@ -189,6 +192,13 @@ async def _process_visual_status(status):
     if not chat_id or not visual_progress_due(chat_id, (status or {}).get("state")):
         return
     try:
+        error = partyvideo.take_error()
+        if error:
+            # Nur der Fehler bekommt eine eigene Nachricht; danach verschwindet das ⚠ wieder.
+            await send_toast_message(
+                S.APP_INSTANCE, chat_id, t("visual_progress_error", error=error), delay=VISUAL_ERROR_TOAST_SECONDS
+            )
+            partyvideo.mark_error_reported()
         # Der Zustand steht in der Statuszeile des Panels, nicht in einer eigenen Nachricht.
         await update_now_playing_message(S.APP_INSTANCE, chat_id)
     except Exception:

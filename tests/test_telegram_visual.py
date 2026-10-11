@@ -178,10 +178,22 @@ class TestStatusLine:
         visual = [p for p in self.parts(monkeypatch) if "🌌" in p]
         assert len(visual) == 1 and "42" in visual[0]
 
-    def test_marks_an_error(self, monkeypatch):
-        set_state("error", error="download_failed")
+    def test_marks_an_error_until_it_is_reported(self, monkeypatch):
+        set_state("playing", source="/media/film.mkv")
+        partyvideo.handle_status_event({"state": "error", "error": "download_failed", "source": "/media/film.mkv"})
         visual = [p for p in self.parts(monkeypatch) if "🌌" in p]
         assert len(visual) == 1 and "⚠" in visual[0]
+        partyvideo.mark_error_reported()
+        # Der alte Visual läuft nach einem fehlgeschlagenen Download weiter.
+        visual = [p for p in self.parts(monkeypatch) if "🌌" in p]
+        assert len(visual) == 1 and "⚠" not in visual[0] and "on" in visual[0].lower()
+
+    def test_reported_error_without_a_source_shows_off(self, monkeypatch):
+        set_state("downloading")
+        partyvideo.handle_status_event({"state": "error", "error": "download_failed", "source": ""})
+        partyvideo.mark_error_reported()
+        visual = [p for p in self.parts(monkeypatch) if "🌌" in p]
+        assert len(visual) == 1 and "⚠" not in visual[0] and "off" in visual[0].lower()
 
     def test_without_any_status_it_shows_off(self, monkeypatch):
         set_state(None)

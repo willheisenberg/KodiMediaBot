@@ -24,6 +24,8 @@ ADDON_ID = "visualization.partyvideo"
 LAST_STATUS = {}
 _STATUS_LOCK = threading.Lock()
 _STATUS_CALLBACK = None
+# True from the moment a fresh error arrives until the chat has been told about it.
+_ERROR_UNREPORTED = False
 
 # States in which a video is selected and the addon holds its source file.
 ACTIVE_STATES = ("installing_tools", "downloading", "playing")
@@ -91,13 +93,21 @@ def set_status_callback(callback):
 
 def handle_status_event(data):
     """Store an ``Other.partyvideo_status`` payload and notify the telegram layer."""
+    global _ERROR_UNREPORTED
     if not isinstance(data, dict):
         return
     with _STATUS_LOCK:
+        first = not LAST_STATUS
         previous = (LAST_STATUS.get("state"), LAST_STATUS.get("error"))
         LAST_STATUS.clear()
         LAST_STATUS.update(data)
         status = dict(LAST_STATUS)
+        if status.get("state") != "error":
+            _ERROR_UNREPORTED = False
+        elif (status.get("state"), status.get("error")) != previous:
+            # The addon keeps reporting an old error until the next command; one that
+            # is already there when the bot starts is not news.
+            _ERROR_UNREPORTED = not first
     # The panel only shows a marker for a failed visual; keep the reason in the log.
     if status.get("state") == "error" and (status.get("state"), status.get("error")) != previous:
         log.warning(
@@ -121,6 +131,30 @@ def handle_status_event(data):
 def status():
     with _STATUS_LOCK:
         return dict(LAST_STATUS)
+
+
+def take_error():
+    """Error code of a failure the chat has not been told about yet, else ""."""
+    with _STATUS_LOCK:
+        if not _ERROR_UNREPORTED or LAST_STATUS.get("state") != "error":
+            return ""
+        return str(LAST_STATUS.get("error") or "unknown")
+
+
+def mark_error_reported():
+    global _ERROR_UNREPORTED
+    with _STATUS_LOCK:
+        _ERROR_UNREPORTED = False
+
+
+def display_state():
+    """State for the panel. A reported error falls back to what is on screen: the
+    addon keeps the previous visual running when a new one fails."""
+    with _STATUS_LOCK:
+        state = LAST_STATUS.get("state")
+        if state != "error" or _ERROR_UNREPORTED:
+            return state
+        return "playing" if LAST_STATUS.get("source") else "idle"
 
 
 def active_source():

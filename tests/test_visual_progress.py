@@ -65,6 +65,25 @@ async def test_status_events_refresh_the_panel(monkeypatch):
     refresh.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_a_failed_visual_is_announced_once_and_the_marker_cleared(monkeypatch):
+    import dataclasses
+
+    monkeypatch.setattr(ui, "CFG", dataclasses.replace(ui.CFG, partyvideo_enabled=True, startup_chat_id=7))
+    monkeypatch.setattr(ui, "update_now_playing_message", AsyncMock())
+    toast = AsyncMock()
+    monkeypatch.setattr(ui, "send_toast_message", toast)
+    event = {"state": "error", "error": "download_failed", "source": "/media/film.mkv"}
+    partyvideo.handle_status_event({"state": "playing", "source": "/media/film.mkv"})
+    partyvideo.handle_status_event(event)
+    await ui._process_visual_status(event)
+    partyvideo.handle_status_event(dict(event))
+    await ui._process_visual_status(event)
+    toast.assert_awaited_once()
+    assert "download_failed" in toast.await_args.args[2]
+    assert partyvideo.display_state() == "playing"
+
+
 def test_disabled_feature_does_not_schedule_status(monkeypatch):
     import dataclasses
 
