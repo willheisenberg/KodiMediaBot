@@ -291,6 +291,7 @@ docker compose -f docker-compose.local-bot-api.yml up -d --build
 Environment variables worth calling out:
 - **`SPOTIFY_MAX_TRACKS`**: Upper bound on how many tracks one Spotify link may add. Default `100`. Reading Spotify needs no account and no credentials — see [Spotify links](#spotify-links).
 - **`SPOTIFY_TIMEOUT`**: HTTP timeout in seconds when fetching a Spotify page. Default `10`.
+- **`SPOTIFY_USER_NAMES`**: Names to show for the accounts that play through [Spotify Connect](#spotify-connect-soloist-add-on), as `username=Name,username=Name`, e.g. `1234567890=John,jane.doe=Jane`. Optional; an account without an entry shows its Spotify username, which is a number for some accounts.
 - **`SPOTIFY_YT_TIMEOUT`**: Timeout in seconds for one YouTube search while resolving a Spotify link. Default `25`. This is deliberately far above `RADIO_YT_TIMEOUT`: the bot resolves five tracks at a time, and parallel `yt-dlp` searches are much slower than a single one. Too low a value silently drops tracks — they look like "no match found". Raise it on slow hardware.
 
 Bot data is persisted on the host in `/storage/docker/partyqueue/` (playlists, uploads, HA colors, SSH keys).
@@ -466,7 +467,7 @@ replace each other:
 
 - **Spotify takes over** → whatever the bot was playing stops: the queue's
   playback ends (the queue itself stays) and a radio station is forgotten. The
-  panel shows `Spotify: title – artist`, linked to the matching YouTube video (or
+  panel shows `Spotify (user): title – artist`, linked to the matching YouTube video (or
   SoundCloud track) when one is found — the same lookup as for radio titles.
   It runs in the background, so the link appears a few seconds after the title.
 - **The bot takes over**, because someone plays something from the chat → the
@@ -475,7 +476,11 @@ replace each other:
 - **Spotify stops or pauses** → nothing happens on its own. The stop button in
   the panel releases the Spotify device.
 
-No bot configuration is needed. The bot recognises the add-on's stream at
+`user` is the Spotify account that selected the box, by its Spotify username.
+Give accounts a friendlier name with `SPOTIFY_USER_NAMES`. An add-on version
+that does not report the account leaves the panel at `Spotify: title – artist`.
+
+No other bot configuration is needed. The bot recognises the add-on's stream at
 `rtp://127.0.0.1:23433`, so keep the add-on's RTP port at its default.
 
 ## Troubleshooting

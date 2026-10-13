@@ -47,6 +47,7 @@ BUTTON_REFERENCE_PATH = localized_asset(
     "panel_button_reference_de.png",
 )
 LEGACY_UI_STATE_FILE = "/data/playlists/telegram_ui_state.json"
+SPOTIFY_USER_NAMES = spotify_connect.parse_user_names(CFG.spotify_user_names_raw)
 
 
 # ── Error classification ─────────────────────────────────────────────
@@ -976,6 +977,15 @@ def spotify_track_link(item):
     return link or None
 
 
+async def spotify_user():
+    """Name of the Spotify account playing through Spotify Connect, or ""."""
+    res = await kodi_api.kodi_call_async(
+        "XBMC.GetInfoLabels", {"labels": [spotify_connect.USER_LABEL]}
+    )
+    user = ((res or {}).get("result") or {}).get(spotify_connect.USER_LABEL) or ""
+    return spotify_connect.user_name(user, SPOTIFY_USER_NAMES)
+
+
 async def get_now_playing_text():
     """Assemble the now-playing display text.
 
@@ -1082,7 +1092,7 @@ async def get_now_playing_text():
 
         if spotify_connect.is_stream_item(item):
             spotify = True
-            name = spotify_connect.display_name(item)
+            name = spotify_connect.display_name(item, await spotify_user())
             link = spotify_track_link(item)
 
         item_has_identity = bool(

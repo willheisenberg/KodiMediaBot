@@ -83,6 +83,7 @@ class Config:
     spotify_max_tracks: int
     spotify_yt_timeout: float
     spotify_timeout: float
+    spotify_user_names_raw: str
 
     # ── Persistence ──────────────────────────────────────────────────
     playlist_dir: str
@@ -255,6 +256,7 @@ class Config:
             spotify_max_tracks=int(os.environ.get("SPOTIFY_MAX_TRACKS", "100")),
             spotify_yt_timeout=float(os.environ.get("SPOTIFY_YT_TIMEOUT", "25")),
             spotify_timeout=float(os.environ.get("SPOTIFY_TIMEOUT", "10")),
+            spotify_user_names_raw=os.environ.get("SPOTIFY_USER_NAMES", ""),
             # Persistence
             playlist_dir=os.environ.get("PLAYLIST_DIR", "/data/playlists"),
             ui_state_file=os.environ.get("UI_STATE_FILE", "/data/state/telegram_ui_state.json"),

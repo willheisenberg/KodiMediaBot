@@ -76,6 +76,22 @@ class TestStream:
     def test_display_name(self):
         assert spotify_connect.display_name(SPOTIFY_ITEM) == "Spotify: Song A – Artist A, Artist B"
         assert spotify_connect.display_name({"title": "Song A"}) == "Spotify: Song A"
+
+    def test_display_name_puts_the_user_before_the_colon(self):
+        assert (
+            spotify_connect.display_name(SPOTIFY_ITEM, "Jane")
+            == "Spotify (Jane): Song A – Artist A, Artist B"
+        )
+        assert spotify_connect.display_name({"title": "Song A"}, "Jane") == "Spotify (Jane): Song A"
+        assert spotify_connect.display_name({}, "Jane") == "Spotify (Jane)"
+
+    def test_user_names_map_usernames_and_fall_back_to_the_username(self):
+        names = spotify_connect.parse_user_names(" 1234567890 = John ,jane.doe=Jane,broken,=x,y= ")
+        assert names == {"1234567890": "John", "jane.doe": "Jane"}
+        assert spotify_connect.user_name("1234567890", names) == "John"
+        assert spotify_connect.user_name("someone.else", names) == "someone.else"
+        assert spotify_connect.user_name("", names) == ""
+        assert spotify_connect.parse_user_names("") == {}
         assert spotify_connect.display_name({}) == "Spotify"
 
 
@@ -156,8 +172,11 @@ class TestPanelShowsSpotify:
     def teardown_method(self):
         _reset()
 
-    def test_panel_shows_the_spotify_track(self, monkeypatch):
+    def _panel_text(self, monkeypatch, user_label):
         async def fake_call(method, params=None):
+            if method == "XBMC.GetInfoLabels":
+                assert params == {"labels": [spotify_connect.USER_LABEL]}
+                return user_label
             if method == "Player.GetActivePlayers":
                 return {"result": [{"playerid": 0, "type": "audio"}]}
             if method == "Player.GetProperties":
@@ -179,8 +198,25 @@ class TestPanelShowsSpotify:
         )
 
         text, progress, playlist = asyncio.run(panel.get_now_playing_text())
+        return text
+
+    def test_panel_shows_the_spotify_track(self, monkeypatch):
+        # An add-on that does not report the account leaves the label empty.
+        text = self._panel_text(monkeypatch, {"result": {spotify_connect.USER_LABEL: ""}})
 
         assert text == "▶ Spotify: Song A – Artist A, Artist B"
+
+    def test_panel_shows_whose_account_plays(self, monkeypatch):
+        monkeypatch.setattr(panel, "SPOTIFY_USER_NAMES", {"1234567890": "John"})
+
+        mapped = self._panel_text(monkeypatch, {"result": {spotify_connect.USER_LABEL: "1234567890"}})
+        unmapped = self._panel_text(monkeypatch, {"result": {spotify_connect.USER_LABEL: "jane.doe"}})
+
+        assert mapped == "▶ Spotify (John): Song A – Artist A, Artist B"
+        assert unmapped == "▶ Spotify (jane.doe): Song A – Artist A, Artist B"
+
+    def test_panel_survives_kodi_not_answering_for_the_user(self, monkeypatch):
+        assert self._panel_text(monkeypatch, None) == "▶ Spotify: Song A – Artist A, Artist B"
 
 
 class TestPlayEventFromPythonAddon:

@@ -22,6 +22,8 @@ TAKEOVER_EVENT = "Other.soloist_takeover"
 # own: the add-on then releases the Spotify Connect device, so the app moves
 # playback back to the phone instead of keeping the box selected (paused).
 RELEASE_MESSAGE = "soloist_release"
+# Info label the add-on sets to the Spotify account the box is logged in as.
+USER_LABEL = "Window(Home).Property(soloist.user)"
 
 
 def is_stream(file_url) -> bool:
@@ -45,11 +47,28 @@ def artist_title(item):
     return ", ".join(a for a in artist if a), item.get("title") or ""
 
 
-def display_name(item) -> str:
-    """Panel text for the Spotify stream."""
+def parse_user_names(raw) -> dict:
+    """SPOTIFY_USER_NAMES ("username=Name,other=Name") as a dict."""
+    names = {}
+    for pair in (raw or "").split(","):
+        user, sep, name = pair.partition("=")
+        if sep and user.strip() and name.strip():
+            names[user.strip()] = name.strip()
+    return names
+
+
+def user_name(user, names) -> str:
+    """Name to show for a Spotify account: its mapped name, else the username."""
+    user = (user or "").strip()
+    return names.get(user, user)
+
+
+def display_name(item, user="") -> str:
+    """Panel text for the Spotify stream; `user` is whose account plays."""
+    source = f"Spotify ({user})" if user else "Spotify"
     artists, title = artist_title(item)
     if title and artists:
-        return f"Spotify: {title} – {artists}"
+        return f"{source}: {title} – {artists}"
     if title:
-        return f"Spotify: {title}"
-    return "Spotify"
+        return f"{source}: {title}"
+    return source
