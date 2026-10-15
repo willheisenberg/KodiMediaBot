@@ -481,7 +481,9 @@ Give accounts a friendlier name with `SPOTIFY_USER_NAMES`. An add-on version
 that does not report the account leaves the panel at `Spotify: title – artist`.
 
 No other bot configuration is needed. The bot recognises the add-on's stream at
-`rtp://127.0.0.1:23433`, so keep the add-on's RTP port at its default.
+`rtp://127.0.0.1:23433` or, for add-on versions that stream 48 kHz, by its SDP
+file `addon_data/service.soloist/soloist.sdp`. Keep the add-on's RTP port at its
+default.
 
 ## Troubleshooting
 - `ssh: not found`: install `openssh-client` in the image.

@@ -12,8 +12,13 @@ This module only knows the add-on's stream and messages; queue_state acts on
 them.  It is free of Kodi and Telegram imports.
 """
 
-# Must match the add-on's RTP port setting (default 23433).
+# Must match the add-on's RTP port setting (default 23433). Add-on versions
+# that stream 44.1 kHz play this URL directly.
 STREAM_URL = "rtp://127.0.0.1:23433"
+# Versions that stream 48 kHz play the RTP stream through this SDP file in the
+# add-on's profile folder, e.g.
+# /storage/.kodi/userdata/addon_data/service.soloist/soloist.sdp
+STREAM_SDP_SUFFIX = "/addon_data/service.soloist/soloist.sdp"
 ADDON_ID = "service.soloist"
 # Sent by the add-on via NotifyAll right before it starts the stream, so the
 # bot hears about the takeover before Kodi reports the old item stopped.
@@ -27,7 +32,9 @@ USER_LABEL = "Window(Home).Property(soloist.user)"
 
 
 def is_stream(file_url) -> bool:
-    return bool(file_url) and file_url.rstrip("/") == STREAM_URL
+    return bool(file_url) and (
+        file_url.rstrip("/") == STREAM_URL or file_url.endswith(STREAM_SDP_SUFFIX)
+    )
 
 
 def is_stream_item(item) -> bool:

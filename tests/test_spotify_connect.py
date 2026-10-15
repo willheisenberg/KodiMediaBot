@@ -67,6 +67,14 @@ class TestStream:
         assert not spotify_connect.is_stream_item({"file": "rtp://127.0.0.1:9999"})
         assert not spotify_connect.is_stream_item(None)
 
+    def test_stream_detection_through_the_sdp_file(self):
+        sdp = "/storage/.kodi/userdata/addon_data/service.soloist/soloist.sdp"
+        assert spotify_connect.is_stream_item({"file": sdp})
+        assert spotify_connect.is_stream(
+            "special://profile/addon_data/service.soloist/soloist.sdp"
+        )
+        assert not spotify_connect.is_stream("/storage/tgcalls-test/anruf.sdp")
+
     def test_takeover_event_requires_the_addon_as_sender(self):
         params = {"sender": "service.soloist", "data": None}
         assert spotify_connect.is_takeover_event("Other.soloist_takeover", params)
