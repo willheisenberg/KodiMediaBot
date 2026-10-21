@@ -9,7 +9,7 @@ import asyncio
 import requests
 from yt_dlp import YoutubeDL
 
-from kodibot.core import kodi_api
+from kodibot.core import kodi_api, spotify_connect
 from kodibot.config import CFG
 from kodibot.telegram import media
 
@@ -31,6 +31,9 @@ LAST_PLAYED_RADIO = None
 EXPECTED_STOP = False
 ON_UNEXPECTED_RADIO_STOP = None
 CANCEL_RECONNECT_CB = None
+# Fired on every Player.OnPlay/OnAVStart, bot-initiated or not, so the UI
+# layer can drop any per-playback state it keeps keyed by file path.
+ON_PLAY_STARTED = None
 
 # Timestamp of the last bot-initiated play_index() call.  Used by the panel to
 # show queue track info optimistically for a few seconds after a track change,
@@ -38,6 +41,14 @@ CANCEL_RECONNECT_CB = None
 # SoundCloud because the plugin fires WS events faster than YouTube's plugin).
 PLAY_INDEX_TS = 0.0
 PLAY_INDEX_OPTIMISTIC_WINDOW = 8.0  # seconds
+
+# What play_item() last asked Kodi to open, and when.  A start Kodi never
+# confirms (the YouTube add-on refusing a video, say) leaves no other trace on
+# the bot side, so the autoplay loop reports it once after this many seconds.
+PLAY_START_TS = 0.0
+PLAY_START_ITEM = None
+PLAY_START_REPORTED = False
+PLAY_START_OVERDUE_SEC = 20.0
 
 LAST_PROGRESS_TS = 0.0
 LAST_PROGRESS_TIME = None
@@ -64,6 +75,24 @@ YT_TITLE_CACHE_TTL = 3600.0
 YT_TITLE_CACHE_LOCK = threading.Lock()
 SC_PLUGIN_START_TIMEOUT_S = 4.0
 SC_PLUGIN_START_POLL_S = 0.25
+_SC_START_CANCEL = threading.Event()
+
+
+def cancel_soundcloud_start():
+    _SC_START_CANCEL.set()
+
+
+def wait_for_players_stopped(cancel_event, timeout_s=5.0):
+    """Player.Stop acknowledges the request before Kodi has stopped the stream."""
+    deadline = time.monotonic() + timeout_s
+    while not cancel_event.is_set():
+        if not kodi_api.get_active_players():
+            return True
+        if time.monotonic() >= deadline:
+            log.warning("SoundCloud switch aborted: previous player did not stop")
+            return False
+        cancel_event.wait(0.1)
+    return False
 
 
 def get_cached_youtube_title(vid: str):
@@ -86,13 +115,17 @@ def cache_youtube_title(vid: str, title: str):
         YT_TITLE_CACHE[vid] = (title, time.time())
 
 
-def set_ui_callbacks(schedule_now_playing_refresh, on_unexpected_radio_stop=None, cancel_reconnect_cb=None):
+def set_ui_callbacks(schedule_now_playing_refresh, on_unexpected_radio_stop=None,
+                     cancel_reconnect_cb=None, on_play_started=None):
     global _SCHEDULE_NOW_PLAYING_REFRESH, ON_UNEXPECTED_RADIO_STOP, CANCEL_RECONNECT_CB
+    global ON_PLAY_STARTED
     _SCHEDULE_NOW_PLAYING_REFRESH = schedule_now_playing_refresh
     if on_unexpected_radio_stop is not None:
         ON_UNEXPECTED_RADIO_STOP = on_unexpected_radio_stop
     if cancel_reconnect_cb is not None:
         CANCEL_RECONNECT_CB = cancel_reconnect_cb
+    if on_play_started is not None:
+        ON_PLAY_STARTED = on_play_started
 
 
 def set_last_played_radio(url, title):
@@ -144,10 +177,53 @@ def get_expecting_ws() -> int:
         return BOT_EXPECTING_WS
 
 
+def report_overdue_play_start(now=None) -> bool:
+    """Log once when Kodi has not confirmed a bot-initiated play in time."""
+    global PLAY_START_REPORTED
+    now = time.time() if now is None else now
+    with LOCK:
+        if BOT_EXPECTING_WS <= 0 or PLAY_START_REPORTED or not PLAY_START_TS:
+            return False
+        waited = now - PLAY_START_TS
+        if waited < PLAY_START_OVERDUE_SEC:
+            return False
+        PLAY_START_REPORTED = True
+        item = PLAY_START_ITEM or {}
+        expecting = BOT_EXPECTING_WS
+    log.warning(
+        "play_item not confirmed by Kodi after %.0fs expecting_ws=%d kind=%s title=%s url=%s link=%s",
+        waited,
+        expecting,
+        item.get("kind"),
+        item.get("title"),
+        item.get("url"),
+        item.get("link"),
+    )
+    return True
+
+
 # ── WS callback handlers (registered with kodi_api) ────────────────
 def _handle_ws_play(*, item, item_params):
     """Called from kodi_api WS listener on Player.OnPlay/OnAVStart."""
     global BOT_EXPECTING_WS
+    # Every play start (bot-initiated or not) begins a fresh playback
+    # session, so any per-file state the UI layer keeps for the previous one
+    # is stale.
+    if ON_PLAY_STARTED:
+        try:
+            ON_PLAY_STARTED()
+        except Exception as e:
+            log.warning("on_play_started callback failed: %s", e)
+    if spotify_connect.is_stream_item(item):
+        spotify_takeover()
+        return
+    # A film that replaced the radio is no radio any more: its end must not
+    # be read as a dropout of the station.
+    if _is_library_video(item_params) or _is_library_video(item):
+        with LOCK:
+            radio = LAST_PLAYED_RADIO
+        if radio:
+            clear_radio_reconnect_state()
     # decrement_expecting_ws returns the value AFTER decrement.
     # If before decrement it was > 0, this play was bot-initiated.
     with LOCK:
@@ -183,6 +259,51 @@ def _handle_ws_resume():
     schedule_now_playing_refresh()
 
 
+# ── Spotify Connect (see spotify_connect) ──────────────────────────
+def spotify_takeover():
+    """Spotify takes over Kodi: whatever the bot was playing is over.
+
+    Called on the add-on's takeover notification and again on the stream's
+    Player.OnPlay; the notification comes before Kodi reports the outgoing
+    item stopped, so neither the queue nor the radio is restarted in between.
+    Nothing is resumed when Spotify stops.
+    """
+    cancel_soundcloud_start()
+    clear_radio_reconnect_state()
+    set_expecting_ws(0)
+    clear_bot_playback_state()
+    schedule_now_playing_refresh()
+
+
+def release_spotify_device():
+    """Ask the Soloist add-on to give up the Spotify Connect device.
+
+    Harmless without the add-on: nobody listens to the notification.
+    """
+    kodi_api.kodi_call(
+        "JSONRPC.NotifyAll",
+        {"sender": "kodibot", "message": spotify_connect.RELEASE_MESSAGE},
+    )
+
+
+def play_radio(url, title=None) -> bool:
+    """Start a station or favourite the user picked in the chat.
+
+    Like any playback the bot starts, this takes the box away from Spotify:
+    left selected, the Spotify device could start playing again and replace
+    the station a few seconds later.
+    """
+    release_spotify_device()
+    return kodi_api.play_favourite_target(url, title)
+
+
+_LIBRARY_VIDEO_TYPES = ("movie", "episode", "musicvideo")
+
+
+def _is_library_video(item) -> bool:
+    return (item or {}).get("type") in _LIBRARY_VIDEO_TYPES
+
+
 def _handle_ws_stop(item_params=None, player_params=None):
     global EXPECTED_STOP, LAST_PLAYED_RADIO
     schedule_now_playing_refresh()
@@ -193,7 +314,7 @@ def _handle_ws_stop(item_params=None, player_params=None):
     is_audio_stop = True
     if player_id is not None and player_id != 0:
         is_audio_stop = False
-    elif stopped_type == "picture":
+    elif stopped_type == "picture" or _is_library_video(item_params):
         is_audio_stop = False
         
     with LOCK:
@@ -227,6 +348,7 @@ def register_ws_callbacks():
         on_resume=_handle_ws_resume,
         on_stop=_handle_ws_stop,
         on_playback_refresh=_handle_ws_playback_refresh,
+        on_spotify_takeover=spotify_takeover,
     )
 
 
@@ -239,6 +361,7 @@ def mark_list_dirty():
 # Clear bot playback state without stopping Kodi playback.
 def clear_bot_playback_state():
     global AUTOPLAY_ENABLED, CURRENT_INDEX, DISPLAY_INDEX, EXTERNAL_PLAYBACK
+    cancel_soundcloud_start()
     with LOCK:
         AUTOPLAY_ENABLED = False
         CURRENT_INDEX = None
@@ -352,7 +475,7 @@ def is_soundcloud_item(item: dict):
     return False
 
 
-def soundcloud_playback_started(source_link: str):
+def soundcloud_playback_started(source_link: str, cancel_event=None):
     pid = kodi_api.get_active_playerid()
     if pid is None:
         return False
@@ -366,11 +489,23 @@ def soundcloud_playback_started(source_link: str):
     if not file_url:
         return False
     sc_url = kodi_api.extract_soundcloud_url(file_url)
-    if sc_url and source_link and sc_url == source_link:
-        return True
-    if kodi_api.is_soundcloud_stream_url(file_url):
-        return True
-    return False
+    if not ((sc_url and source_link and sc_url == source_link)
+            or kodi_api.is_soundcloud_stream_url(file_url)):
+        return False
+    props = kodi_api.kodi_call(
+        "Player.GetProperties", {"playerid": pid, "properties": ["speed"]},
+    ).get("result", {}) or {}
+    speed = props.get("speed")
+    if cancel_event is not None and cancel_event.is_set():
+        return False
+    if speed == 0 and cancel_event is not None:
+        # An active stream can still be paused after the addon switches tracks.
+        # Explicit play is idempotent; toggling could pause an already starting player.
+        result = kodi_api.kodi_call(
+            "Player.PlayPause", {"playerid": pid, "play": True},
+        ).get("result", {}) or {}
+        speed = result.get("speed")
+    return isinstance(speed, (int, float)) and speed > 0
 
 
 def resolve_soundcloud_playlist_media_url(playlistid=0, timeout_s=1.5, interval_s=0.25):
@@ -389,7 +524,20 @@ def resolve_soundcloud_playlist_media_url(playlistid=0, timeout_s=1.5, interval_
     return ""
 
 
-def open_soundcloud_resolved_playlist_item(title: str, source_link: str, resume_time=None, playlistid=0, position=0):
+def open_soundcloud_resolved_playlist_item(title: str, source_link: str, resume_time=None, playlistid=0, position=0, resolved_url=None, cancel_event=None):
+    if resolved_url:
+        result = kodi_api.kodi_call(
+            "Playlist.GetItems", {"playlistid": playlistid, "properties": ["file"]},
+        ).get("result", {}) or {}
+        position = next((i for i, entry in enumerate(result.get("items", []) or [])
+                         if entry.get("file") == resolved_url), None)
+        if position is None:
+            log.warning("SoundCloud resolved playlist entry disappeared source=%s", source_link)
+            return False
+    if cancel_event is not None and cancel_event.is_set():
+        return False
+    # The addon uses setResolvedUrl: it needs Kodi's playable playlist context.
+    # Player.Open(file=plugin_url) can return OK without creating a player.
     res = kodi_api.kodi_call("Player.Open", {"item": {"playlistid": playlistid, "position": position}})
     log.info("play_item soundcloud open_mode=resolved_playlist_start title=%s source=%s", title, source_link)
     log.debug("play_item open soundcloud resolved_playlist_start res=%s", res)
@@ -399,20 +547,28 @@ def open_soundcloud_resolved_playlist_item(title: str, source_link: str, resume_
     return True
 
 
-def schedule_soundcloud_plugin_fallback(item: dict, source_link: str, resume_time=None):
+def schedule_soundcloud_plugin_fallback(item: dict, source_link: str, resume_time=None, cancel_event=None):
     title = item.get("title")
+    if cancel_event is None:
+        cancel_event = _SC_START_CANCEL
 
     def _run():
         end = time.time() + SC_PLUGIN_START_TIMEOUT_S
         while time.time() < end:
+            if cancel_event.is_set():
+                return
             try:
-                if soundcloud_playback_started(source_link):
+                if soundcloud_playback_started(source_link, cancel_event):
                     return
             except Exception:
                 pass
             time.sleep(SC_PLUGIN_START_POLL_S)
 
+        if cancel_event.is_set():
+            return
         resolved_url = resolve_soundcloud_playlist_media_url()
+        if cancel_event.is_set():
+            return
         if resolved_url:
             log.warning(
                 "play_item soundcloud plugin_direct stalled, starting resolved playlist item "
@@ -424,11 +580,15 @@ def schedule_soundcloud_plugin_fallback(item: dict, source_link: str, resume_tim
                 title,
                 source_link,
                 resume_time=resume_time,
+                resolved_url=resolved_url,
+                cancel_event=cancel_event,
             )
             retry_end = time.time() + 2.0
             while time.time() < retry_end:
+                if cancel_event.is_set():
+                    return
                 try:
-                    if soundcloud_playback_started(source_link):
+                    if soundcloud_playback_started(source_link, cancel_event):
                         return
                 except Exception:
                     pass
@@ -445,7 +605,11 @@ def schedule_soundcloud_plugin_fallback(item: dict, source_link: str, resume_tim
 
 
 def play_item(item: dict, resume_time=None):
-    global EXPECTED_STOP, LAST_PLAYED_RADIO
+    global EXPECTED_STOP, LAST_PLAYED_RADIO, _SC_START_CANCEL
+    global PLAY_START_TS, PLAY_START_ITEM, PLAY_START_REPORTED
+    cancel_soundcloud_start()
+    start_cancel = threading.Event()
+    _SC_START_CANCEL = start_cancel
     if CANCEL_RECONNECT_CB:
         try:
             CANCEL_RECONNECT_CB()
@@ -454,12 +618,23 @@ def play_item(item: dict, resume_time=None):
     with LOCK:
         EXPECTED_STOP = True
         LAST_PLAYED_RADIO = None
+    # The bot takes Kodi from Spotify and hands the device back.
+    release_spotify_device()
     media.cleanup_active_image_session()
     kodi_api.stop_all_players()
-    kodi_api.kodi_clear_all_playlists()
     kind = item.get("kind", "video")
+    if kind == "audio" and is_soundcloud_item(item):
+        # Do not let the start probe mistake the outgoing SoundCloud stream for
+        # the new one, or clear the addon playlist while Kodi is still stopping.
+        if not wait_for_players_stopped(start_cancel):
+            return
+    kodi_api.kodi_clear_all_playlists()
     resolver = item.get("resolver")
     set_expecting_ws(2)
+    with LOCK:
+        PLAY_START_TS = time.time()
+        PLAY_START_ITEM = item
+        PLAY_START_REPORTED = False
     log.info(
         "play_item start kind=%s resolver=%s title=%s url=%s",
         item.get("kind"),
@@ -478,7 +653,7 @@ def play_item(item: dict, resume_time=None):
         log.info("play_item soundcloud open_mode=plugin_direct title=%s source=%s", item.get("title"), source_link)
         res = kodi_api.kodi_call("Player.Open", {"item": {"file": plugin_url}})
         log.debug("play_item open soundcloud res=%s", res)
-        schedule_soundcloud_plugin_fallback(item, source_link, resume_time=resume_time)
+        schedule_soundcloud_plugin_fallback(item, source_link, resume_time=resume_time, cancel_event=start_cancel)
         schedule_playback_refresh()
         if resume_time is not None:
             seek_when_player_ready(resume_time, context="soundcloud")
@@ -511,6 +686,7 @@ def resume_item_at_time(item: dict, t):
 def hard_stop_and_clear():
     global AUTOPLAY_ENABLED, CURRENT_INDEX, DISPLAY_INDEX, NEXT_INDEX, LAST_PROGRESS_TS, LAST_PROGRESS_TIME, LAST_PROGRESS_TOTAL, LAST_PROGRESS_INDEX, EXTERNAL_PLAYBACK
     global EXPECTED_STOP, LAST_PLAYED_RADIO
+    cancel_soundcloud_start()
     
     # Check if both picture and audio players are active concurrently
     active = kodi_api.get_active_players()
@@ -533,6 +709,8 @@ def hard_stop_and_clear():
             CANCEL_RECONNECT_CB()
         except Exception as e:
             log.warning("Failed to cancel reconnect callback: %s", e)
+    # Stop means stop: release Spotify instead of leaving it paused on the box.
+    release_spotify_device()
     media.cleanup_active_image_session()
     kodi_api.stop_all_players()
     kodi_api.kodi_clear_all_playlists()
@@ -1114,6 +1292,8 @@ def autoplay_loop():
             if not kodi_api.WS_CONNECTED:
                 time.sleep(0.5)
                 continue
+
+            report_overdue_play_start(now)
 
             if not AUTOPLAY_ENABLED:
                 time.sleep(0.5)

@@ -54,6 +54,9 @@ class Config:
     sc_client_id: str
     sc_client_id_file: str
 
+    # ── Social-media downloads ───────────────────────────────────────
+    cookies_file_path: str
+
     # ── Media server ─────────────────────────────────────────────────
     upload_dir: str
     kodi_upload_dir: str
@@ -80,6 +83,7 @@ class Config:
     spotify_max_tracks: int
     spotify_yt_timeout: float
     spotify_timeout: float
+    spotify_user_names_raw: str
 
     # ── Persistence ──────────────────────────────────────────────────
     playlist_dir: str
@@ -100,6 +104,7 @@ class Config:
     projector_power_on_code: int
     projector_power_off_code: int
     projector_power_on_repeats: int
+    projector_power_on_hold_seconds: float
 
     # ── Display power (projector or TV) ───────────────────────────────
     display_button_label: str
@@ -115,6 +120,9 @@ class Config:
     panel_show_airplay: bool
     panel_show_ha: bool
 
+    # ── Party Video visualization addon (off unless the addon is installed) ──
+    partyvideo_enabled: bool
+
     # ── Internal tuning ──────────────────────────────────────────────
     kodi_error_log_interval: float
 
@@ -123,6 +131,12 @@ class Config:
 
     # ── IPTV / TV configuration ───────────────────────────────────────
     iptv_m3u_url: str
+
+    # ── OpenSubtitles ─────────────────────────────────────────────────
+    opensubtitles_api_key: str
+    opensubtitles_user: str
+    opensubtitles_pass: str
+    opensubtitles_languages: str
 
     # ── Derived helpers ──────────────────────────────────────────────
 
@@ -155,6 +169,22 @@ class Config:
             or "127.0.0.1"
         )
         return f"{self.media_server_scheme}://{public_host}:{self.media_server_port}"
+
+    @property
+    def opensubtitles_enabled(self) -> bool:
+        return bool(
+            self.opensubtitles_api_key
+            and self.opensubtitles_user
+            and self.opensubtitles_pass
+        )
+
+    @property
+    def opensubtitles_language_list(self) -> list[str]:
+        return [
+            part.strip().lower()
+            for part in self.opensubtitles_languages.split(",")
+            if part.strip()
+        ]
 
     # ── Factory ──────────────────────────────────────────────────────
 
@@ -200,6 +230,9 @@ class Config:
                 "SC_CLIENT_ID_FILE",
                 "/storage/.kodi/userdata/addon_data/plugin.audio.soundcloud/cache/api-client-id",
             ),
+            # Social-media downloads
+            cookies_file_path=(os.environ.get("COOKIES_FILE_PATH") or "").strip()
+            or os.path.join(os.getcwd(), "cookies.txt"),
             # Media server
             upload_dir=os.environ.get("UPLOAD_DIR", "/data/uploads"),
             kodi_upload_dir=os.environ.get("KODI_UPLOAD_DIR", "/storage/docker/partyqueue/uploads"),
@@ -223,6 +256,7 @@ class Config:
             spotify_max_tracks=int(os.environ.get("SPOTIFY_MAX_TRACKS", "100")),
             spotify_yt_timeout=float(os.environ.get("SPOTIFY_YT_TIMEOUT", "25")),
             spotify_timeout=float(os.environ.get("SPOTIFY_TIMEOUT", "10")),
+            spotify_user_names_raw=os.environ.get("SPOTIFY_USER_NAMES", ""),
             # Persistence
             playlist_dir=os.environ.get("PLAYLIST_DIR", "/data/playlists"),
             ui_state_file=os.environ.get("UI_STATE_FILE", "/data/state/telegram_ui_state.json"),
@@ -240,6 +274,9 @@ class Config:
             projector_power_on_code=int(os.environ.get("PROJECTOR_POWER_ON_CODE", "0x03"), 16),
             projector_power_off_code=int(os.environ.get("PROJECTOR_POWER_OFF_CODE", "0x00"), 16),
             projector_power_on_repeats=int(os.environ.get("PROJECTOR_POWER_ON_REPEATS", "4")),
+            projector_power_on_hold_seconds=float(
+                os.environ.get("PROJECTOR_POWER_ON_HOLD_SECONDS") or "3"
+            ),
             # Display power (projector or TV)
             display_button_label=(os.environ.get("DISPLAY_BUTTON_LABEL") or "📽 Beamer").strip(),
             display_power_on_cmd=(
@@ -258,6 +295,8 @@ class Config:
             panel_show_display=_bool_env("PANEL_SHOW_DISPLAY", True),
             panel_show_airplay=_bool_env("PANEL_SHOW_AIRPLAY", True),
             panel_show_ha=_bool_env("PANEL_SHOW_HA", True),
+            # Party Video: needs the visualization.partyvideo addon on the Kodi host
+            partyvideo_enabled=_bool_env("PARTYVIDEO_ENABLED", False),
             # Tuning
             kodi_error_log_interval=float(os.environ.get("KODI_ERROR_LOG_INTERVAL", "10")),
             # Radio Browser
@@ -267,6 +306,11 @@ class Config:
                 "IPTV_M3U_URL",
                 "/data/kodi.m3u,https://raw.githubusercontent.com/jnk22/kodinerds-iptv/master/iptv/clean/clean_tv.m3u,https://iptv-org.github.io/iptv/countries/de.m3u",
             ),
+            # OpenSubtitles
+            opensubtitles_api_key=(os.environ.get("OPENSUBTITLES_API_KEY") or "").strip(),
+            opensubtitles_user=(os.environ.get("OPENSUBTITLES_USER") or "").strip(),
+            opensubtitles_pass=(os.environ.get("OPENSUBTITLES_PASS") or "").strip(),
+            opensubtitles_languages=(os.environ.get("OPENSUBTITLES_LANGUAGES") or "de,en").strip(),
         )
 
 

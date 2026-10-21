@@ -15,6 +15,13 @@ services:
   kodi-media-bot:
     build: .
     container_name: kodi-media-bot
+    # LibreELEC's Docker defaults to journald, whose 2 MB journal other
+    # services can fill within a minute; keep the bot's logs in its own files.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
     network_mode: host
     privileged: true
@@ -32,9 +39,11 @@ services:
       DENON_HOST: "${DENON_HOST}"
       DEBUG_WS: "${DEBUG_WS:-1}"
       SC_CLIENT_ID: "${SC_CLIENT_ID}"
+      COOKIES_FILE_PATH: "${COOKIES_FILE_PATH:-/data/cookies/cookies.txt}"
       SPOTIFY_MAX_TRACKS: "${SPOTIFY_MAX_TRACKS:-100}"
       SPOTIFY_YT_TIMEOUT: "${SPOTIFY_YT_TIMEOUT:-25}"
       SPOTIFY_TIMEOUT: "${SPOTIFY_TIMEOUT:-10}"
+      SPOTIFY_USER_NAMES: "${SPOTIFY_USER_NAMES:-}"
       MEDIA_BASE_URL: "${MEDIA_BASE_URL}"
       UI_STATE_FILE: "${UI_STATE_FILE:-/data/state/telegram_ui_state.json}"
       TELEGRAM_LOCAL_MODE: "1"
@@ -52,6 +61,7 @@ services:
       PROJECTOR_POWER_ON_CODE: "${PROJECTOR_POWER_ON_CODE}"
       PROJECTOR_POWER_OFF_CODE: "${PROJECTOR_POWER_OFF_CODE}"
       PROJECTOR_POWER_ON_REPEATS: "${PROJECTOR_POWER_ON_REPEATS:-4}"
+      PROJECTOR_POWER_ON_HOLD_SECONDS: "${PROJECTOR_POWER_ON_HOLD_SECONDS:-3}"
       DISPLAY_BUTTON_LABEL: "${DISPLAY_BUTTON_LABEL}"
       DISPLAY_POWER_ON_CMD: "${DISPLAY_POWER_ON_CMD}"
       DISPLAY_POWER_OFF_CMD: "${DISPLAY_POWER_OFF_CMD}"
@@ -62,8 +72,13 @@ services:
       PANEL_SHOW_DISPLAY: "${PANEL_SHOW_DISPLAY:-true}"
       PANEL_SHOW_AIRPLAY: "${PANEL_SHOW_AIRPLAY:-true}"
       PANEL_SHOW_HA: "${PANEL_SHOW_HA:-true}"
+      PARTYVIDEO_ENABLED: "${PARTYVIDEO_ENABLED:-false}"
       IPTV_M3U_URL: "${IPTV_M3U_URL}"
       RADIO_API_URL: "${RADIO_API_URL}"
+      OPENSUBTITLES_API_KEY: "${OPENSUBTITLES_API_KEY}"
+      OPENSUBTITLES_USER: "${OPENSUBTITLES_USER}"
+      OPENSUBTITLES_PASS: "${OPENSUBTITLES_PASS}"
+      OPENSUBTITLES_LANGUAGES: "${OPENSUBTITLES_LANGUAGES:-de,en}"
     volumes:
       - /storage/docker/partyqueue/data/kodi.m3u:/data/kodi.m3u
       - /storage/docker/partyqueue:/root/.ssh:ro
@@ -71,6 +86,7 @@ services:
       - /storage/docker/partyqueue/state:/data/state
       - /storage/docker/partyqueue/uploads:/data/uploads
       - /storage/docker/partyqueue/colors:/data/colors
+      - /storage/docker/partyqueue/data/cookies:/data/cookies
       - telegram-bot-api-data:/var/lib/telegram-bot-api:ro
 
   caddy-webapp:

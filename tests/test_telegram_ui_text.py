@@ -5,6 +5,81 @@ from unittest.mock import MagicMock, AsyncMock, patch
 
 from kodibot.telegram import ui as UI
 from kodibot.telegram import ui_text
+from kodibot.core import kodi_api, queue_state
+
+
+@pytest.fixture
+def batch_ui(mock_ui):
+    mock_ui.kodi_api = kodi_api
+    mock_ui.queue_state.is_sc_set_url = queue_state.is_sc_set_url
+    mock_ui.queue_state.is_sc_track_url = queue_state.is_sc_track_url
+    mock_ui.queue_state.queue_video_async = AsyncMock()
+    mock_ui.queue_state.queue_playlist_async = AsyncMock(return_value=3)
+    mock_ui.queue_state.queue_soundcloud_set_async = AsyncMock(return_value=2)
+    mock_ui.queue_state.make_soundcloud.side_effect = lambda url: {"url": url}
+    mock_ui.pending = {}
+    return mock_ui
+
+
+def test_extract_queue_links_preserves_order_without_duplicate_markdown_labels():
+    first = "https://soundcloud.com/locoparaiso/heimlich-knueller-loco-paraiso"
+    second = "https://soundcloud.com/mhan_solo/mhan-solo-auf-sendung"
+    third = "https://youtu.be/SPM6lZ9Zo88"
+    assert ui_text.extract_queue_links(f"[{first}]({first})\n{second} {third}") == [first, second, third]
+
+
+@pytest.mark.asyncio
+async def test_handle_text_queues_all_three_links_in_message_order(batch_ui):
+    links = [
+        "https://soundcloud.com/locoparaiso/heimlich-knueller-loco-paraiso",
+        "https://soundcloud.com/mhan_solo/mhan-solo-auf-sendung",
+        "https://youtu.be/SPM6lZ9Zo88",
+    ]
+    events = []
+    batch_ui.queue_state.queue_item.side_effect = lambda item: events.append(item["url"])
+    batch_ui.queue_state.queue_video_async.side_effect = lambda vid: events.append(vid)
+    update = MagicMock()
+    update.message.text = "\n".join(links)
+    update.effective_chat.id = 123
+    ctx = MagicMock()
+    ctx.user_data = {}
+
+    await ui_text.handle_text(update, ctx)
+
+    assert events == [links[0], links[1], "SPM6lZ9Zo88"]
+    batch_ui.update_list_message.assert_awaited_once_with(ctx, 123)
+    batch_ui.schedule_cleanup.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_batch_continues_after_failed_link_and_preserves_mixed_order(batch_ui):
+    events = []
+    batch_ui.queue_state.queue_video_async.side_effect = lambda vid: events.append(vid)
+    batch_ui.queue_state.make_soundcloud.side_effect = ValueError("bad track")
+    await ui_text.queue_multiple_links([
+        "https://youtu.be/SPM6lZ9Zo88",
+        "https://soundcloud.com/artist/broken",
+        "https://youtu.be/ABC123abc45",
+    ], MagicMock(), 123)
+    assert events == ["SPM6lZ9Zo88", "ABC123abc45"]
+    assert any(call.args[0] == "queue_link_failed" for call in batch_ui.t.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_batch_short_link_and_playlist_urls(batch_ui, monkeypatch):
+    async def run_inline(func, *args):
+        return func(*args)
+
+    monkeypatch.setattr(ui_text.asyncio, "to_thread", run_inline)
+    batch_ui.queue_state.resolve_sc_short.return_value = "https://soundcloud.com/artist/sets/album"
+    await ui_text.queue_multiple_links([
+        "https://on.soundcloud.com/abc123",
+        "https://www.youtube.com/watch?v=SPM6lZ9Zo88&list=PL12345",
+        "https://www.youtube.com/playlist?list=PL67890",
+    ], MagicMock(), 123)
+    batch_ui.queue_state.queue_soundcloud_set_async.assert_awaited_once_with("https://soundcloud.com/artist/sets/album")
+    batch_ui.queue_state.queue_video_async.assert_awaited_once_with("SPM6lZ9Zo88")
+    batch_ui.queue_state.queue_playlist_async.assert_awaited_once_with("PL67890")
 
 @pytest.fixture
 def mock_ui(monkeypatch):
@@ -111,4 +186,3 @@ async def test_handle_text_youtube_playlist_and_video_skips_cleanup(mock_ui):
     )
 
     assert not mock_ui.schedule_cleanup.called
-

@@ -2,9 +2,59 @@ import asyncio
 import html
 import os
 import re
+from urllib.parse import urlparse
 
 from kodibot.telegram import ui as UI
+from kodibot.telegram import yt_subtitles
 from kodibot.core import radio_browser
+from kodibot.core import partyvideo
+
+
+def extract_queue_links(text):
+    # Consume Markdown links as a whole so a URL used as the label is not added twice.
+    pattern = r"\[[^\]]*\]\((https?://[^\s)]+)\)|(https?://[^\s<>\[\]()]+)"
+    links = []
+    for match in re.finditer(pattern, text):
+        url = (match.group(1) or match.group(2)).rstrip(".,;!?")
+        host = (urlparse(url).hostname or "").lower()
+        if host in {"soundcloud.com", "www.soundcloud.com", "on.soundcloud.com",
+                    "youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}:
+            links.append(url)
+    return links
+
+
+async def queue_multiple_links(links, ctx, chat_id):
+    for url in links:
+        source_url = url
+        try:
+            if UI.kodi_api.SC_SHORT.search(url):
+                url = await asyncio.to_thread(UI.queue_state.resolve_sc_short, url)
+                if not url:
+                    raise ValueError("SoundCloud short link could not be resolved")
+            if UI.queue_state.is_sc_set_url(url):
+                count = await UI.queue_state.queue_soundcloud_set_async(url)
+                await UI.send_toast_message(ctx, chat_id, UI.t(
+                    "soundcloud_set_added" if count else "soundcloud_set_failed", count=count,
+                ))
+            elif UI.queue_state.is_sc_track_url(url):
+                UI.queue_state.queue_item(UI.queue_state.make_soundcloud(url))
+                await UI.send_toast_message(ctx, chat_id, UI.t("soundcloud_track_added"))
+            else:
+                vid = UI.kodi_api.YT.search(url)
+                playlist = UI.kodi_api.PL.search(url)
+                # A batch represents the supplied tracks. A standalone playlist
+                # expands, while a video URL with list= adds only that video.
+                if vid:
+                    await UI.queue_state.queue_video_async(vid.group(1))
+                    await UI.send_toast_message(ctx, chat_id, UI.t("track_added"))
+                elif playlist:
+                    count = await UI.queue_state.queue_playlist_async(playlist.group(1))
+                    await UI.send_toast_message(ctx, chat_id, UI.t("playlist_added", count=count))
+                else:
+                    raise ValueError("Unsupported track URL")
+        except Exception as e:
+            UI.log.info("QUEUE LINK FAILED chat_id=%s url=%s err=%s", chat_id, source_url, e)
+            await UI.send_toast_message(ctx, chat_id, UI.t("queue_link_failed", url=html.escape(source_url)))
 
 
 async def handle_text(update, ctx):
@@ -17,6 +67,17 @@ async def handle_text(update, ctx):
     msg_id = update.message.message_id
     txt = update.message.text.strip()
     txt_lower = txt.lower()
+
+    visual_prompts = ("await_visual_url", "await_visual_movie", "await_visual_upload")
+    if not UI.CFG.partyvideo_enabled and any(ctx.user_data.get(key) for key in visual_prompts):
+        for key in visual_prompts:
+            UI.cancel_prompt_timeout(chat_id, user_id, key)
+            ctx.user_data.pop(key, None)
+            await UI.delete_message_if_present(ctx, chat_id, ctx.user_data.pop(key + "_msg_id", None))
+        ctx.user_data.pop("visual_movies", None)
+        ctx.user_data.pop("visual_uploads", None)
+        await UI.send_toast_message(ctx, chat_id, UI.t("visual_disabled"))
+        return
 
     if ctx.user_data.get("await_ha_hex"):
         UI.cancel_prompt_timeout(chat_id, user_id, "await_ha_hex")
@@ -302,6 +363,53 @@ async def handle_text(update, ctx):
             await UI.update_now_playing_message(ctx, chat_id)
         return
 
+    if ctx.user_data.get("await_visual_url"):
+        UI.cancel_prompt_timeout(chat_id, user_id, "await_visual_url")
+        ctx.user_data["await_visual_url"] = False
+        prompt_id = ctx.user_data.pop("await_visual_url_msg_id", None)
+        await UI.delete_message_if_present(ctx, chat_id, msg_id)
+        if txt_lower == "q":
+            await UI.send_toast_message(ctx, chat_id, UI.t("cancelled_dot"))
+        elif partyvideo.is_youtube_url(txt):
+            await asyncio.to_thread(partyvideo.play_url, txt)
+            await UI.send_toast_message(ctx, chat_id, UI.t("visual_set", title=txt))
+        else:
+            await UI.send_toast_message(ctx, chat_id, UI.t("visual_invalid_url"))
+        sent = True
+        await UI.delete_message_if_present(ctx, chat_id, prompt_id)
+        if sent and not skip_cleanup:
+            UI.schedule_cleanup(ctx, chat_id, prev_id)
+            await UI.update_now_playing_message(ctx, chat_id)
+        return
+
+    if ctx.user_data.get("await_visual_movie") or ctx.user_data.get("await_visual_upload"):
+        is_movie = bool(ctx.user_data.get("await_visual_movie"))
+        state_key = "await_visual_movie" if is_movie else "await_visual_upload"
+        UI.cancel_prompt_timeout(chat_id, user_id, state_key)
+        ctx.user_data[state_key] = False
+        prompt_id = ctx.user_data.pop(f"{state_key}_msg_id", None)
+        items = ctx.user_data.pop("visual_movies" if is_movie else "visual_uploads", [])
+        await UI.delete_message_if_present(ctx, chat_id, msg_id)
+        if txt_lower == "q":
+            await UI.send_toast_message(ctx, chat_id, UI.t("cancelled_dot"))
+        elif txt.isdigit() and 0 <= int(txt) - 1 < len(items):
+            item = items[int(txt) - 1]
+            # Library movies carry "file", uploads the path Kodi sees.
+            path = item.get("file") if is_movie else item.get("kodi_path")
+            title = item.get("title") if is_movie else item.get("name")
+            await asyncio.to_thread(partyvideo.play_path, path)
+            await UI.send_toast_message(ctx, chat_id, UI.t("visual_set", title=title))
+        elif txt.isdigit():
+            await UI.send_toast_message(ctx, chat_id, UI.t("that_number_missing"))
+        else:
+            await UI.send_toast_message(ctx, chat_id, UI.t("enter_number_or_q"))
+        sent = True
+        await UI.delete_message_if_present(ctx, chat_id, prompt_id)
+        if sent and not skip_cleanup:
+            UI.schedule_cleanup(ctx, chat_id, prev_id)
+            await UI.update_now_playing_message(ctx, chat_id)
+        return
+
     if ctx.user_data.get("await_movie_index"):
         UI.cancel_prompt_timeout(chat_id, user_id, "await_movie_index")
         ctx.user_data["await_movie_index"] = False
@@ -415,7 +523,7 @@ async def handle_text(update, ctx):
                     await UI.send_toast_message(ctx, chat_id, UI.t("subtitle_disable_failed"))
             elif 0 < i <= len(subtitles):
                 selected = subtitles[i - 1]
-                ok = await asyncio.to_thread(UI.kodi_api.set_subtitle_stream, selected.get("index"))
+                ok = await asyncio.to_thread(yt_subtitles.select_subtitle, selected)
                 if ok:
                     await UI.send_toast_message(ctx, chat_id, UI.t("subtitles_set", label=UI.av_stream_label(selected)))
                 else:
@@ -864,7 +972,7 @@ async def handle_text(update, ctx):
                 
                 # Play in Kodi
                 UI.queue_state.clear_radio_reconnect_state()
-                ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, url, name)
+                ok = await asyncio.to_thread(UI.queue_state.play_radio, url, name)
                 if ok:
                     UI.queue_state.set_last_played_radio(url, name)
                     UI.queue_state.clear_bot_playback_state()
@@ -946,7 +1054,7 @@ async def handle_text(update, ctx):
                 
                 # Play in Kodi
                 UI.queue_state.clear_radio_reconnect_state()
-                ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, url, name)
+                ok = await asyncio.to_thread(UI.queue_state.play_radio, url, name)
                 if ok:
                     UI.queue_state.set_last_played_radio(url, name)
                     UI.queue_state.clear_bot_playback_state()
@@ -1021,7 +1129,7 @@ async def handle_text(update, ctx):
             if 0 <= i < len(favourites):
                 selected = favourites[i]
                 UI.queue_state.clear_radio_reconnect_state()
-                ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, selected.get("target"), selected.get("title"))
+                ok = await asyncio.to_thread(UI.queue_state.play_radio, selected.get("target"), selected.get("title"))
                 if ok:
                     UI.queue_state.set_last_played_radio(selected.get("target"), selected.get("title"))
                     UI.queue_state.clear_bot_playback_state()
@@ -1122,6 +1230,13 @@ async def handle_text(update, ctx):
         if sent:
             UI.schedule_cleanup(ctx, chat_id, prev_id)
             await UI.update_list_message(ctx, chat_id)
+        return
+
+    links = extract_queue_links(txt)
+    if len(links) > 1:
+        await queue_multiple_links(links, ctx, chat_id)
+        UI.schedule_cleanup(ctx, chat_id, prev_id)
+        await UI.update_list_message(ctx, chat_id)
         return
 
     spotify_link = UI.spotify.parse_spotify_url(txt)

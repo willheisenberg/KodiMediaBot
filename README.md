@@ -6,6 +6,11 @@
 
 This bot controls Kodi and a CEC device (HiFi/TV) via Telegram.
 
+You can send several YouTube and SoundCloud links in one message, separated by
+spaces or newlines. They are added in message order; a failed link does not stop
+the remaining links. In such a batch, a YouTube video URL with a playlist parameter
+adds the video only; a standalone playlist URL adds the playlist.
+
 Besides YouTube and SoundCloud queue links, the bot can also play Telegram
 voice/video uploads and selected social-media video URLs directly once.
 Those temporary media files are deleted again after playback stops.
@@ -95,6 +100,17 @@ docker build -t partyqueue .
 Enable Kodi's web server under `Settings -> Services -> Control`. `KODI_USER`,
 `KODI_PASS` and `KODI_PORT` must exactly match that configuration; otherwise the
 bot can show a queued title but cannot start playback or display its runtime.
+
+The optional [Party Video](https://github.com/willheisenberg/visualization-partyvideo)
+addon shows a muted video in an endless loop while music plays. Install it on the
+Kodi host and set `PARTYVIDEO_ENABLED=true` to get the 🌌 Visual page in the panel.
+The default is `false`; enable it only after installing the addon. Recreate the
+bot container after changing the flag so the new environment takes effect.
+The page accepts YouTube links, library movies and uploaded videos, and displays
+install/download progress and playback errors in a message that updates itself.
+Upload cleanup requires confirmation and only removes videos directly inside the
+upload folder; library files, symlinks and the active visual source are preserved.
+An upload kept for a visual can be removed using this menu after stopping it.
 
 The SoundCloud and YouTube addons are required for their respective links. The
 YouTube addon also needs its own API key, client ID and client secret configured
@@ -196,6 +212,7 @@ services:
       PROJECTOR_POWER_ON_CODE: "0x03"
       PROJECTOR_POWER_OFF_CODE: "0x00"
       PROJECTOR_POWER_ON_REPEATS: "4"
+      PROJECTOR_POWER_ON_HOLD_SECONDS: "3"
       DISPLAY_BUTTON_LABEL: "📽 Beamer"
       DISPLAY_POWER_ON_CMD: "python -m kodibot.core.projector on"
       DISPLAY_POWER_OFF_CMD: "python -m kodibot.core.projector off"
@@ -205,10 +222,12 @@ services:
       PANEL_SHOW_DISPLAY: "true"
       PANEL_SHOW_AIRPLAY: "true"
       PANEL_SHOW_HA: "true"
+      PARTYVIDEO_ENABLED: "false"
       CEC_HOST: "172.17.0.1"
       DENON_HOST: ""
       DEBUG_WS: "1"
       SC_CLIENT_ID: "YOUR_CLIENT_ID"
+      COOKIES_FILE_PATH: "/data/cookies/cookies.txt"
       SPOTIFY_MAX_TRACKS: "100"
       SPOTIFY_TIMEOUT: "10"
       MEDIA_BASE_URL: "http://YOUR_HOST_IP:8765"
@@ -231,6 +250,7 @@ services:
       - /storage/docker/partyqueue/state:/data/state
       - /storage/docker/partyqueue/uploads:/data/uploads
       - /storage/docker/partyqueue/colors:/data/colors
+      - /storage/docker/partyqueue/data/cookies:/data/cookies
       - telegram-bot-api-data:/var/lib/telegram-bot-api:ro
 
   caddy-webapp:
@@ -271,6 +291,7 @@ docker compose -f docker-compose.local-bot-api.yml up -d --build
 Environment variables worth calling out:
 - **`SPOTIFY_MAX_TRACKS`**: Upper bound on how many tracks one Spotify link may add. Default `100`. Reading Spotify needs no account and no credentials — see [Spotify links](#spotify-links).
 - **`SPOTIFY_TIMEOUT`**: HTTP timeout in seconds when fetching a Spotify page. Default `10`.
+- **`SPOTIFY_USER_NAMES`**: Names to show for the accounts that play through [Spotify Connect](#spotify-connect-soloist-add-on), as `username=Name,username=Name`, e.g. `1234567890=John,jane.doe=Jane`. Optional; an account without an entry shows its Spotify username, which is a number for some accounts.
 - **`SPOTIFY_YT_TIMEOUT`**: Timeout in seconds for one YouTube search while resolving a Spotify link. Default `25`. This is deliberately far above `RADIO_YT_TIMEOUT`: the bot resolves five tracks at a time, and parallel `yt-dlp` searches are much slower than a single one. Too low a value silently drops tracks — they look like "no match found". Raise it on slow hardware.
 
 Bot data is persisted on the host in `/storage/docker/partyqueue/` (playlists, uploads, HA colors, SSH keys).
@@ -335,6 +356,12 @@ Notes:
   `PANEL_SHOW_AIRPLAY` and `PANEL_SHOW_HA` accept `true` or `false`. They hide
   only their corresponding panel sections; disabled Hifi, AirPlay and volume
   sections are also omitted from the status line.
+- `PARTYVIDEO_ENABLED` accepts `true` or `false` and defaults to `false`. It adds
+  the 🌌 Visual page to the controls panel, which drives the separate
+  [Party Video](https://github.com/willheisenberg/visualization-partyvideo) Kodi
+  addon: a muted video looping behind your music, from a YouTube link, a library
+  movie or a video uploaded to the chat. Leave it off unless that addon is
+  installed on the Kodi host — without it the buttons have nothing to talk to.
 - `TELEGRAM_LOCAL_MODE=1` enables support for a local `telegram-bot-api` server, which is required if the bot should download Telegram uploads larger than 20 MB.
 - `TELEGRAM_BASE_URL` optionally overrides the Telegram API endpoint, for example `http://127.0.0.1:8081/bot`.
 - `TELEGRAM_BASE_FILE_URL` optionally overrides the Telegram file endpoint, for example `http://127.0.0.1:8081/file/bot`.
@@ -347,6 +374,9 @@ Notes:
 - `RADIO_M3U_PATH` optionally overrides the M3U path (default: `/data/kodi.m3u`).
 - `RADIO_API_URL` configures the community-driven Radio Browser API mirror (default: `https://de1.api.radio-browser.info/json`).
 - `IPTV_M3U_URL` configures a comma-separated list of M3U stream playlists for the live TV search (default: Kodinerds clean list + iptv-org Germany list).
+- `OPENSUBTITLES_API_KEY`, `OPENSUBTITLES_USER`, and `OPENSUBTITLES_PASS` are optional OpenSubtitles API credentials. Without all three, subtitle auto-download is disabled and the bot behaves exactly as before. `OPENSUBTITLES_API_KEY` is obtained from your profile on [opensubtitles.com](https://opensubtitles.com).
+- `OPENSUBTITLES_LANGUAGES` configures the comma-separated list of languages to search for (default: `de,en`). Whitespace around language codes is trimmed; `de, en , fr` parses as `["de", "en", "fr"]`. Each language is searched in two variants: the full subtitle, stored as `Movie.de.srt`, and the forced one — covering only foreign-language passages and on-screen text — stored as `Movie.de.forced.srt`. Most films have no forced track on OpenSubtitles; those are skipped silently. Both variants count against the daily download quota, so `de,en` can cost up to four downloads for a film the bot has never seen before.
+- **Secrets containing special characters must be wrapped in single quotes** in the `.env` file — this applies to `OPENSUBTITLES_PASS`, `KODI_PASS`, `HA_TOKEN` and `TG_TOKEN` alike. Compose reads `$` as the start of a variable reference, `#` as a comment, and a value containing `"` breaks out of double quotes, so `PASS="se#cr$et"` silently arrives empty in the container while `PASS='se#cr$et'` arrives intact. Single quotes take the value literally; the only character they cannot carry is a single quote itself. Verify without printing the secret: `docker exec kodi-media-bot sh -c 'printf %s "$OPENSUBTITLES_PASS" | wc -c'` must report the expected length.
 - `RADIO_STREAM_MAP` is optional and overrides entries from `kodi.m3u`. Example: `{"Radioactive Sifnos":"https://streamyourdream.org:8050/radioactive"}`.
 - `ICY_TITLE_TTL` (seconds, default `15`) configures how long ICY titles are cached.
 - `ICY_TIMEOUT` (seconds, default `6`) configures the ICY metadata fetch timeout.
@@ -356,6 +386,8 @@ Notes:
 - Playlists are saved to `/data/playlists` inside the container. Mount a host path to persist them.
 - Telegram uploads are stored temporarily in `/data/uploads` inside the container, deleted again after playback stops, and old leftovers are cleaned up on bot startup.
 - Social-media video links from supported domains like TikTok, Instagram, Facebook and X/Twitter are downloaded once with `yt-dlp`, played directly, and then deleted again.
+- `COOKIES_FILE_PATH` optionally supplies a Netscape-format cookie file for social-media downloads, following the same convention as TelegramSocialMediaVideoBot. Local Python runs default to `cookies.txt` in the working directory; set this variable for another location or filename such as `cookie.txt`. The file is checked before each download, so it can be added or refreshed while the bot is running. If absent, downloads run without cookies.
+- In the supplied Docker Compose configuration, place the cookie file at `/storage/docker/partyqueue/data/cookies/cookies.txt` on the host. That persistent directory is mounted at `/data/cookies`, and `COOKIES_FILE_PATH` defaults to `/data/cookies/cookies.txt` inside the container. Keep it outside `/data/uploads`, which is served as media and cleaned up automatically. The mount is writable because `yt-dlp` also saves cookies. `cookies.txt` and `cookie.txt` are excluded from Git and the Docker build context. For an existing LibreELEC installation, add the cookie volume and environment setting shown above to `/storage/docker-compose.yml` when deploying; the deploy script does not copy the local Compose file or cookie file. Cookies must belong to a session that can access the video; expired cookies, removed posts, and rate limits can still prevent downloads.
 - Use the “Save” and “Load” buttons in the Telegram panel to store or restore the queue.
 - `HA_HOST` is the IP address of your Home Assistant instance.
 - `HA_PORT` is the port of Home Assistant (default `8123`).
@@ -367,7 +399,7 @@ Notes:
 - `ACME_EMAIL` is the email address Caddy uses for Let's Encrypt certificate management.
 - `CADDYFILE_PATH` optionally overrides the host path mounted as `/etc/caddy/Caddyfile`.
 - If `HA_WEBAPP_URL` is not set, the bot falls back to `MEDIA_BASE_URL/app/ha-color` when `MEDIA_BASE_URL` itself is `https://`.
-- If `HA_HOST` is set, a `🏠 Home Assistant` button appears in the panel with options to toggle the light, open `Live Color`, set a hex color, adjust brightness, save the current color, load saved colors, and delete saved colors.
+- If `HA_HOST` is set, a `🏠 Home Assistant` button appears in the panel with options to toggle the light, open `Live Color`, set a hex color, adjust brightness, save the current color, load saved colors, and delete saved colors. The Home Assistant menu replaces the current panel in place; `⬅ Back` restores the main controls. Color presets use the same message, and playback updates keep the open menu visible.
 - In private chats the HA menu shows the embedded `Live Color` Mini App button directly.
 - In group chats the HA menu shows `Open Live Color`, which uses Telegram's Main Mini App deep link and therefore depends on the BotFather Mini App configuration above.
 
@@ -426,6 +458,32 @@ The embed page has none of those constraints. Its drawback is that its internal
 structure is undocumented: if Spotify changes the page layout, reading it breaks.
 That case is handled — the bot reports the link as unreadable and keeps running
 normally.
+
+### Spotify Connect (Soloist add-on)
+
+With the separate `service.soloist` Kodi add-on, the box shows up as a device
+in the Spotify app and Spotify plays through Kodi. The bot and Spotify simply
+replace each other:
+
+- **Spotify takes over** → whatever the bot was playing stops: the queue's
+  playback ends (the queue itself stays) and a radio station is forgotten. The
+  panel shows `Spotify (user): title – artist`, linked to the matching YouTube video (or
+  SoundCloud track) when one is found — the same lookup as for radio titles.
+  It runs in the background, so the link appears a few seconds after the title.
+- **The bot takes over**, because someone plays something from the chat → the
+  box gives up the Spotify device, and the app moves playback back to the
+  phone.
+- **Spotify stops or pauses** → nothing happens on its own. The stop button in
+  the panel releases the Spotify device.
+
+`user` is the Spotify account that selected the box, by its Spotify username.
+Give accounts a friendlier name with `SPOTIFY_USER_NAMES`. An add-on version
+that does not report the account leaves the panel at `Spotify: title – artist`.
+
+No other bot configuration is needed. The bot recognises the add-on's stream at
+`rtp://127.0.0.1:23433` or, for add-on versions that stream 48 kHz, by its SDP
+file `addon_data/service.soloist/soloist.sdp`. Keep the add-on's RTP port at its
+default.
 
 ## Troubleshooting
 - `ssh: not found`: install `openssh-client` in the image.
@@ -487,8 +545,14 @@ PROJECTOR_ADDRESS=0x08
 PROJECTOR_POWER_ON_CODE=0x03
 PROJECTOR_POWER_OFF_CODE=0x00
 PROJECTOR_POWER_ON_REPEATS=4
+PROJECTOR_POWER_ON_HOLD_SECONDS=3
 ```
 *(Hex values can be provided in `0x` format and will be automatically parsed).*
+
+`PROJECTOR_POWER_ON_HOLD_SECONDS` holds the power-on key after the burst, like a
+long press on the remote. A projector that has been in standby for a long time
+can ignore the short burst and only wake on a held key. Set it to `0` to send
+the burst alone.
 
 The GPIO pin is **not** configured here — it belongs to the kernel overlay
 `dtoverlay=gpio-ir-tx,gpio_pin=17` in `/flash/config.txt` from step 1.

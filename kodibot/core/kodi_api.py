@@ -64,17 +64,19 @@ _ws_on_pause = None
 _ws_on_resume = None
 _ws_on_stop = None
 _ws_on_playback_refresh = None
+_ws_on_spotify_takeover = None
 
 
 def set_ws_handlers(*, on_play=None, on_pause=None, on_resume=None,
-                    on_stop=None, on_playback_refresh=None):
+                    on_stop=None, on_playback_refresh=None, on_spotify_takeover=None):
     global _ws_on_play, _ws_on_pause, _ws_on_resume, _ws_on_stop
-    global _ws_on_playback_refresh
+    global _ws_on_playback_refresh, _ws_on_spotify_takeover
     _ws_on_play = on_play
     _ws_on_pause = on_pause
     _ws_on_resume = on_resume
     _ws_on_stop = on_stop
     _ws_on_playback_refresh = on_playback_refresh
+    _ws_on_spotify_takeover = on_spotify_takeover
 
 
 # Send a JSON-RPC request to Kodi and return the response JSON.
@@ -375,6 +377,36 @@ def disable_subtitles():
     return "error" not in res
 
 
+def get_video_fps():
+    """Frame rate of the running video, or None when Kodi does not know it."""
+    res = kodi_call("XBMC.GetInfoLabels", {"labels": ["Player.Process(videofps)"]})
+    raw = ((res.get("result") or {}).get("Player.Process(videofps)") or "").strip()
+    try:
+        fps = float(raw)
+    except ValueError:
+        return None
+    return fps if fps > 0 else None
+
+
+def add_subtitle_file(path):
+    """Load an external subtitle file into the running player.
+
+    Player.AddSubtitle takes no ``enable`` flag and Kodi turns the added track
+    on right away, so callers that want it silent follow up with
+    ``disable_subtitles()``.
+    """
+    playerid = get_active_playerid()
+    if playerid is None or not path:
+        return False
+    # Kodi caches the folder listing when playback starts and refuses to open
+    # any file missing from that cache without ever looking at the disk -- a
+    # subtitle written afterwards fails with "Unable to create subtitle
+    # parser".  Listing the folder again refreshes the cache.
+    kodi_call("Files.GetDirectory", {"directory": path.rsplit("/", 1)[0] + "/", "media": "files"})
+    res = kodi_call("Player.AddSubtitle", {"playerid": playerid, "subtitle": path})
+    return "error" not in res
+
+
 def pick_playerid(players):
     if not players:
         return None
@@ -400,6 +432,45 @@ def stop_video_players():
             if pid is not None:
                 kodi_call("Player.Stop", {"playerid": pid})
     kodi_call("Playlist.Clear", {"playlistid": 1})
+
+
+# Step through the Kodi playlist the active player is working off.
+#
+# The bot queue only ever puts a single item into a Kodi playlist and drives
+# the order itself, so a playlist holding more than one entry always belongs to
+# Kodi-side playback such as "play all episodes". Returns:
+#   "moved"    – Kodi switched to the requested item
+#   "end"      – such a playlist is playing but has no item in that direction
+#   "inactive" – no Kodi-driven playlist, so the caller should use the bot queue
+def kodi_playlist_goto(direction):
+    if direction not in ("next", "previous"):
+        return "inactive"
+    pid = get_active_playerid()
+    if pid is None:
+        return "inactive"
+    props = (kodi_call(
+        "Player.GetProperties",
+        {"playerid": pid, "properties": ["playlistid", "position"]},
+    ).get("result") or {})
+    playlistid = props.get("playlistid")
+    if not isinstance(playlistid, int) or playlistid < 0:
+        return "inactive"
+    size = ((kodi_call(
+        "Playlist.GetProperties",
+        {"playlistid": playlistid, "properties": ["size"]},
+    ).get("result") or {}).get("size") or 0)
+    if size < 2:
+        return "inactive"
+    position = props.get("position")
+    if isinstance(position, int) and position >= 0:
+        if direction == "next" and position >= size - 1:
+            return "end"
+        if direction == "previous" and position <= 0:
+            return "end"
+    res = kodi_call("Player.GoTo", {"playerid": pid, "to": direction})
+    # A failed GoTo still means Kodi drives playback: report the boundary
+    # rather than letting the caller start the bot queue over the episodes.
+    return "moved" if "error" not in res else "end"
 
 
 # Stop playback and clear Kodi playlists.
@@ -460,6 +531,8 @@ from kodibot.core.kodi_metadata import (
     radio_title_to_youtube_link,
     radio_title_to_soundcloud_link,
     spotify_track_to_youtube_id,
+    spotify_connect_track_link,
+    cached_spotify_connect_track_link,
     resolve_radio_title,
     get_cached_soundcloud_permalink,
     cache_soundcloud_permalink,
@@ -475,6 +548,7 @@ from kodibot.core.kodi_metadata import (
 from kodibot.core.kodi_library import (
     scan_video_library,
     list_movies,
+    list_movies_for_visual,
     list_tvshows,
     list_tvshow_episodes,
     play_movie,

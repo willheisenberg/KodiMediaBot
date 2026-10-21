@@ -28,6 +28,7 @@ def clean_state(monkeypatch):
         S.LAST_BOT_ID, S.PREV_BOT_ID, S.LAST_SEEN_ID, S.LAST_CLEANUP_ID,
         S.FIRST_BOT_ID, S.LIST_MSG_ID, S.PANEL_MSG_ID, S.HELP_MSG_ID,
         S.CLEANUP_TASKS, S.CLEANUP_PENDING, S.CLEANUP_DEFERRED, S.CLEANUP_FAILED,
+        S.PROMPT_TIMEOUT_TASKS, S.PROMPT_REGISTRY,
     ):
         store.clear()
     monkeypatch.setattr(S, "MAIN_LOOP", None)
@@ -196,3 +197,132 @@ class TestButtonReferenceIsProtected:
 
         assert 102 not in recorded, "the visible button reference was deleted"
         assert 102 in S.CLEANUP_DEFERRED.get(CHAT, set())
+
+
+USER = 77
+
+
+def make_prompt_ctx(recorded):
+    """Context whose application runs prompt timeout tasks on the test loop."""
+    ctx = make_ctx(recorded)
+    ctx.user_data = {}
+    ctx.application = SimpleNamespace(
+        create_task=asyncio.get_running_loop().create_task,
+        user_data={USER: ctx.user_data},
+    )
+    return ctx
+
+
+async def cancel_prompt_tasks():
+    tasks = list(S.PROMPT_TIMEOUT_TASKS.values())
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+class TestOpenPromptIsProtected:
+    """A prompt deleted under its state flag leaves its button dead."""
+
+    @pytest.mark.asyncio
+    async def test_open_prompt_survives_cleanup_until_it_is_answered(self):
+        recorded = []
+        ctx = make_prompt_ctx(recorded)
+        S.LAST_BOT_ID[CHAT] = 106
+        S.PREV_BOT_ID[CHAT] = 103
+        ui.activate_prompt(ctx, CHAT, USER, "await_seek_percent", "await_seek_percent_msg_id", 105)
+
+        ui.schedule_cleanup(ctx, CHAT, None)
+        await drain()
+
+        assert 105 not in recorded
+        assert 105 in S.CLEANUP_DEFERRED[CHAT]
+
+        # Answering clears the flag; the next sweep collects the message.
+        ctx.user_data["await_seek_percent"] = False
+        ui.schedule_cleanup(ctx, CHAT, None)
+        await drain()
+
+        assert 105 in recorded
+        await cancel_prompt_tasks()
+
+    @pytest.mark.asyncio
+    async def test_replaced_prompt_message_is_not_protected(self):
+        ctx = make_prompt_ctx([])
+        ui.activate_prompt(ctx, CHAT, USER, "await_seek_percent", "await_seek_percent_msg_id", 105)
+        ui.activate_prompt(ctx, CHAT, USER, "await_seek_percent", "await_seek_percent_msg_id", 108)
+        await asyncio.sleep(0)
+
+        protected = ui._protected_message_ids(CHAT)
+        assert 108 in protected
+        assert 105 not in protected
+        # The replaced prompt's task must not unregister its successor
+        assert (CHAT, USER, "await_seek_percent") in S.PROMPT_TIMEOUT_TASKS
+        await cancel_prompt_tasks()
+
+    @pytest.mark.asyncio
+    async def test_prompt_in_another_chat_is_not_protected_here(self):
+        ctx = make_prompt_ctx([])
+        ui.activate_prompt(ctx, CHAT + 1, USER, "await_play_index", "await_play_msg_id", 105)
+
+        assert 105 not in ui._protected_message_ids(CHAT)
+        await cancel_prompt_tasks()
+
+    @pytest.mark.asyncio
+    async def test_expired_prompt_is_deleted_and_unregistered(self, monkeypatch):
+        monkeypatch.setattr(ui, "PROMPT_TIMEOUT_SECONDS", 0)
+        recorded = []
+        ctx = make_prompt_ctx(recorded)
+        ui.activate_prompt(ctx, CHAT, USER, "await_play_index", "await_play_msg_id", 105)
+
+        await S.PROMPT_TIMEOUT_TASKS[(CHAT, USER, "await_play_index")]
+
+        assert recorded == [105]
+        assert ctx.user_data == {}
+        assert S.PROMPT_REGISTRY == {}
+        assert S.PROMPT_TIMEOUT_TASKS == {}
+
+
+class TestClosePrompt:
+    """Pressing a prompt's button again replaces the prompt."""
+
+    @pytest.mark.asyncio
+    async def test_closes_the_open_prompt(self):
+        recorded = []
+        ctx = make_prompt_ctx(recorded)
+        ui.activate_prompt(
+            ctx, CHAT, USER, "await_fav", "await_fav_msg_id", 105, extra_keys=("favourites",)
+        )
+        ctx.user_data["favourites"] = ["a"]
+        task = S.PROMPT_TIMEOUT_TASKS[(CHAT, USER, "await_fav")]
+
+        await ui.close_prompt(ctx, CHAT, USER, "await_fav")
+        await asyncio.gather(task, return_exceptions=True)
+
+        assert recorded == [105]
+        assert ctx.user_data == {}
+        assert task.cancelled()
+        assert S.PROMPT_REGISTRY == {}
+        assert 105 not in ui._protected_message_ids(CHAT)
+
+    @pytest.mark.asyncio
+    async def test_closes_only_the_active_step_of_a_multi_step_prompt(self):
+        recorded = []
+        ctx = make_prompt_ctx(recorded)
+        ui.activate_prompt(ctx, CHAT, USER, "await_movie_index", "await_movie_msg_id", 105)
+
+        await ui.close_prompt(ctx, CHAT, USER, *ui.MEDIA_PROMPT_KEYS)
+
+        assert recorded == [105]
+        assert not ui.media_prompt_active(ctx.user_data)
+        await cancel_prompt_tasks()
+
+    @pytest.mark.asyncio
+    async def test_without_open_prompt_does_nothing(self):
+        recorded = []
+        ctx = make_prompt_ctx(recorded)
+
+        await ui.close_prompt(ctx, CHAT, USER, "await_play_index")
+
+        assert recorded == []
+        assert ctx.user_data == {}
+

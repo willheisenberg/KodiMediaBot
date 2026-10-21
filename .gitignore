@@ -6,3 +6,5 @@ wimius_ir_codes.json
 deploy_libreelec_partyqueue.sh
 scripts/*
 !scripts/.gitkeep
+cookies.txt
+cookie.txt

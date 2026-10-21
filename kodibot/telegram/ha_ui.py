@@ -4,18 +4,21 @@ import re
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
-from kodibot.core import homeassistant as ha
 from kodibot.config import CFG
-from kodibot.telegram.i18n import state_label, t
+from kodibot.core import homeassistant as ha
 from kodibot.telegram import state as S
+from kodibot.telegram.i18n import state_label, t
 from kodibot.telegram.panel import (
-    should_recreate_after_edit_error,
     is_not_modified_error,
+    save_ui_state,
+    set_panel_menu_mode,
+    should_recreate_after_edit_error,
+    update_now_playing_message,
 )
 from kodibot.telegram.rate import (
-    telegram_request,
-    send_and_track,
     delete_message_if_present,
+    send_and_track,
+    telegram_request,
 )
 
 log = logging.getLogger(__name__)
@@ -48,6 +51,8 @@ async def _expire_ha_menu_timeout(ctx, chat_id, expected_message_id):
 def arm_ha_menu_timeout(ctx, chat_id, message_id):
     HA_MENU_MSG_ID[chat_id] = message_id
     cancel_ha_menu_timeout(chat_id)
+    if message_id == S.PANEL_MSG_ID.get(chat_id):
+        return
     HA_MENU_TIMEOUT_TASKS[chat_id] = ctx.application.create_task(
         _expire_ha_menu_timeout(ctx, chat_id, message_id)
     )
@@ -65,6 +70,11 @@ async def close_ha_menu_message(ctx, chat_id, message_id=None):
     if tracked_id == target_id:
         HA_MENU_MSG_ID.pop(chat_id, None)
         cancel_ha_menu_timeout(chat_id)
+    if target_id and target_id == S.PANEL_MSG_ID.get(chat_id):
+        set_panel_menu_mode(chat_id, "main")
+        S.PANEL_RENDER_CACHE.pop(chat_id, None)
+        await update_now_playing_message(ctx, chat_id)
+        return
     if target_id:
         await delete_message_if_present(ctx, chat_id, target_id)
 
@@ -143,7 +153,7 @@ def build_ha_main_menu_markup(*, live_color_button=None, extra_rows=None):
         ])
     rows.extend(extra_rows or ())
     rows.append([
-        InlineKeyboardButton(t("cancel").replace("❌ ", ""), callback_data="ha:close"),
+        InlineKeyboardButton(t("back"), callback_data="ha:close"),
     ])
     return InlineKeyboardMarkup(rows)
 
@@ -201,6 +211,19 @@ def build_ha_preset_menu_markup(saved_colors):
 
 
 async def _edit_or_send_ha_message(ctx, chat_id, text, reply_markup, *, edit_message_id=None):
+    # The Home Assistant pages share the main panel's message, like Visuals.
+    panel_id = S.PANEL_MSG_ID.get(chat_id)
+    previous_mode = S.PANEL_MENU_MODE.get(chat_id, "main")
+    edit_message_id = panel_id or edit_message_id
+    set_panel_menu_mode(chat_id, "ha")
+    S.PANEL_RENDER_CACHE.pop(chat_id, None)
+
+    def remember(message_id):
+        S.PANEL_MSG_ID[chat_id] = message_id
+        arm_ha_menu_timeout(ctx, chat_id, message_id)
+        save_ui_state()
+        return message_id
+
     if edit_message_id:
         try:
             await telegram_request(
@@ -213,27 +236,23 @@ async def _edit_or_send_ha_message(ctx, chat_id, text, reply_markup, *, edit_mes
             )
         except Exception as e:
             if is_not_modified_error(e):
-                arm_ha_menu_timeout(ctx, chat_id, edit_message_id)
-                return edit_message_id
+                return remember(edit_message_id)
             if not should_recreate_after_edit_error(e):
+                set_panel_menu_mode(chat_id, previous_mode)
                 log.info("HA menu edit fail chat_id=%s message_id=%s err=%s", chat_id, edit_message_id, e)
                 return None
         else:
-            arm_ha_menu_timeout(ctx, chat_id, edit_message_id)
-            return edit_message_id
+            old_id = HA_MENU_MSG_ID.get(chat_id)
+            if old_id and old_id != edit_message_id:
+                await delete_message_if_present(ctx, chat_id, old_id)
+            return remember(edit_message_id)
 
-    tracked_id = HA_MENU_MSG_ID.get(chat_id)
-    if tracked_id and tracked_id != edit_message_id:
-        await close_ha_menu_message(ctx, chat_id, tracked_id)
-
-    msg = await send_and_track(
-        ctx,
-        chat_id,
-        text,
-        reply_markup=reply_markup,
-    )
-    arm_ha_menu_timeout(ctx, chat_id, msg.message_id)
-    return msg.message_id
+    try:
+        msg = await send_and_track(ctx, chat_id, text, reply_markup=reply_markup)
+    except Exception:
+        set_panel_menu_mode(chat_id, previous_mode)
+        raise
+    return remember(msg.message_id)
 
 
 async def show_ha_menu(ctx, chat_id, *, chat_type, bot_username, state, edit_message_id=None):

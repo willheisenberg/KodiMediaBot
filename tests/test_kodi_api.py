@@ -1,6 +1,7 @@
 """Tests for pure functions in kodi_api.py"""
 import os
 import sys
+from unittest.mock import patch
 
 # Set required env vars before importing
 os.environ.setdefault("KODI_HOST", "127.0.0.1")
@@ -168,3 +169,139 @@ class TestFavouriteMediaTarget:
         fav = {"type": "window", "windowparameter": "something else"}
         result = kodi_api.favourite_media_target(fav)
         assert result is None
+
+
+@patch("kodibot.core.kodi_api.get_active_playerid")
+@patch("kodibot.core.kodi_api.kodi_call")
+def test_add_subtitle_file_sends_player_add_subtitle(mock_call, mock_pid):
+    mock_pid.return_value = 1
+    mock_call.return_value = {"result": "OK"}
+    assert kodi_api.add_subtitle_file("/storage/videos/x.de.srt") is True
+    method, params = mock_call.call_args.args
+    assert method == "Player.AddSubtitle"
+    assert params == {"playerid": 1, "subtitle": "/storage/videos/x.de.srt"}
+
+
+@patch("kodibot.core.kodi_api.get_active_playerid")
+@patch("kodibot.core.kodi_api.kodi_call")
+def test_add_subtitle_file_refreshes_the_folder_listing_first(mock_call, mock_pid):
+    # Kodi only opens files present in its cached folder listing; a subtitle
+    # written during playback is missing there until the folder is re-listed.
+    mock_pid.return_value = 1
+    mock_call.return_value = {"result": "OK"}
+    kodi_api.add_subtitle_file("/media/Serien/Show/x.en.srt")
+    methods = [c.args[0] for c in mock_call.call_args_list]
+    assert methods == ["Files.GetDirectory", "Player.AddSubtitle"]
+    params = mock_call.call_args_list[0].args[1]
+    assert params["directory"] == "/media/Serien/Show/"
+
+
+@patch("kodibot.core.kodi_api.kodi_call")
+def test_get_video_fps_parses_the_info_label(mock_call):
+    mock_call.return_value = {"result": {"Player.Process(videofps)": "25.000"}}
+    assert kodi_api.get_video_fps() == 25.0
+    mock_call.return_value = {"result": {"Player.Process(videofps)": ""}}
+    assert kodi_api.get_video_fps() is None
+    mock_call.return_value = {"error": {"code": -32100}}
+    assert kodi_api.get_video_fps() is None
+
+
+@patch("kodibot.core.kodi_api.get_active_playerid")
+def test_add_subtitle_file_without_player(mock_pid):
+    mock_pid.return_value = None
+    assert kodi_api.add_subtitle_file("/storage/videos/x.de.srt") is False
+
+
+@patch("kodibot.core.kodi_api.get_active_playerid")
+@patch("kodibot.core.kodi_api.kodi_call")
+def test_add_subtitle_file_reports_kodi_error(mock_call, mock_pid):
+    mock_pid.return_value = 1
+    mock_call.return_value = {"error": {"code": -32100}}
+    assert kodi_api.add_subtitle_file("/storage/videos/x.de.srt") is False
+
+
+def _playlist_responses(position, size, goto=None):
+    """kodi_call side effect for a player at ``position`` in a playlist of ``size``."""
+    def _call(method, params=None):
+        if method == "Player.GetProperties":
+            return {"result": {"playlistid": 1, "position": position}}
+        if method == "Playlist.GetProperties":
+            return {"result": {"size": size}}
+        if method == "Player.GoTo":
+            return goto if goto is not None else {"result": "OK"}
+        return {}
+    return _call
+
+
+@patch("kodibot.core.kodi_api.get_active_playerid")
+@patch("kodibot.core.kodi_api.kodi_call")
+def test_kodi_playlist_goto_next_steps_playlist(mock_call, mock_pid):
+    mock_pid.return_value = 1
+    mock_call.side_effect = _playlist_responses(position=0, size=3)
+    assert kodi_api.kodi_playlist_goto("next") == "moved"
+    method, params = mock_call.call_args.args
+    assert method == "Player.GoTo"
+    assert params == {"playerid": 1, "to": "next"}
+
+
+@patch("kodibot.core.kodi_api.get_active_playerid")
+@patch("kodibot.core.kodi_api.kodi_call")
+def test_kodi_playlist_goto_previous_steps_playlist(mock_call, mock_pid):
+    mock_pid.return_value = 1
+    mock_call.side_effect = _playlist_responses(position=2, size=3)
+    assert kodi_api.kodi_playlist_goto("previous") == "moved"
+    method, params = mock_call.call_args.args
+    assert method == "Player.GoTo"
+    assert params == {"playerid": 1, "to": "previous"}
+
+
+@patch("kodibot.core.kodi_api.get_active_playerid")
+@patch("kodibot.core.kodi_api.kodi_call")
+def test_kodi_playlist_goto_single_item_playlist_is_inactive(mock_call, mock_pid):
+    mock_pid.return_value = 1
+    mock_call.side_effect = _playlist_responses(position=0, size=1)
+    assert kodi_api.kodi_playlist_goto("next") == "inactive"
+    assert not any(c.args[0] == "Player.GoTo" for c in mock_call.call_args_list)
+
+
+@patch("kodibot.core.kodi_api.get_active_playerid")
+@patch("kodibot.core.kodi_api.kodi_call")
+def test_kodi_playlist_goto_stops_at_last_item(mock_call, mock_pid):
+    mock_pid.return_value = 1
+    mock_call.side_effect = _playlist_responses(position=2, size=3)
+    assert kodi_api.kodi_playlist_goto("next") == "end"
+
+
+@patch("kodibot.core.kodi_api.get_active_playerid")
+@patch("kodibot.core.kodi_api.kodi_call")
+def test_kodi_playlist_goto_stops_at_first_item(mock_call, mock_pid):
+    mock_pid.return_value = 1
+    mock_call.side_effect = _playlist_responses(position=0, size=3)
+    assert kodi_api.kodi_playlist_goto("previous") == "end"
+
+
+@patch("kodibot.core.kodi_api.get_active_playerid")
+@patch("kodibot.core.kodi_api.kodi_call")
+def test_kodi_playlist_goto_keeps_playlist_on_kodi_error(mock_call, mock_pid):
+    mock_pid.return_value = 1
+    mock_call.side_effect = _playlist_responses(
+        position=0, size=3, goto={"error": {"code": -32100}}
+    )
+    assert kodi_api.kodi_playlist_goto("next") == "end"
+
+
+@patch("kodibot.core.kodi_api.get_active_playerid")
+@patch("kodibot.core.kodi_api.kodi_call")
+def test_kodi_playlist_goto_without_playlist_is_inactive(mock_call, mock_pid):
+    mock_pid.return_value = 1
+    mock_call.side_effect = lambda method, params=None: (
+        {"result": {"playlistid": -1, "position": -1}}
+        if method == "Player.GetProperties" else {}
+    )
+    assert kodi_api.kodi_playlist_goto("next") == "inactive"
+
+
+@patch("kodibot.core.kodi_api.get_active_playerid")
+def test_kodi_playlist_goto_without_player(mock_pid):
+    mock_pid.return_value = None
+    assert kodi_api.kodi_playlist_goto("next") == "inactive"

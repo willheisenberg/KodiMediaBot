@@ -1,10 +1,16 @@
 import asyncio
+import logging
 import os
 import time
 
 from kodibot.telegram import ui as UI
-from kodibot.core import radio_browser
+from kodibot.telegram import state as S
+from kodibot.telegram import yt_subtitles
+from kodibot.core import kodi_library, opensubtitles, partyvideo, radio_browser
 from kodibot.telegram.i18n import repeat_mode_label, state_label, store_message, t
+from kodibot.telegram.languages import LANG_MAP
+
+log = logging.getLogger(__name__)
 
 
 async def _refresh_ha_menu(ctx, chat_id, update):
@@ -24,6 +30,203 @@ async def _refresh_ha_menu(ctx, chat_id, update):
         state=state,
         edit_message_id=msg_id,
     )
+
+
+def _subtitle_language_name(code):
+    """Readable name for a language code, for chat messages."""
+    entry = LANG_MAP.get((code or "").strip().lower())
+    return entry[1] if entry else (code or "").upper()
+
+
+def _fallback_subtitle_filename(video_path, language):
+    """Name used for a subtitle stored in the shared upload dir.
+
+    Shared by the writer and the cache lookup below so the two can never
+    drift apart.
+    """
+    tail = os.path.basename(video_path) or "subtitle"
+    base = tail.rsplit(".", 1)[0] if "." in tail else tail
+    return f"{base}.{language}.srt"
+
+
+def _fallback_subtitle_cache_paths(video_path, language):
+    """Local (container) and Kodi-visible path for a fallback subtitle."""
+    name = _fallback_subtitle_filename(video_path, language)
+    local_path = os.path.join(UI.CFG.upload_dir, "subs", name)
+    kodi_path = os.path.join(UI.CFG.kodi_upload_dir, "subs", name)
+    return local_path, kodi_path
+
+
+def _write_subtitle_fallback(video_path, language, content):
+    """Store a subtitle in the shared upload dir when SSH writing failed.
+
+    Kodi reads it through KODI_UPLOAD_DIR, so the track works for the running
+    playback but is not kept next to the movie.
+    """
+    local_path, kodi_path = _fallback_subtitle_cache_paths(video_path, language)
+    try:
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        with open(local_path, "wb") as fh:
+            fh.write(content)
+    except OSError as e:
+        log.warning("Subtitle fallback write failed: %s", e)
+        return None
+    return kodi_path
+
+
+async def _store_subtitle(info, language, content):
+    """Put one downloaded subtitle where Kodi can read it.
+
+    Returns ``(path, temporary)``. ``temporary`` is True when the file only
+    landed in the upload dir instead of next to the movie.
+    """
+    path = await asyncio.to_thread(
+        kodi_library.write_subtitle_via_ssh, info["file"], language, content
+    )
+    if path:
+        return path, False
+    path = await asyncio.to_thread(
+        _write_subtitle_fallback, info["file"], language, content
+    )
+    return path, bool(path)
+
+
+async def _fetch_missing_subtitles(ctx, chat_id, av_state):
+    """Pull missing subtitles from OpenSubtitles for the running item.
+
+    Returns a refreshed av_state when tracks were added, otherwise the one
+    passed in.  Never raises — the caller's selection list has to show up
+    either way.
+    """
+    if not UI.CFG.opensubtitles_enabled:
+        return av_state
+    # get_av_settings() reports a JSON-RPC failure by omitting "subtitles"
+    # entirely, which missing_languages() would otherwise read as "every
+    # configured language is missing" — treating a Kodi hiccup as a green
+    # light to burn the daily download quota.
+    if av_state.get("error") or av_state.get("playerid") is None:
+        return av_state
+    missing = opensubtitles.missing_tracks(av_state)
+    if not missing:
+        return av_state
+    info = await asyncio.to_thread(kodi_library.now_playing_media_info)
+    if not info or not (info.get("imdb_id") or info.get("parent_imdb_id")):
+        return av_state
+
+    # Slots an earlier search already came back empty for. Asking again on
+    # every menu open costs a round trip and cannot return anything new —
+    # most films simply have no forced track to find.
+    misses = S.SUBTITLE_SEARCH_MISSES.setdefault(info.get("file"), set())
+    missing = [track for track in missing if track not in misses]
+    if not missing:
+        return av_state
+
+    # The guest may only be looking, not choosing: whatever track was active
+    # before we touch anything must still be active afterwards.
+    previous_enabled = bool(av_state.get("subtitleenabled"))
+    previous_index = (av_state.get("currentsubtitle") or {}).get("index")
+    # Paths already attached for this exact file — guards against Kodi
+    # mislabeling an added track and re-attaching it on every menu open.
+    attached = S.SUBTITLE_ATTACHED_PATHS.setdefault(info.get("file"), set())
+    # Lets a download made for another frame rate be retimed to this video.
+    video_fps = await asyncio.to_thread(UI.kodi_api.get_video_fps)
+
+    try:
+        status = await UI.send_and_track(ctx, chat_id, t("subtitle_search_running"))
+        added = 0
+        temporary = False
+        try:
+            for language, forced in missing:
+                path = None
+                # "de" for a full track, "de.forced" for a forced one — the
+                # marker Kodi reads out of external subtitle filenames, and
+                # what keeps the two variants off each other's path.
+                suffix = opensubtitles.subtitle_suffix(language, forced)
+                if await asyncio.to_thread(
+                    kodi_library.subtitle_exists_via_ssh, info["file"], suffix
+                ):
+                    # Already on disk from an earlier run — no download needed.
+                    path = kodi_library.subtitle_path_for(info["file"], suffix)
+                else:
+                    local_path, kodi_path = _fallback_subtitle_cache_paths(info["file"], suffix)
+                    if await asyncio.to_thread(os.path.exists, local_path):
+                        # Cached from an earlier run in the fallback dir (e.g. the
+                        # library is smb://-mounted, so the SSH check above never
+                        # sees anything next to the movie).
+                        path = kodi_path
+                        temporary = True
+                    else:
+                        try:
+                            content = await asyncio.to_thread(
+                                opensubtitles.fetch_for,
+                                info.get("imdb_id"),
+                                language,
+                                info.get("season"),
+                                info.get("episode"),
+                                info.get("parent_imdb_id"),
+                                forced=forced,
+                                video_fps=video_fps,
+                            )
+                        except opensubtitles.OpenSubtitlesError as err:
+                            if err.message == "quota_exceeded":
+                                await UI.send_toast_message(
+                                    ctx,
+                                    chat_id,
+                                    t("subtitle_quota_exceeded", reset=err.reset_time or "?"),
+                                    delay=6,
+                                )
+                                break
+                            log.warning(
+                                "OpenSubtitles failed lang=%s err=%s", language, err.message
+                            )
+                            continue
+                        except Exception as e:
+                            log.warning("OpenSubtitles error lang=%s err=%s", language, e)
+                            continue
+                        if not content:
+                            # Nothing there — do not ask again this playback.
+                            misses.add((language, forced))
+                            if forced:
+                                # Most films have no forced track at all —
+                                # saying so every time would be pure noise.
+                                continue
+                            await UI.send_toast_message(
+                                ctx,
+                                chat_id,
+                                t(
+                                    "subtitle_search_none",
+                                    language=_subtitle_language_name(language),
+                                ),
+                                delay=4,
+                            )
+                            continue
+                        path, is_temp = await _store_subtitle(info, suffix, content)
+                        temporary = temporary or is_temp
+                if path and path not in attached:
+                    if await asyncio.to_thread(UI.kodi_api.add_subtitle_file, path):
+                        added += 1
+                        attached.add(path)
+        finally:
+            await UI.delete_message_if_present(ctx, chat_id, status.message_id)
+
+        if not added:
+            return av_state
+        # AddSubtitle turns the track on; the user asked for nothing to be active.
+        await asyncio.to_thread(UI.kodi_api.disable_subtitles)
+        if previous_enabled and previous_index is not None:
+            # Undo the global mute above for whatever the guest was already
+            # watching — opening this menu must not silently drop it.
+            await asyncio.to_thread(UI.kodi_api.set_subtitle_stream, previous_index)
+        if temporary:
+            await UI.send_toast_message(ctx, chat_id, t("subtitle_added_temporary"), delay=4)
+        # Give Kodi a moment to register the new streams before re-reading indexes.
+        await asyncio.sleep(0.5)
+        return await asyncio.to_thread(UI.kodi_api.get_av_settings)
+    except Exception as e:
+        # Telegram/Kodi calls above can raise (rate.py wrappers let network
+        # errors through) — the subtitle selection list must appear either way.
+        log.warning("Subtitle fetch failed: %s", e)
+        return av_state
 
 
 def _forget_prompt(ctx, chat_id, user_id, state_key, msg_key, *extra_keys):
@@ -87,10 +290,40 @@ async def _execute_pending_delete(ctx, chat_id, pending_delete):
     return t("nothing_to_delete"), True
 
 
+# ⏭/⏮ while Kodi works off its own playlist ("play all episodes"): those
+# episodes never enter the bot queue, so step the Kodi playlist instead of
+# reporting the end of the queue. Returns False only when no such playlist is
+# playing, which leaves the press to the queue handlers below. At the ends of
+# the playlist the press stays handled on purpose — falling through would stop
+# the series and start the bot queue from the top instead.
+async def _goto_kodi_playlist(ctx, chat_id, q, direction, answer_text):
+    with UI.queue_state.LOCK:
+        queue_driving = (
+            UI.queue_state.DISPLAY_INDEX is not None
+            and not UI.queue_state.EXTERNAL_PLAYBACK
+        )
+    if queue_driving:
+        return False
+    status = await asyncio.to_thread(UI.kodi_api.kodi_playlist_goto, direction)
+    if status == "inactive":
+        return False
+    if status != "moved":
+        await q.answer(text=t("end_of_playlist"))
+        return True
+    await q.answer(text=answer_text)
+    # Brief yield so Kodi has switched items before the panel is re-rendered.
+    await asyncio.sleep(0.05)
+    await UI.update_now_playing_message(ctx, chat_id)
+    return True
+
+
 async def on_button(update, ctx):
     q = update.callback_query
     # await q.answer()  <-- Moved to individual branches or end
     cmd = q.data
+    if cmd.startswith(("visual:", "visual_cleanup:")) and not UI.CFG.partyvideo_enabled:
+        await q.answer(text=t("visual_disabled"), show_alert=True)
+        return
     if q.message:
         seen_id = UI.remember_last_seen(update.effective_chat.id, q.message.message_id)
         UI.log.info(
@@ -111,7 +344,10 @@ async def on_button(update, ctx):
     if cmd == "skip":
         with UI.queue_state.LOCK:
             has_queue = len(UI.queue_state.QUEUE) > 0
-        if not has_queue:
+        if await _goto_kodi_playlist(ctx, chat_id, q, "next", t("next")):
+            sent = True
+            skip_cleanup = True
+        elif not has_queue:
             await q.answer(text=t("end_of_queue"))
             sent = True
         else:
@@ -129,7 +365,10 @@ async def on_button(update, ctx):
     elif cmd == "back":
         with UI.queue_state.LOCK:
             has_queue = len(UI.queue_state.QUEUE) > 0
-        if not has_queue:
+        if await _goto_kodi_playlist(ctx, chat_id, q, "previous", "⏮ " + t("previous")):
+            sent = True
+            skip_cleanup = True
+        elif not has_queue:
             await q.answer(text=t("end_of_queue"))
             sent = True
         else:
@@ -156,6 +395,7 @@ async def on_button(update, ctx):
     elif cmd == "playpause":
         pid = UI.kodi_api.get_active_playerid()
         if pid is not None:
+            UI.queue_state.cancel_soundcloud_start()
             UI.schedule_playback_action(ctx, chat_id, UI.kodi_api.kodi_call, "Player.PlayPause", {"playerid": pid})
             await q.answer(text="⏯")
             sent = True
@@ -182,9 +422,9 @@ async def on_button(update, ctx):
 
     elif cmd.startswith("seek:"):
         if cmd == "seek:percent":
-            if ctx.user_data.get("await_seek_percent"):
-                await q.answer()
-                return
+            # Pressing the button again replaces an open prompt; ignoring the
+            # press would leave the button dead whenever the prompt is gone.
+            await UI.close_prompt(ctx, chat_id, user_id, "await_seek_percent")
             button_items = [("0%", 0), ("25%", 25), ("50%", 50), ("75%", 75), ("100%", 100)]
             msg_id = await UI.send_button_selection(
                 ctx, 
@@ -256,9 +496,7 @@ async def on_button(update, ctx):
         sent = True
 
     elif cmd == "play:ask":
-        if ctx.user_data.get("await_play_index"):
-            await q.answer()
-            return
+        await UI.close_prompt(ctx, chat_id, user_id, "await_play_index")
         with UI.queue_state.LOCK:
             has_queue = len(UI.queue_state.QUEUE) > 0
         if not has_queue:
@@ -270,9 +508,7 @@ async def on_button(update, ctx):
             sent = True
             skip_cleanup = True
     elif cmd == "fav:ask":
-        if ctx.user_data.get("await_favourite_index"):
-            await q.answer()
-            return
+        await UI.close_prompt(ctx, chat_id, user_id, "await_favourite_index")
         favourites = await asyncio.to_thread(UI.kodi_api.get_playable_favourites)
         if not favourites:
             await q.answer(text=t("no_kodi_favourites"))
@@ -301,20 +537,17 @@ async def on_button(update, ctx):
     elif cmd.startswith("seek_to:"):
         pct = int(cmd.split(":")[1])
         ok = await asyncio.to_thread(UI.queue_state.seek_percent, pct)
-        if ok:
-            await q.answer(text=t("seeked_to", pct=pct))
-            if q.message:
-                await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
-            ctx.user_data["await_seek_percent"] = False
-            ctx.user_data.pop("await_seek_percent_msg_id", None)
-        else:
-            await q.answer(text=t("seek_failed"))
+        await q.answer(text=t("seeked_to", pct=pct) if ok else t("seek_failed"))
+        # A failed seek closes the prompt too instead of leaving it half-open
+        if q.message:
+            await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
+        UI.cancel_prompt_timeout(chat_id, user_id, "await_seek_percent")
+        ctx.user_data["await_seek_percent"] = False
+        ctx.user_data.pop("await_seek_percent_msg_id", None)
         sent = True
 
     elif cmd == "media:ask":
-        if UI.media_prompt_active(ctx.user_data):
-            await q.answer()
-            return
+        await UI.close_prompt(ctx, chat_id, user_id, *UI.MEDIA_PROMPT_KEYS)
         scan_ok = await asyncio.to_thread(UI.kodi_api.scan_video_library)
         if not scan_ok:
             await q.answer(text=t("library_scan_failed"))
@@ -332,9 +565,7 @@ async def on_button(update, ctx):
             sent = True
             skip_cleanup = True
     elif cmd == "av:ask":
-        if UI.av_prompt_active(ctx.user_data):
-            await q.answer()
-            return
+        await UI.close_prompt(ctx, chat_id, user_id, *UI.AV_PROMPT_KEYS)
         av_state = await asyncio.to_thread(UI.kodi_api.get_av_settings)
         if av_state.get("playerid") is None:
             await q.answer(text=t("nothing_playing"))
@@ -356,9 +587,7 @@ async def on_button(update, ctx):
             sent = True
             skip_cleanup = True
     elif cmd == "delete:ask":
-        if ctx.user_data.get("await_delete_index"):
-            await q.answer()
-            return
+        await UI.close_prompt(ctx, chat_id, user_id, "await_delete_index")
         with UI.queue_state.LOCK:
             has_queue = len(UI.queue_state.QUEUE) > 0
         if not has_queue:
@@ -370,9 +599,7 @@ async def on_button(update, ctx):
             sent = True
             skip_cleanup = True
     elif cmd == "plist:save":
-        if ctx.user_data.get("await_playlist_save_name"):
-            await q.answer()
-            return
+        await UI.close_prompt(ctx, chat_id, user_id, "await_playlist_save_name")
         with UI.queue_state.LOCK:
             has_queue = len(UI.queue_state.QUEUE) > 0
         if not has_queue:
@@ -384,9 +611,7 @@ async def on_button(update, ctx):
             sent = True
             skip_cleanup = True
     elif cmd == "plist:load":
-        if ctx.user_data.get("await_playlist_load_index"):
-            await q.answer()
-            return
+        await UI.close_prompt(ctx, chat_id, user_id, "await_playlist_load_index")
         files = UI.playlist_store.list_playlist_files(UI.CFG.playlist_dir)
         if not files:
             await q.answer(text=t("no_saved_playlists"))
@@ -413,17 +638,13 @@ async def on_button(update, ctx):
             sent = True
             skip_cleanup = True
     elif cmd == "radio:ask":
-        if ctx.user_data.get("await_radio_search"):
-            await q.answer()
-            return
+        await UI.close_prompt(ctx, chat_id, user_id, "await_radio_search")
         msg = await UI.send_and_track(ctx, chat_id, t("radio_search_prompt"), reply_markup=UI.cancel_markup())
         UI.activate_prompt(ctx, chat_id, user_id, "await_radio_search", "await_radio_search_msg_id", msg.message_id)
         sent = True
         skip_cleanup = True
     elif cmd == "tv:ask":
-        if ctx.user_data.get("await_tv_search"):
-            await q.answer()
-            return
+        await UI.close_prompt(ctx, chat_id, user_id, "await_tv_search")
         msg = await UI.send_and_track(ctx, chat_id, t("tv_search_prompt"), reply_markup=UI.cancel_markup())
         UI.activate_prompt(ctx, chat_id, user_id, "await_tv_search", "await_tv_search_msg_id", msg.message_id)
         sent = True
@@ -485,9 +706,7 @@ async def on_button(update, ctx):
                     await q.answer(text=t("favourite_add_failed", channel=channel))
                 sent = True
     elif cmd == "radio:delete:ask":
-        if ctx.user_data.get("await_radio_delete_index"):
-            await q.answer()
-            return
+        await UI.close_prompt(ctx, chat_id, user_id, "await_radio_delete_index")
         favs = await asyncio.to_thread(UI.kodi_api.get_favourites)
         if not favs:
             await q.answer(text=t("no_kodi_favourites_any"))
@@ -514,9 +733,7 @@ async def on_button(update, ctx):
             sent = True
             skip_cleanup = True
     elif cmd == "plist:delete":
-        if ctx.user_data.get("await_playlist_delete_index"):
-            await q.answer()
-            return
+        await UI.close_prompt(ctx, chat_id, user_id, "await_playlist_delete_index")
         files = UI.playlist_store.list_playlist_files(UI.CFG.playlist_dir)
         if not files:
             await q.answer(text=t("no_saved_playlists"))
@@ -656,6 +873,94 @@ async def on_button(update, ctx):
         await UI.update_now_playing_message(ctx, chat_id)
         await q.answer()
         return
+    elif cmd == "visual:menu":
+        UI.set_panel_menu_mode(chat_id, "visual")
+        await UI.update_now_playing_message(ctx, chat_id)
+        await q.answer()
+        return
+    elif cmd == "visual:back":
+        UI.set_panel_menu_mode(chat_id, "controls")
+        await UI.update_now_playing_message(ctx, chat_id)
+        await q.answer()
+        return
+    elif cmd == "visual:toggle":
+        await asyncio.to_thread(partyvideo.toggle)
+        # Der Addon-Status kommt asynchron; das Panel zeichnet das Statusereignis neu.
+        await UI.update_now_playing_message(ctx, chat_id)
+        await q.answer()
+        return
+    elif cmd == "visual:youtube":
+        msg_id = await UI.send_and_track(ctx, chat_id, t("visual_ask_url"), reply_markup=UI.cancel_markup())
+        UI.activate_prompt(ctx, chat_id, user_id, "await_visual_url", "await_visual_url_msg_id", msg_id)
+        await q.answer()
+        return
+    elif cmd == "visual:video":
+        msg_id = await UI.send_and_track(ctx, chat_id, t("visual_ask_video"), reply_markup=UI.cancel_markup())
+        UI.activate_prompt(ctx, chat_id, user_id, "await_visual_video", "await_visual_video_msg_id", msg_id)
+        await q.answer()
+        return
+    elif cmd == "visual:movie":
+        movies = await asyncio.to_thread(UI.kodi_api.list_movies_for_visual)
+        if not movies:
+            await q.answer(text=t("no_movies_found"))
+            return
+        msg_ids = await UI.send_chunked_selection(
+            ctx, chat_id, t("visual_select_movie"), UI.visual_movie_lines(movies),
+        )
+        ctx.user_data["visual_movies"] = movies
+        UI.activate_prompt(
+            ctx, chat_id, user_id, "await_visual_movie", "await_visual_movie_msg_id",
+            msg_ids, extra_keys=("visual_movies",),
+        )
+        await q.answer()
+        return
+    elif cmd == "visual:upload":
+        entries = await asyncio.to_thread(UI.media.list_upload_videos)
+        if not entries:
+            await q.answer(text=t("visual_no_uploads"))
+            return
+        msg_ids = await UI.send_chunked_selection(
+            ctx, chat_id, t("visual_select_upload"), UI.visual_upload_lines(entries),
+        )
+        ctx.user_data["visual_uploads"] = entries
+        UI.activate_prompt(
+            ctx, chat_id, user_id, "await_visual_upload", "await_visual_upload_msg_id",
+            msg_ids, extra_keys=("visual_uploads",),
+        )
+        await q.answer()
+        return
+    elif cmd == "visual:cleanup":
+        entries = await asyncio.to_thread(UI.media.list_upload_videos)
+        keep = partyvideo.active_source()
+        removable = [entry for entry in entries if entry["kodi_path"] != keep]
+        if not removable:
+            await q.answer(text=t("visual_cleanup_none"))
+            return
+        total = sum(entry["size"] for entry in removable)
+        await UI.send_button_selection(
+            ctx,
+            chat_id,
+            t("visual_cleanup_ask", count=len(removable), size=UI.human_size(total)),
+            [(t("yes"), "yes"), (t("no"), "no")],
+            "visual_cleanup",
+            items_per_row=2,
+        )
+        await q.answer()
+        return
+    elif cmd.startswith("visual_cleanup:"):
+        if q.message:
+            await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)
+        if cmd.split(":", 1)[1] != "yes":
+            await q.answer(text=t("cancelled"))
+            return
+        # Die gerade benutzte Datei bleibt liegen, sonst bricht das laufende Visual ab.
+        keep = partyvideo.active_source()
+        removed, freed = await asyncio.to_thread(UI.media.cleanup_upload_videos, keep)
+        await q.answer(
+            text=t("visual_cleanup_done", count=removed, size=UI.human_size(freed)),
+            show_alert=True,
+        )
+        return
     elif cmd == "help:show":
         ok = await UI.show_button_reference(ctx, chat_id)
         if ok:
@@ -687,7 +992,7 @@ async def on_button(update, ctx):
         return
     elif cmd == "ha:close":
         await UI.close_ha_menu_message(ctx, chat_id, q.message.message_id if q.message else None)
-        await q.answer(text=t("cancelled"))
+        await q.answer()
         return
     elif cmd == "ha:noop":
         await q.answer()
@@ -712,9 +1017,7 @@ async def on_button(update, ctx):
         await q.answer()
         return
     elif cmd == "ha:brightness":
-        if ctx.user_data.get("await_ha_brightness_pct"):
-            await q.answer()
-            return
+        await UI.close_prompt(ctx, chat_id, user_id, "await_ha_brightness_pct")
         state = await asyncio.to_thread(UI.ha.get_light_state)
         current_pct = UI.ha.brightness_percent_from_ha((state or {}).get("brightness"))
         prompt = t("brightness_prompt")
@@ -731,10 +1034,8 @@ async def on_button(update, ctx):
         if not colors:
             await q.answer(text=t("no_saved_colors"))
             sent = True
-        elif ctx.user_data.get("await_ha_delete_color_index"):
-            await q.answer()
-            return
         else:
+            await UI.close_prompt(ctx, chat_id, user_id, "await_ha_delete_color_index")
             button_items = [(UI.saved_color_name(color, i), i) for i, color in enumerate(colors)]
             msg_id = await UI.send_button_selection(
                 ctx,
@@ -812,17 +1113,13 @@ async def on_button(update, ctx):
         # Menu is refreshed in place; don't let schedule_cleanup delete it.
         skip_cleanup = True
     elif cmd == "ha:sethex":
-        if ctx.user_data.get("await_ha_hex"):
-            await q.answer()
-            return
+        await UI.close_prompt(ctx, chat_id, user_id, "await_ha_hex")
         msg = await UI.send_and_track(ctx, chat_id, t("enter_hex"), reply_markup=UI.cancel_markup())
         UI.activate_prompt(ctx, chat_id, user_id, "await_ha_hex", "await_ha_hex_msg_id", msg.message_id)
         sent = True
         skip_cleanup = True
     elif cmd == "ha:savecolor":
-        if ctx.user_data.get("await_ha_save_color_name"):
-            await q.answer()
-            return
+        await UI.close_prompt(ctx, chat_id, user_id, "await_ha_save_color_name")
         state = await asyncio.to_thread(UI.ha.get_light_state)
         rgb = (state or {}).get("rgb_color")
         if not rgb or len(rgb) != 3:
@@ -849,7 +1146,7 @@ async def on_button(update, ctx):
         if 0 <= idx < len(favourites):
             fav = favourites[idx]
             UI.queue_state.clear_radio_reconnect_state()
-            ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, fav.get("target"), fav.get("title"))
+            ok = await asyncio.to_thread(UI.queue_state.play_radio, fav.get("target"), fav.get("title"))
             if ok:
                 UI.queue_state.set_last_played_radio(fav.get("target"), fav.get("title"))
                 await q.answer(text=t("playing_favourite", title=fav["title"]))
@@ -872,7 +1169,7 @@ async def on_button(update, ctx):
             name = channel.get("name")
             url = channel.get("url")
             UI.queue_state.clear_radio_reconnect_state()
-            ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, url, name)
+            ok = await asyncio.to_thread(UI.queue_state.play_radio, url, name)
             if ok:
                 UI.queue_state.set_last_played_radio(url, name)
                 await q.answer(text=t("playing_channel", name=name))
@@ -1049,6 +1346,7 @@ async def on_button(update, ctx):
                 UI.activate_prompt(ctx, chat_id, user_id, "await_audio_index", "await_audio_msg_id", msg_id, extra_keys=("audio_streams",))
                 skip_cleanup = True
         elif action == "subtitles":
+            av_state = await _fetch_missing_subtitles(ctx, chat_id, av_state)
             subtitles = av_state.get("subtitles") or []
             button_items = [(t("off"), -1)]
             current_index = (av_state.get("currentsubtitle") or {}).get("index")
@@ -1129,7 +1427,7 @@ async def on_button(update, ctx):
             name = selected.get("name")
             url = selected.get("url_resolved") or selected.get("url")
             UI.queue_state.clear_radio_reconnect_state()
-            ok = await asyncio.to_thread(UI.kodi_api.play_favourite_target, url, name)
+            ok = await asyncio.to_thread(UI.queue_state.play_radio, url, name)
             if ok:
                 UI.queue_state.set_last_played_radio(url, name)
                 await q.answer(text=t("playing_radio", name=name))
@@ -1145,9 +1443,7 @@ async def on_button(update, ctx):
         sent = True
 
     elif cmd == "ha:brightness":
-        if ctx.user_data.get("await_ha_brightness_pct"):
-            await q.answer()
-            return
+        await UI.close_prompt(ctx, chat_id, user_id, "await_ha_brightness_pct")
         state = await asyncio.to_thread(UI.ha.get_light_state)
         current_pct = UI.ha.brightness_percent_from_ha((state or {}).get("brightness"))
         prompt = t("brightness_prompt")
@@ -1234,7 +1530,7 @@ async def on_button(update, ctx):
             label = t("off")
         elif 0 <= idx < len(subtitles):
             stream = subtitles[idx]
-            ok = await asyncio.to_thread(UI.kodi_api.set_subtitle_stream, stream.get("index"))
+            ok = await asyncio.to_thread(yt_subtitles.select_subtitle, stream)
             label = UI.av_stream_label(stream)
         else:
             ok = False
@@ -1296,7 +1592,7 @@ async def on_button(update, ctx):
                     except ValueError:
                         pass
                 keys_to_clear.append(k)
-            elif k.startswith("await_") or k.endswith("_files") or k == "favourites" or k.startswith("media_") or k.startswith("ha_delete_") or k == "audio_streams" or k == "subtitle_streams" or k == "radio_results" or k == "pending_delete":
+            elif k.startswith("await_") or k.endswith("_files") or k == "favourites" or k.startswith("media_") or k.startswith("visual_") or k.startswith("ha_delete_") or k == "audio_streams" or k == "subtitle_streams" or k == "radio_results" or k == "pending_delete":
                 keys_to_clear.append(k)
                 
         for k in keys_to_clear:

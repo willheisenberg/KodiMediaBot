@@ -40,6 +40,8 @@ LIST_MSG_ID = {}
 LIST_PAGE = {}
 LIST_PAGE_PINNED = {}
 PANEL_MSG_ID = {}
+# (artists, title) pairs whose Spotify Connect link lookup is still running.
+SPOTIFY_LINK_PENDING = set()
 PANEL_MENU_MODE = {}
 HA_MENU_MSG_ID = {}
 # Button-reference image: message id per chat while it is shown, plus the
@@ -68,6 +70,12 @@ TG_DYNAMIC_UNTIL = 0.0
 
 # ── Concurrency ──────────────────────────────────────────────────────
 PLAYBACK_TASK_LOCK = asyncio.Lock()
+# ── Party Video progress message ─────────────────────────────────────
+# One self-updating message per chat while the addon downloads or plays.
+VISUAL_PROGRESS_LOCK = asyncio.Lock()
+VISUAL_PROGRESS_LAST_TS = {}
+VISUAL_PROGRESS_MIN_INTERVAL = 2.0
+
 NP_REFRESH_LOCK = threading.Lock()
 NP_REFRESH_FUTURE = None
 NP_REFRESH_LAST_TS = 0.0
@@ -85,9 +93,39 @@ PANEL_RENDER_CACHE = {}
 LIST_REFRESH_TASK = None
 WS_LISTENER_TASK = None
 
+# ── Subtitle nachladen ───────────────────────────────────────────────
+# Paths already attached to the currently running file via AddSubtitle,
+# keyed by that file's path.  Guards against Kodi mislabeling an added
+# external track (empty/"und" language) as still "missing", which would
+# otherwise re-attach the same file on every menu open.  A file path that
+# stops being the active playback item simply stops being looked up here.
+SUBTITLE_ATTACHED_PATHS = {}
+
+# (language, forced) pairs OpenSubtitles had no hit for, keyed by the file's
+# path.  Repeating a search that already came back empty costs a round trip
+# on every menu open and can never return anything new within one playback.
+# Only an empty result lands here -- a failed request says nothing about
+# whether the track exists.
+SUBTITLE_SEARCH_MISSES = {}
+
+
+def reset_subtitle_playback_state():
+    """Drop both subtitle guards when a new playback starts.
+
+    Player.OnPlay/OnAVStart opens a new session: the attach guard belongs to
+    the previous one, and a search that found nothing weeks ago deserves
+    another try now that the file is being watched again.
+    """
+    SUBTITLE_ATTACHED_PATHS.clear()
+    SUBTITLE_SEARCH_MISSES.clear()
+
+
 # ── Prompt state ─────────────────────────────────────────────────────
 PROMPT_TIMEOUT_SECONDS = 300
 PROMPT_TIMEOUT_TASKS = {}
+# (chat_id, user_id, state_key) -> (user_data, msg_key, extra_keys, message_id)
+# for every prompt opened through activate_prompt()
+PROMPT_REGISTRY = {}
 PENDING_TIMEOUT_TASKS = {}
 HA_MENU_TIMEOUT_SECONDS = 300
 HA_MENU_TIMEOUT_TASKS = {}

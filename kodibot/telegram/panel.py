@@ -16,7 +16,10 @@ from datetime import datetime, timedelta
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from kodibot.core import kodi_api
+from kodibot.core import opensubtitles
+from kodibot.core import partyvideo
 from kodibot.core import queue_state
+from kodibot.core import spotify_connect
 from kodibot.core import homeassistant as ha
 from kodibot.config import CFG
 from kodibot.telegram.i18n import LANG, localized_asset, repeat_mode_label, t
@@ -44,6 +47,7 @@ BUTTON_REFERENCE_PATH = localized_asset(
     "panel_button_reference_de.png",
 )
 LEGACY_UI_STATE_FILE = "/data/playlists/telegram_ui_state.json"
+SPOTIFY_USER_NAMES = spotify_connect.parse_user_names(CFG.spotify_user_names_raw)
 
 
 # ── Error classification ─────────────────────────────────────────────
@@ -150,7 +154,7 @@ def panel_menu_mode(chat_id=None):
 
 
 def set_panel_menu_mode(chat_id, mode):
-    S.PANEL_MENU_MODE[chat_id] = mode if mode in {"main", "controls"} else "main"
+    S.PANEL_MENU_MODE[chat_id] = mode if mode in {"main", "controls", "visual", "ha"} else "main"
 
 
 def build_main_control_panel(play_label):
@@ -240,7 +244,8 @@ def build_controls_panel():
         ],
         [
             InlineKeyboardButton("📺 🔍", callback_data="tv:ask"),
-        ],
+        ] + ([InlineKeyboardButton(t("visual"), callback_data="visual:menu")]
+             if CFG.partyvideo_enabled else []),
         [
             InlineKeyboardButton(t("buttons"), callback_data="help:show"),
         ],
@@ -250,15 +255,58 @@ def build_controls_panel():
     ]
 
 
+def build_visual_panel():
+    """Party Video page: the first button follows the addon's reported state."""
+    toggle_label = t("visual_off") if partyvideo.is_on() else t("visual_on")
+    return [
+        [
+            InlineKeyboardButton(toggle_label, callback_data="visual:toggle"),
+        ],
+        [
+            InlineKeyboardButton(t("visual_youtube"), callback_data="visual:youtube"),
+            InlineKeyboardButton(t("visual_video"), callback_data="visual:video"),
+        ],
+        [
+            InlineKeyboardButton(t("visual_movie"), callback_data="visual:movie"),
+            InlineKeyboardButton(t("visual_upload"), callback_data="visual:upload"),
+        ],
+        [
+            InlineKeyboardButton(t("visual_cleanup"), callback_data="visual:cleanup"),
+            InlineKeyboardButton(t("back"), callback_data="visual:back"),
+        ],
+    ]
+
+
 def control_panel(chat_id=None, *, mode=None):
     """Build the inline keyboard control panel markup."""
     play_label = "⏸" if kodi_api.WS_STATE == "playing" else "▶"
     resolved_mode = mode or panel_menu_mode(chat_id)
-    rows = build_controls_panel() if resolved_mode == "controls" else build_main_control_panel(play_label)
+    if resolved_mode == "visual" and CFG.partyvideo_enabled:
+        rows = build_visual_panel()
+    elif resolved_mode == "controls":
+        rows = build_controls_panel()
+    else:
+        rows = build_main_control_panel(play_label)
     return InlineKeyboardMarkup(rows)
 
 
-def build_panel_status_parts(progress_text=None, min_width=PANEL_STATUS_MIN_WIDTH):
+def visual_status_part():
+    """Short Party Video marker for the status line: off, a percentage, on or ⚠."""
+    status = partyvideo.status()
+    state = partyvideo.display_state()
+    if state in ("downloading", "installing_tools"):
+        progress = status.get("progress")
+        if isinstance(progress, (int, float)):
+            return f"🌌 {int(progress)}%"
+        return f"🌌 {t('visual_status_short_on')}"
+    if state == "playing":
+        return f"🌌 {t('visual_status_short_on')}"
+    if state == "error":
+        return "🌌 ⚠"
+    return f"🌌 {t('visual_status_short_off')}"
+
+
+def build_panel_status_parts(progress_text=None, min_width=PANEL_STATUS_MIN_WIDTH, playlist_text=None):
     status_parts = []
     hifi_text = S.HIFI_STATUS_CACHE
     if CFG.panel_show_hifi:
@@ -268,6 +316,10 @@ def build_panel_status_parts(progress_text=None, min_width=PANEL_STATUS_MIN_WIDT
     status_parts.append(t("repeat_status", mode=repeat_mode_label(queue_state.REPEAT_MODE)))
     if CFG.panel_show_volume and hifi_text != t("hifi_standby_status"):
         status_parts.append(S.DENON_VOLUME_CACHE)
+    if CFG.partyvideo_enabled:
+        status_parts.append(visual_status_part())
+    if playlist_text:
+        status_parts.append(f"📺 {playlist_text}")
     if progress_text:
         status_parts.append(f"⏱ {progress_text}")
     status_flag_disabled = not (
@@ -572,6 +624,32 @@ async def send_toast_message(ctx, chat_id, text, delay=2):
     return msg
 
 
+def human_size(num_bytes):
+    """Compact size for selection lists: MB below a gigabyte, GB above."""
+    megabytes = (num_bytes or 0) / (1024 * 1024)
+    if megabytes < 1024:
+        return f"{megabytes:.0f} MB"
+    gigabytes = megabytes / 1024
+    return f"{gigabytes:.1f} GB".replace(".0 GB", " GB")
+
+
+def visual_movie_lines(movies):
+    """Numbered movie list; ⚠ marks codecs the addon decodes slowly in software."""
+    lines = []
+    for i, movie in enumerate(movies):
+        title = movie.get("title") or t("unknown")
+        mark = " ⚠" if movie.get("slow") else ""
+        lines.append(f"{i + 1}. {title}{mark}")
+    return lines
+
+
+def visual_upload_lines(entries):
+    lines = []
+    for i, entry in enumerate(entries):
+        lines.append(f"{i + 1}. {entry.get('name')} ({human_size(entry.get('size'))})")
+    return lines
+
+
 def movie_list_lines(movies):
     lines = []
     thirty_days_ago = datetime.now() - timedelta(days=30)
@@ -678,9 +756,14 @@ def resolve_single_lang(code):
     return None
 
 
+KODI_LABEL_MARKUP_RE = re.compile(r"\[/?(?:B|I|LIGHT|UPPERCASE|LOWERCASE|CAPITALIZE|COLOR)(?: [^\]]*)?\]")
+
+
 def format_av_track(idx, name, lang, codec=None, channels=None):
     """Format an audio or subtitle track with flag and clear language name."""
-    name = (name or "").strip()
+    # Add-ons hand Kodi names carrying its label markup (the YouTube add-on
+    # sends "[B]German (translation)[/B]"), which Telegram would show as is.
+    name = KODI_LABEL_MARKUP_RE.sub("", name or "").strip()
     lang = (lang or "").strip()
     
     # Try to extract language from name if empty (e.g. "DD+5.1(ger)")
@@ -740,6 +823,22 @@ def format_av_track(idx, name, lang, codec=None, channels=None):
     return label
 
 
+def forced_suffix(stream):
+    """Mark a forced track, unless its name already says so.
+
+    Kodi consumes the word "forced" while parsing an external subtitle's
+    filename, so ``Movie.de.srt`` and ``Movie.de.forced.srt`` both arrive
+    named "External" and are otherwise indistinguishable in the list.  An
+    embedded stream carries its own name through no parser and often states
+    it itself -- marking that one again would only read as a stutter.
+    """
+    if not opensubtitles.is_forced_track(stream):
+        return ""
+    if "forced" in ((stream or {}).get("name") or "").lower():
+        return ""
+    return t("forced_suffix")
+
+
 def av_stream_label(stream):
     """Format an audio/subtitle stream for display."""
     idx = stream.get("index")
@@ -750,7 +849,7 @@ def av_stream_label(stream):
         stream.get("codec"),
         stream.get("channels")
     )
-    return f"{idx}. {label}"
+    return f"{idx}. {label}{forced_suffix(stream)}"
 
 
 def current_subtitle_label(av_state):
@@ -760,7 +859,7 @@ def current_subtitle_label(av_state):
     idx = sub.get("index")
     if idx is None:
         return t("off")
-    return format_av_track(idx, sub.get("name"), sub.get("language"))
+    return format_av_track(idx, sub.get("name"), sub.get("language")) + forced_suffix(sub)
 
 
 # ── List/panel update ────────────────────────────────────────────────
@@ -831,11 +930,71 @@ async def update_list_message(ctx, chat_id):
         queue_state.LIST_DIRTY = False
 
 
+# Position inside a Kodi-driven playlist ("play all episodes"), as "7/12".
+#
+# Returns None unless the playlist holds more than one item: a single episode
+# or a bot queue track never builds one, so those keep the plain title.
+async def kodi_playlist_position_text(props):
+    playlistid = props.get("playlistid")
+    position = props.get("position")
+    if not isinstance(playlistid, int) or playlistid < 0:
+        return None
+    if not isinstance(position, int) or position < 0:
+        return None
+    size = ((await kodi_api.kodi_call_async(
+        "Playlist.GetProperties",
+        {"playlistid": playlistid, "properties": ["size"]},
+    ) or {}).get("result") or {}).get("size") or 0
+    if size < 2:
+        return None
+    return f"{position + 1}/{size}"
+
+
+async def _lookup_spotify_track_link(key):
+    try:
+        link = await asyncio.to_thread(kodi_api.spotify_connect_track_link, *key)
+    except Exception as e:
+        log.warning("Spotify Connect link lookup failed for %s: %s", key, e)
+        link = ""
+    finally:
+        S.SPOTIFY_LINK_PENDING.discard(key)
+    if link:
+        queue_state.schedule_now_playing_refresh()
+
+
+def spotify_track_link(item):
+    """YouTube/SoundCloud link for the track Spotify Connect plays, if known.
+
+    The search takes seconds, so it never holds up the panel: an unknown
+    track is looked up in the background and the panel refreshed once the
+    link is there.
+    """
+    key = spotify_connect.artist_title(item)
+    link = kodi_api.cached_spotify_connect_track_link(*key)
+    if link is None and key not in S.SPOTIFY_LINK_PENDING:
+        S.SPOTIFY_LINK_PENDING.add(key)
+        asyncio.create_task(_lookup_spotify_track_link(key))
+    return link or None
+
+
+async def spotify_user():
+    """Name of the Spotify account playing through Spotify Connect, or ""."""
+    res = await kodi_api.kodi_call_async(
+        "XBMC.GetInfoLabels", {"labels": [spotify_connect.USER_LABEL]}
+    )
+    user = ((res or {}).get("result") or {}).get(spotify_connect.USER_LABEL) or ""
+    return spotify_connect.user_name(user, SPOTIFY_USER_NAMES)
+
+
 async def get_now_playing_text():
-    """Assemble the now-playing display text. Returns (html_text, progress_text)."""
+    """Assemble the now-playing display text.
+
+    Returns (html_text, progress_text, playlist_text).
+    """
     name = None
     link = None
     qitem = None
+    spotify = False
     with queue_state.LOCK:
         if not queue_state.EXTERNAL_PLAYBACK and queue_state.DISPLAY_INDEX is not None and 0 <= queue_state.DISPLAY_INDEX < len(queue_state.QUEUE):
             qitem = queue_state.QUEUE[queue_state.DISPLAY_INDEX]
@@ -857,8 +1016,8 @@ async def get_now_playing_text():
         safe_name = html.escape(name, quote=False)
         if link:
             safe_link = html.escape(link, quote=True)
-            return f'▶ <a href="{safe_link}">{safe_name}</a>', None
-        return f"▶ {safe_name}", None
+            return f'▶ <a href="{safe_link}">{safe_name}</a>', None, None
+        return f"▶ {safe_name}", None, None
 
     players = await kodi_api.kodi_call_async("Player.GetActivePlayers")
     players = (players or {}).get("result", [])
@@ -867,18 +1026,18 @@ async def get_now_playing_text():
             safe_name = html.escape(name, quote=False)
             if link:
                 safe_link = html.escape(link, quote=True)
-                return f'▶ <a href="{safe_link}">{safe_name}</a>', None
-            return f"▶ {safe_name}", None
+                return f'▶ <a href="{safe_link}">{safe_name}</a>', None, None
+            return f"▶ {safe_name}", None, None
         if kodi_api.WS_PLAYING and not name:
-            return t("playing_plain"), None
+            return t("playing_plain"), None, None
         queue_state.EXTERNAL_PLAYBACK = False
         if name:
             safe_name = html.escape(name, quote=False)
             if link:
                 safe_link = html.escape(link, quote=True)
-                return f'▶ <a href="{safe_link}">{safe_name}</a>', None
-            return f"▶ {safe_name}", None
-        return t("nothing_playing_plain"), None
+                return f'▶ <a href="{safe_link}">{safe_name}</a>', None, None
+            return f"▶ {safe_name}", None, None
+        return t("nothing_playing_plain"), None, None
 
     pid = None
     if kodi_api.LAST_WS_PLAYERID is not None:
@@ -890,7 +1049,7 @@ async def get_now_playing_text():
         pid = kodi_api.pick_playerid(players)
     if pid is None:
         queue_state.EXTERNAL_PLAYBACK = False
-        return t("nothing_playing_plain"), None
+        return t("nothing_playing_plain"), None, None
 
     # Fetch properties and item in parallel to halve the Kodi round-trip time.
     need_item = bool(qitem or not name)
@@ -899,7 +1058,7 @@ async def get_now_playing_text():
         props_resp, item_resp = await asyncio.gather(
             kodi_api.kodi_call_async(
                 "Player.GetProperties",
-                {"playerid": pid, "properties": ["time", "totaltime"]},
+                {"playerid": pid, "properties": ["time", "totaltime", "playlistid", "position"]},
             ),
             kodi_api.kodi_call_async(
                 "Player.GetItem",
@@ -931,6 +1090,11 @@ async def get_now_playing_text():
         if not item and ws_title:
             item = {"type": ws_type, "title": ws_title}
 
+        if spotify_connect.is_stream_item(item):
+            spotify = True
+            name = spotify_connect.display_name(item, await spotify_user())
+            link = spotify_track_link(item)
+
         item_has_identity = bool(
             item and any(item.get(key) for key in ("file", "title", "label", "channel"))
         )
@@ -955,29 +1119,38 @@ async def get_now_playing_text():
         # still need time/totaltime for the progress display.
         props = (await kodi_api.kodi_call_async(
             "Player.GetProperties",
-            {"playerid": pid, "properties": ["time", "totaltime"]},
+            {"playerid": pid, "properties": ["time", "totaltime", "playlistid", "position"]},
         )).get("result", {})
 
+    playlist_text = await kodi_playlist_position_text(props)
     cur = kodi_api.format_kodi_time(props.get("time"))
     total = kodi_api.format_kodi_time(props.get("totaltime"))
-    queue_state.LAST_PROGRESS_TS = time.time()
-    queue_state.LAST_PROGRESS_TIME = props.get("time")
-    queue_state.LAST_PROGRESS_TOTAL = props.get("totaltime")
-    queue_state.LAST_PROGRESS_INDEX = queue_state.DISPLAY_INDEX
+    # Spotify's stream time is no progress of a queue item.
+    if not spotify:
+        queue_state.LAST_PROGRESS_TS = time.time()
+        queue_state.LAST_PROGRESS_TIME = props.get("time")
+        queue_state.LAST_PROGRESS_TOTAL = props.get("totaltime")
+        queue_state.LAST_PROGRESS_INDEX = queue_state.DISPLAY_INDEX
     safe_name = html.escape(name, quote=False)
     progress_text = f"{cur} / {total}"
     if link:
         safe_link = html.escape(link, quote=True)
-        return f'▶ <a href="{safe_link}">{safe_name}</a>', progress_text
-    return f"▶ {safe_name}", progress_text
+        return f'▶ <a href="{safe_link}">{safe_name}</a>', progress_text, playlist_text
+    return f"▶ {safe_name}", progress_text, playlist_text
 
 
 async def update_now_playing_message(ctx, chat_id):
     """Update or create the now-playing panel message."""
+    if panel_menu_mode(chat_id) == "ha":
+        return
     msg_id = S.PANEL_MSG_ID.get(chat_id)
-    text, progress_text = await get_now_playing_text()
+    text, progress_text, playlist_text = await get_now_playing_text()
+    if panel_menu_mode(chat_id) == "ha":
+        return
     min_width = panel_status_min_width(text, progress_text)
-    status_parts = build_panel_status_parts(progress_text, min_width=min_width)
+    status_parts = build_panel_status_parts(
+        progress_text, min_width=min_width, playlist_text=playlist_text,
+    )
     full_text = f"{t('now_playing_title')}\n{text}\n{' | '.join(status_parts)}"
     panel_markup = control_panel(chat_id)
     render_sig = (

@@ -128,6 +128,7 @@ async def reset_panel_command(update, ctx):
                 if task is not None and not task.done():
                     task.cancel()
             UI.PROMPT_TIMEOUT_TASKS.clear()
+            UI.PROMPT_REGISTRY.clear()
             for task in list(UI.PENDING_TIMEOUT_TASKS.values()):
                 if task is not None and not task.done():
                     task.cancel()

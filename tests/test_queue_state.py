@@ -1,6 +1,10 @@
 """Tests for pure functions in queue_state.py"""
 import os
 import sys
+import threading
+from unittest.mock import patch
+
+import pytest
 
 os.environ.setdefault("KODI_HOST", "127.0.0.1")
 os.environ.setdefault("KODI_PORT", "8080")
@@ -130,6 +134,80 @@ class TestThreadSafety:
 
 
 class TestSoundcloudPlayback:
+    def test_switch_waits_for_outgoing_player_before_opening(self, monkeypatch):
+        events = []
+        monkeypatch.setattr(queue_state, "set_expecting_ws", lambda n: None)
+        active = iter([[{"playerid": 0}], [{"playerid": 0}], []])
+
+        def players():
+            result = next(active)
+            events.append("active" if result else "stopped")
+            return result
+
+        monkeypatch.setattr(queue_state.media, "cleanup_active_image_session", lambda: None)
+        monkeypatch.setattr(queue_state.kodi_api, "stop_all_players", lambda: events.append("stop_requested"))
+        monkeypatch.setattr(queue_state.kodi_api, "get_active_players", players)
+        monkeypatch.setattr(queue_state.kodi_api, "kodi_clear_all_playlists", lambda: events.append("clear"))
+        monkeypatch.setattr(queue_state.kodi_api, "maybe_cache_soundcloud_url", lambda url: None)
+        monkeypatch.setattr(queue_state.kodi_api, "kodi_call", lambda method, params: events.append(method) or {})
+        monkeypatch.setattr(queue_state, "schedule_soundcloud_plugin_fallback", lambda *args, **kwargs: events.append("probe"))
+        monkeypatch.setattr(queue_state, "schedule_playback_refresh", lambda: None)
+        queue_state.play_item(queue_state.make_soundcloud("https://soundcloud.com/artist/new"))
+        assert events == [
+            "JSONRPC.NotifyAll", "stop_requested", "active", "active", "stopped", "clear", "Player.Open", "probe",
+        ]
+
+    def test_stop_wait_times_out_or_cancels(self, monkeypatch):
+        monkeypatch.setattr(queue_state.kodi_api, "get_active_players", lambda: [{"playerid": 0}])
+        event = threading.Event()
+        assert not queue_state.wait_for_players_stopped(event, timeout_s=0)
+        event.set()
+        assert not queue_state.wait_for_players_stopped(event)
+
+    def test_fallback_opens_resolved_entry_instead_of_placeholder(self, monkeypatch):
+        workers = []
+        calls = []
+        resolved = "plugin://plugin.audio.soundcloud/play/?media_url=resolved"
+        monkeypatch.setattr(queue_state.threading, "Thread", lambda target, daemon: type(
+            "Worker", (), {"start": lambda self: workers.append(target)},
+        )())
+        monkeypatch.setattr(queue_state, "SC_PLUGIN_START_TIMEOUT_S", 0)
+        monkeypatch.setattr(queue_state, "schedule_playback_refresh", lambda: None)
+        monkeypatch.setattr(queue_state, "soundcloud_playback_started", lambda *args: True)
+
+        def rpc(method, params):
+            if method == "Playlist.GetItems":
+                return {"result": {"items": [
+                    {"file": "plugin://plugin.audio.soundcloud/play/?url=placeholder"},
+                    {"file": resolved},
+                ]}}
+            calls.append((method, params))
+            return {"result": "OK"}
+
+        monkeypatch.setattr(queue_state.kodi_api, "kodi_call", rpc)
+        queue_state.schedule_soundcloud_plugin_fallback(
+            {}, "https://soundcloud.com/artist/new", cancel_event=threading.Event(),
+        )
+        workers[0]()
+        assert calls == [("Player.Open", {"item": {"playlistid": 0, "position": 1}})]
+
+    @pytest.mark.parametrize("cancelled", [False, True])
+    def test_resolved_start_does_not_open_changed_playlist(self, monkeypatch, cancelled):
+        event = threading.Event()
+        resolved = "plugin://plugin.audio.soundcloud/play/?media_url=resolved"
+
+        def rpc(method, params):
+            assert method == "Playlist.GetItems"
+            if cancelled:
+                event.set()
+                return {"result": {"items": [{"file": resolved}]}}
+            return {"result": {"items": [{"file": "another-track"}]}}
+
+        monkeypatch.setattr(queue_state.kodi_api, "kodi_call", rpc)
+        assert not queue_state.open_soundcloud_resolved_playlist_item(
+            "Track", "https://soundcloud.com/artist/track", resolved_url=resolved, cancel_event=event,
+        )
+
     def test_is_soundcloud_item_detects_plugin_url_without_resolver(self):
         item = {
             "title": "artist - track",
@@ -155,7 +233,7 @@ class TestSoundcloudPlayback:
         monkeypatch.setattr(
             queue_state,
             "schedule_soundcloud_plugin_fallback",
-            lambda item, source_link, resume_time=None: calls.append(
+            lambda item, source_link, resume_time=None, cancel_event=None: calls.append(
                 ("schedule_soundcloud_plugin_fallback", source_link, resume_time)
             ),
         )
@@ -184,7 +262,7 @@ class TestSoundcloudPlayback:
         monkeypatch.setattr(
             queue_state,
             "schedule_soundcloud_plugin_fallback",
-            lambda item, source_link, resume_time=None: calls.append(
+            lambda item, source_link, resume_time=None, cancel_event=None: calls.append(
                 ("schedule_soundcloud_plugin_fallback", source_link, resume_time)
             ),
         )
@@ -212,6 +290,9 @@ class TestSoundcloudPlayback:
 
         def fake_kodi_call(method, params=None):
             item_calls.append((method, params))
+            if method == "Player.GetProperties":
+                return {"result": {"speed": 1}}
+            assert method == "Player.GetItem"
             return {
                 "result": {
                     "item": {
@@ -224,8 +305,65 @@ class TestSoundcloudPlayback:
 
         monkeypatch.setattr(queue_state.kodi_api, "kodi_call", fake_kodi_call)
 
-        assert queue_state.soundcloud_playback_started("https://soundcloud.com/artist/track") is True
+        assert queue_state.soundcloud_playback_started(
+            "https://soundcloud.com/artist/track", threading.Event(),
+        ) is True
         assert item_calls[0][0] == "Player.GetItem"
+
+    @pytest.mark.parametrize("speed", [0, None])
+    def test_paused_or_unknown_stream_is_not_started(self, monkeypatch, speed):
+        monkeypatch.setattr(queue_state.kodi_api, "get_active_playerid", lambda: 0)
+
+        def rpc(method, params=None):
+            if method == "Player.GetItem":
+                return {"result": {"item": {"file": "https://cf-media.sndcdn.com/track.mp3"}}}
+            assert method == "Player.GetProperties"
+            return {"result": {"speed": speed}}
+
+        monkeypatch.setattr(queue_state.kodi_api, "kodi_call", rpc)
+        assert not queue_state.soundcloud_playback_started("https://soundcloud.com/artist/track")
+
+    @pytest.mark.parametrize("cancelled", [False, True])
+    def test_start_recovers_paused_stream_unless_cancelled(self, monkeypatch, cancelled):
+        cancel_event = threading.Event()
+        calls = []
+        monkeypatch.setattr(queue_state.kodi_api, "get_active_playerid", lambda: 0)
+
+        def rpc(method, params=None):
+            if method == "Player.GetItem":
+                return {"result": {"item": {"file": "https://cf-media.sndcdn.com/track.mp3"}}}
+            if method == "Player.GetProperties":
+                if cancelled:
+                    cancel_event.set()  # A new request arrives during the status RPC.
+                return {"result": {"speed": 0}}
+            calls.append((method, params))
+            return {"result": {"speed": 1}}
+
+        monkeypatch.setattr(queue_state.kodi_api, "kodi_call", rpc)
+        assert queue_state.soundcloud_playback_started(
+            "https://soundcloud.com/artist/track", cancel_event,
+        ) is (not cancelled)
+        assert calls == ([] if cancelled else [
+            ("Player.PlayPause", {"playerid": 0, "play": True}),
+        ])
+
+    def test_old_fallback_does_not_reopen_playlist_after_track_change(self, monkeypatch):
+        workers = []
+        monkeypatch.setattr(queue_state, "_SC_START_CANCEL", threading.Event())
+        monkeypatch.setattr(queue_state.threading, "Thread", lambda target, daemon: type(
+            "Worker", (), {"start": lambda self: workers.append(target)},
+        )())
+        monkeypatch.setattr(queue_state, "SC_PLUGIN_START_TIMEOUT_S", 0)
+
+        def resolve():
+            queue_state.cancel_soundcloud_start()
+            return "plugin://plugin.audio.soundcloud/play/?media_url=old"
+
+        monkeypatch.setattr(queue_state, "resolve_soundcloud_playlist_media_url", resolve)
+        monkeypatch.setattr(queue_state, "open_soundcloud_resolved_playlist_item",
+                            lambda *args, **kwargs: pytest.fail("Stale fallback reopened playback"))
+        queue_state.schedule_soundcloud_plugin_fallback({}, "https://soundcloud.com/artist/old")
+        workers[0]()
 
     def test_resolve_soundcloud_playlist_media_url_finds_resolved_entry(self, monkeypatch):
         def fake_kodi_call(method, params=None):
@@ -311,3 +449,58 @@ class TestSoundcloudDirectResolve:
         result = queue_state.resolve_soundcloud_stream_url("https://soundcloud.com/artist/track")
 
         assert result == "https://cf-media.sndcdn.com/fallback.mp3"
+
+
+def test_handle_ws_play_runs_on_play_started_hook():
+    """Every playback start must reset the UI layer's per-file state; the
+    hook is how core reaches the telegram layer without importing it."""
+    calls = []
+    with patch("kodibot.core.queue_state.ON_PLAY_STARTED", lambda: calls.append(1)), \
+         patch("kodibot.core.queue_state.BOT_EXPECTING_WS", 1):
+        queue_state._handle_ws_play(item={}, item_params={})
+    assert calls == [1]
+
+
+def test_handle_ws_play_survives_a_failing_on_play_started_hook():
+    """A broken hook must not take the websocket listener down with it."""
+    def boom():
+        raise RuntimeError("hook exploded")
+
+    with patch("kodibot.core.queue_state.ON_PLAY_STARTED", boom), \
+         patch("kodibot.core.queue_state.BOT_EXPECTING_WS", 1):
+        queue_state._handle_ws_play(item={}, item_params={})
+
+
+class TestOverduePlayStart:
+    """A play Kodi never confirms must show up in the bot log."""
+
+    ITEM = {"kind": "video", "title": "Clip", "url": "plugin://plugin.video.youtube/play/?video_id=abc"}
+
+    def _waiting(self, expecting=2, reported=False):
+        return patch.multiple(
+            "kodibot.core.queue_state",
+            BOT_EXPECTING_WS=expecting,
+            PLAY_START_TS=1000.0,
+            PLAY_START_ITEM=self.ITEM,
+            PLAY_START_REPORTED=reported,
+        )
+
+    def test_reports_once_after_the_deadline(self, caplog):
+        late = 1000.0 + queue_state.PLAY_START_OVERDUE_SEC + 1
+        with self._waiting(), caplog.at_level("WARNING", logger="kodibot.core.queue_state"):
+            assert queue_state.report_overdue_play_start(late) is True
+            assert queue_state.report_overdue_play_start(late + 5) is False
+        messages = [r.getMessage() for r in caplog.records]
+        assert len(messages) == 1
+        assert "video_id=abc" in messages[0]
+
+    def test_silent_before_the_deadline(self, caplog):
+        with self._waiting(), caplog.at_level("WARNING", logger="kodibot.core.queue_state"):
+            assert queue_state.report_overdue_play_start(1005.0) is False
+        assert not caplog.records
+
+    def test_silent_once_kodi_confirmed_the_play(self, caplog):
+        late = 1000.0 + queue_state.PLAY_START_OVERDUE_SEC + 1
+        with self._waiting(expecting=0), caplog.at_level("WARNING", logger="kodibot.core.queue_state"):
+            assert queue_state.report_overdue_play_start(late) is False
+        assert not caplog.records
