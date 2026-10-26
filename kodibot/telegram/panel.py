@@ -19,6 +19,7 @@ from kodibot.core import kodi_api
 from kodibot.core import opensubtitles
 from kodibot.core import partyvideo
 from kodibot.core import queue_state
+from kodibot.core import spektra
 from kodibot.core import spotify_connect
 from kodibot.core import homeassistant as ha
 from kodibot.config import CFG
@@ -245,7 +246,7 @@ def build_controls_panel():
         [
             InlineKeyboardButton("📺 🔍", callback_data="tv:ask"),
         ] + ([InlineKeyboardButton(t("visual"), callback_data="visual:menu")]
-             if CFG.partyvideo_enabled else []),
+             if visuals_enabled() else []),
         [
             InlineKeyboardButton(t("buttons"), callback_data="help:show"),
         ],
@@ -255,10 +256,23 @@ def build_controls_panel():
     ]
 
 
+def visuals_enabled():
+    """The visual page exists when at least one visualization addon is enabled."""
+    return CFG.partyvideo_enabled or CFG.spektra_enabled
+
+
 def build_visual_panel():
-    """Party Video page: the first button follows the addon's reported state."""
+    """Visual page: Spektra (SPEKTRA_ENABLED) first, then Party Video (PARTYVIDEO_ENABLED).
+    Each toggle label follows the state its addon reported."""
+    rows = []
+    if CFG.spektra_enabled:
+        spektra_label = t("spektra_off") if spektra.is_on() else t("spektra_on")
+        rows.append([InlineKeyboardButton(spektra_label, callback_data="visual:spektra")])
+    if not CFG.partyvideo_enabled:
+        rows.append([InlineKeyboardButton(t("back"), callback_data="visual:back")])
+        return rows
     toggle_label = t("visual_off") if partyvideo.is_on() else t("visual_on")
-    return [
+    return rows + [
         [
             InlineKeyboardButton(toggle_label, callback_data="visual:toggle"),
         ],
@@ -281,7 +295,7 @@ def control_panel(chat_id=None, *, mode=None):
     """Build the inline keyboard control panel markup."""
     play_label = "⏸" if kodi_api.WS_STATE == "playing" else "▶"
     resolved_mode = mode or panel_menu_mode(chat_id)
-    if resolved_mode == "visual" and CFG.partyvideo_enabled:
+    if resolved_mode == "visual" and visuals_enabled():
         rows = build_visual_panel()
     elif resolved_mode == "controls":
         rows = build_controls_panel()
@@ -291,7 +305,10 @@ def control_panel(chat_id=None, *, mode=None):
 
 
 def visual_status_part():
-    """Short Party Video marker for the status line: off, a percentage, on or ⚠."""
+    """Shared 🌌 marker for Party Video and Spektra: off, a download percentage, on or ⚠.
+    It is on while either visual runs; Party Video's progress and errors take precedence."""
+    if not CFG.partyvideo_enabled:
+        return f"🌌 {t('visual_status_short_on' if spektra.is_on() else 'visual_status_short_off')}"
     status = partyvideo.status()
     state = partyvideo.display_state()
     if state in ("downloading", "installing_tools"):
@@ -303,6 +320,8 @@ def visual_status_part():
         return f"🌌 {t('visual_status_short_on')}"
     if state == "error":
         return "🌌 ⚠"
+    if CFG.spektra_enabled and spektra.is_on():
+        return f"🌌 {t('visual_status_short_on')}"
     return f"🌌 {t('visual_status_short_off')}"
 
 
@@ -316,7 +335,7 @@ def build_panel_status_parts(progress_text=None, min_width=PANEL_STATUS_MIN_WIDT
     status_parts.append(t("repeat_status", mode=repeat_mode_label(queue_state.REPEAT_MODE)))
     if CFG.panel_show_volume and hifi_text != t("hifi_standby_status"):
         status_parts.append(S.DENON_VOLUME_CACHE)
-    if CFG.partyvideo_enabled:
+    if visuals_enabled():
         status_parts.append(visual_status_part())
     if playlist_text:
         status_parts.append(f"📺 {playlist_text}")

@@ -122,6 +122,8 @@ class Config:
 
     # ── Party Video visualization addon (off unless the addon is installed) ──
     partyvideo_enabled: bool
+    # ── Spektra visualization addon (off unless the addon is installed) ──
+    spektra_enabled: bool
 
     # ── Internal tuning ──────────────────────────────────────────────
     kodi_error_log_interval: float
@@ -297,6 +299,8 @@ class Config:
             panel_show_ha=_bool_env("PANEL_SHOW_HA", True),
             # Party Video: needs the visualization.partyvideo addon on the Kodi host
             partyvideo_enabled=_bool_env("PARTYVIDEO_ENABLED", False),
+            # Spektra: needs the visualization.spektra addon on the Kodi host
+            spektra_enabled=_bool_env("SPEKTRA_ENABLED", False),
             # Tuning
             kodi_error_log_interval=float(os.environ.get("KODI_ERROR_LOG_INTERVAL", "10")),
             # Radio Browser

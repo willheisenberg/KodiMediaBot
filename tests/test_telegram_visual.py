@@ -29,6 +29,12 @@ def buttons(markup):
     return [button for row in markup.inline_keyboard for button in row]
 
 
+def toggle_label():
+    """Text of the Party Video toggle (Spektra's button comes first on the page)."""
+    markup = panel.control_panel(mode="visual")
+    return next(button.text for button in buttons(markup) if button.callback_data == "visual:toggle")
+
+
 def callbacks(markup):
     return [button.callback_data for button in buttons(markup)]
 
@@ -83,32 +89,32 @@ class TestToggleLabel:
     def test_label_offers_to_switch_on_while_idle(self, monkeypatch):
         monkeypatch.setattr(i18n, "LANG", "de")
         set_state("idle")
-        label = buttons(panel.control_panel(mode="visual"))[0].text
+        label = toggle_label()
         assert "ein" in label.lower()
 
     def test_label_offers_to_switch_off_while_playing(self, monkeypatch):
         monkeypatch.setattr(i18n, "LANG", "de")
         set_state("playing")
-        label = buttons(panel.control_panel(mode="visual"))[0].text
+        label = toggle_label()
         assert "aus" in label.lower()
 
     def test_label_offers_to_switch_off_while_downloading(self, monkeypatch):
         # A running download already holds a source, so the button must cancel it.
         monkeypatch.setattr(i18n, "LANG", "de")
         set_state("downloading", progress=12)
-        label = buttons(panel.control_panel(mode="visual"))[0].text
+        label = toggle_label()
         assert "aus" in label.lower()
 
     def test_english_labels_are_translated(self, monkeypatch):
         monkeypatch.setattr(i18n, "LANG", "en")
         set_state("playing")
-        label = buttons(panel.control_panel(mode="visual"))[0].text
+        label = toggle_label()
         assert "off" in label.lower()
 
     def test_unknown_state_offers_to_switch_on(self, monkeypatch):
         monkeypatch.setattr(i18n, "LANG", "de")
         set_state(None)
-        label = buttons(panel.control_panel(mode="visual"))[0].text
+        label = toggle_label()
         assert "ein" in label.lower()
 
 

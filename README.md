@@ -108,6 +108,15 @@ The default is `false`; enable it only after installing the addon. Recreate the
 bot container after changing the flag so the new environment takes effect.
 The page accepts YouTube links, library movies and uploaded videos, and displays
 install/download progress and playback errors in a message that updates itself.
+
+The optional [Spektra](https://github.com/willheisenberg/visualization-spektra) addon
+draws audio-reactive scenes instead of a video. Install it on the Kodi host and set
+`SPEKTRA_ENABLED=true` to get a 🌑 Spektra button on the same 🌌 Visual page; the page
+appears as soon as one of the two flags is on and shows only the enabled addons. The
+button follows the state the addon reports, and the 🌌 marker in the status line shows
+“on” while either Party Video or Spektra runs. Kodi shows one visualisation at a time, so
+the bot keeps them exclusive: switching Spektra on stops a running Party Video, and
+starting Party Video switches Spektra off.
 Upload cleanup requires confirmation and only removes videos directly inside the
 upload folder; library files, symlinks and the active visual source are preserved.
 An upload kept for a visual can be removed using this menu after stopping it.
@@ -223,6 +232,7 @@ services:
       PANEL_SHOW_AIRPLAY: "true"
       PANEL_SHOW_HA: "true"
       PARTYVIDEO_ENABLED: "false"
+      SPEKTRA_ENABLED: "false"
       CEC_HOST: "172.17.0.1"
       DENON_HOST: ""
       DEBUG_WS: "1"
@@ -362,6 +372,11 @@ Notes:
   addon: a muted video looping behind your music, from a YouTube link, a library
   movie or a video uploaded to the chat. Leave it off unless that addon is
   installed on the Kodi host — without it the buttons have nothing to talk to.
+- `SPEKTRA_ENABLED` accepts `true` or `false` and defaults to `false`. It adds the
+  🌑 Spektra button to the 🌌 Visual page (and lets the 🌌 status marker show it), for the
+  separate [Spektra](https://github.com/willheisenberg/visualization-spektra) Kodi
+  addon. Each flag only shows its own addon's buttons; with both off the page is
+  hidden.
 - `TELEGRAM_LOCAL_MODE=1` enables support for a local `telegram-bot-api` server, which is required if the bot should download Telegram uploads larger than 20 MB.
 - `TELEGRAM_BASE_URL` optionally overrides the Telegram API endpoint, for example `http://127.0.0.1:8081/bot`.
 - `TELEGRAM_BASE_FILE_URL` optionally overrides the Telegram file endpoint, for example `http://127.0.0.1:8081/file/bot`.

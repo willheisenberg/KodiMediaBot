@@ -6,7 +6,7 @@ import time
 from kodibot.telegram import ui as UI
 from kodibot.telegram import state as S
 from kodibot.telegram import yt_subtitles
-from kodibot.core import kodi_library, opensubtitles, partyvideo, radio_browser
+from kodibot.core import kodi_library, opensubtitles, partyvideo, radio_browser, spektra
 from kodibot.telegram.i18n import repeat_mode_label, state_label, store_message, t
 from kodibot.telegram.languages import LANG_MAP
 
@@ -317,11 +317,22 @@ async def _goto_kodi_playlist(ctx, chat_id, q, direction, answer_text):
     return True
 
 
+def visual_command_disabled(cmd):
+    """True for a visual button whose addon is switched off in the configuration."""
+    if not cmd.startswith(("visual:", "visual_cleanup:")):
+        return False
+    if cmd in ("visual:menu", "visual:back"):
+        return not (UI.CFG.partyvideo_enabled or UI.CFG.spektra_enabled)
+    if cmd == "visual:spektra":
+        return not UI.CFG.spektra_enabled
+    return not UI.CFG.partyvideo_enabled
+
+
 async def on_button(update, ctx):
     q = update.callback_query
     # await q.answer()  <-- Moved to individual branches or end
     cmd = q.data
-    if cmd.startswith(("visual:", "visual_cleanup:")) and not UI.CFG.partyvideo_enabled:
+    if visual_command_disabled(cmd):
         await q.answer(text=t("visual_disabled"), show_alert=True)
         return
     if q.message:
@@ -880,6 +891,12 @@ async def on_button(update, ctx):
         return
     elif cmd == "visual:back":
         UI.set_panel_menu_mode(chat_id, "controls")
+        await UI.update_now_playing_message(ctx, chat_id)
+        await q.answer()
+        return
+    elif cmd == "visual:spektra":
+        await asyncio.to_thread(spektra.toggle)
+        # Der Addon-Status kommt asynchron; das Panel zeichnet das Statusereignis neu.
         await UI.update_now_playing_message(ctx, chat_id)
         await q.answer()
         return

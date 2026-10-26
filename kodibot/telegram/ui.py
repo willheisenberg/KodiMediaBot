@@ -10,7 +10,7 @@ import traceback
 from telegram.ext import Application, MessageHandler, filters, CallbackQueryHandler, CommandHandler
 from telegram.error import RetryAfter, TimedOut, NetworkError, BadRequest, Forbidden
 
-from kodibot.core import kodi_api, partyvideo
+from kodibot.core import kodi_api, partyvideo, spektra
 from kodibot.core import playlist_store
 from kodibot.core import queue_state
 from kodibot.core import spotify
@@ -210,6 +210,24 @@ def on_visual_status(status):
     if not CFG.partyvideo_enabled or S.APP_INSTANCE is None or S.MAIN_LOOP is None:
         return
     asyncio.run_coroutine_threadsafe(_process_visual_status(dict(status)), S.MAIN_LOOP)
+
+
+async def _process_spektra_status():
+    chat_id = CFG.startup_chat_id
+    if not chat_id:
+        return
+    try:
+        # Der Zustand steht in der Statuszeile des Panels und auf dem Spektra-Button.
+        await update_now_playing_message(S.APP_INSTANCE, chat_id)
+    except Exception:
+        log.exception("Spektra status update failed")
+
+
+def on_spektra_status(_status):
+    """Called from the WebSocket thread; hops into the Telegram event loop."""
+    if not CFG.spektra_enabled or S.APP_INSTANCE is None or S.MAIN_LOOP is None:
+        return
+    asyncio.run_coroutine_threadsafe(_process_spektra_status(), S.MAIN_LOOP)
 
 
 RECONNECT_TASK = None
@@ -964,6 +982,7 @@ def run(token: str):
             S.APP_INSTANCE = app
             S.MAIN_LOOP = asyncio.get_running_loop()
             partyvideo.set_status_callback(on_visual_status if CFG.partyvideo_enabled else None)
+            spektra.set_status_callback(on_spektra_status if CFG.spektra_enabled else None)
             S.STARTUP_POSTED[CFG.startup_chat_id] = True
             await update_list_message(app, CFG.startup_chat_id)
             await update_now_playing_message(app, CFG.startup_chat_id)

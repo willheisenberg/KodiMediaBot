@@ -5,7 +5,7 @@ import time
 import websockets
 
 from kodibot.core import kodi_api as KA
-from kodibot.core import partyvideo, spotify_connect
+from kodibot.core import partyvideo, spektra, spotify_connect
 
 
 async def cleanup_image_session_after_stop_delay(stopped_file, delay_s=2.0):
@@ -75,6 +75,8 @@ async def kodi_ws_listener():
                 backoff = 3
                 if KA.CFG.partyvideo_enabled:
                     await asyncio.to_thread(partyvideo.request_status)
+                if KA.CFG.spektra_enabled:
+                    await asyncio.to_thread(spektra.request_status)
                 async for raw in ws:
                     try:
                         msg = json.loads(raw)
@@ -97,6 +99,9 @@ async def kodi_ws_listener():
                     if method == "Other.partyvideo_status":
                         # Visualisierungs-Addon; Other.partyvideo_cmd ist intern und wird ignoriert.
                         partyvideo.handle_status_event(msg.get("params", {}).get("data", {}) or {})
+                    if method == "Other.spektra_status":
+                        # Spektra-Addon; Other.spektra_cmd ist intern und wird ignoriert.
+                        spektra.handle_status_event(msg.get("params", {}).get("data", {}) or {})
                     if method in ("Player.OnPlay", "Player.OnAVStart"):
                         KA.WS_PLAYING = True
                         KA.WS_STATE = "playing"

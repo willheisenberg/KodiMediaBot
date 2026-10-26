@@ -59,10 +59,18 @@ def execute(*args):
     return kodi_call("Addons.ExecuteAddon", {"addonid": ADDON_ID, "params": list(args)})
 
 
+def _make_room():
+    """Kodi shows one visualisation at a time: turn Spektra off before a video starts."""
+    from kodibot.core import spektra  # spektra imports this module
+
+    spektra.off_if_on()
+
+
 def play_url(url):
     url = (url or "").strip()
     if not url:
         return None
+    _make_room()
     return execute("action=play", f"url={url}")
 
 
@@ -70,6 +78,7 @@ def play_path(path):
     path = (path or "").strip()
     if not path:
         return None
+    _make_room()
     return execute("action=play", f"path={path}")
 
 
@@ -78,6 +87,8 @@ def stop():
 
 
 def toggle():
+    if not is_on():
+        _make_room()
     return execute("action=toggle")
 
 
