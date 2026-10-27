@@ -334,6 +334,97 @@ class TestNowPlayingText:
         assert playlist is None
 
 
+class TestLiveProgress:
+    """Live streams show how far playback is behind the live edge."""
+
+    def setup_method(self):
+        queue_state.QUEUE.clear()
+        queue_state.CURRENT_INDEX = None
+        queue_state.DISPLAY_INDEX = None
+        queue_state.EXTERNAL_PLAYBACK = False
+        kodi_api.LAST_WS_PLAYERID = None
+        kodi_api.LAST_WS_ITEM.clear()
+        queue_state.PAUSED_AT = None
+        queue_state.PAUSED_TOTAL_S = 0.0
+
+    def _progress(self, monkeypatch, labels, live=True, item=None):
+        async def fake_call(method, params=None):
+            if method == "Player.GetActivePlayers":
+                return {"result": [{"playerid": 0, "type": "audio"}]}
+            if method == "Player.GetProperties":
+                # Kodi reports zero times for PVR channels, even with timeshift.
+                return {
+                    "result": {
+                        "live": live,
+                        "time": {"hours": 0, "minutes": 0, "seconds": 0},
+                        "totaltime": {"hours": 0, "minutes": 0, "seconds": 0},
+                    }
+                }
+            if method == "Player.GetItem":
+                return {"result": {"item": item or {"type": "channel", "label": "Frisky Radio", "id": 718}}}
+            if method == "XBMC.GetInfoLabels":
+                return {"result": labels}
+            raise AssertionError(method)
+
+        monkeypatch.setattr(panel.kodi_api, "kodi_call_async", fake_call)
+        monkeypatch.setattr(panel.kodi_api, "external_item_display", lambda item: ("Frisky Radio", None))
+        monkeypatch.setattr(panel.kodi_api, "maybe_cache_soundcloud_url", lambda file_url: None)
+        _text, progress, _playlist = asyncio.run(panel.get_now_playing_text())
+        return progress
+
+    def test_at_live_edge_shows_live(self, monkeypatch):
+        progress = self._progress(monkeypatch, {"Player.Time": "00:13", "Player.Duration": "00:14"})
+
+        assert progress == "● LIVE"
+
+    def test_behind_live_shows_negative_offset(self, monkeypatch):
+        progress = self._progress(monkeypatch, {"Player.Time": "01:00", "Player.Duration": "06:23"})
+
+        assert progress == "● LIVE ◷ −05:23"
+
+    def test_offset_over_an_hour_includes_hours(self, monkeypatch):
+        progress = self._progress(monkeypatch, {"Player.Time": "00:10", "Player.Duration": "1:02:10"})
+
+        assert progress == "● LIVE ◷ −1:02:00"
+
+    def test_missing_labels_fall_back_to_live(self, monkeypatch):
+        progress = self._progress(monkeypatch, {"Player.Time": "", "Player.Duration": ""})
+
+        assert progress == "● LIVE"
+
+    def test_youtube_live_shows_live(self, monkeypatch):
+        # Kodi reports YouTube live as a plain item spanning YouTube's 30 s window.
+        item = {
+            "type": "unknown",
+            "label": "Star TV",
+            "file": "https://manifest.googlevideo.com/api/manifest/hls_variant"
+                    "/id/82O6yOy_XwE.22/source/yt_live_broadcast/file/index.m3u8",
+        }
+
+        progress = self._progress(monkeypatch, {}, live=False, item=item)
+
+        assert progress == "● LIVE"
+
+    def test_paused_youtube_live_shows_seconds_behind(self, monkeypatch):
+        item = {
+            "type": "unknown",
+            "label": "Star TV",
+            "file": "https://manifest.googlevideo.com/api/manifest/hls_variant"
+                    "/id/82O6yOy_XwE.22/source/yt_live_broadcast/file/index.m3u8",
+        }
+        queue_state.PAUSED_TOTAL_S = 4.0
+        queue_state.PAUSED_AT = queue_state.time.time() - 3
+
+        progress = self._progress(monkeypatch, {}, live=False, item=item)
+
+        assert progress == "● LIVE ◷ −00:07"
+
+    def test_non_live_stream_keeps_elapsed_and_total(self, monkeypatch):
+        progress = self._progress(monkeypatch, {}, live=False)
+
+        assert progress == "00:00 / 00:00"
+
+
 class TestAvStreamLabel:
     def test_language_only(self):
         stream = {"language": "deu", "index": 1}
@@ -609,6 +700,17 @@ class TestPanelSectionFlags:
         parts = self._status_parts(monkeypatch, progress_text="00:01 / 00:02")
 
         assert not any(part.startswith("📺") for part in parts)
+
+    def test_status_line_shows_live_marker_without_stopwatch(self, monkeypatch):
+        parts = self._status_parts(monkeypatch, progress_text="● LIVE")
+
+        assert parts[-1] == "● LIVE"
+        assert not any(part.startswith("⏱") for part in parts)
+
+    def test_status_line_shows_timeshift_offset_without_stopwatch(self, monkeypatch):
+        parts = self._status_parts(monkeypatch, progress_text="● LIVE ◷ −05:23")
+
+        assert parts[-1] == "● LIVE ◷ −05:23"
 
     def test_status_line_has_no_filler_when_all_flags_are_enabled(self, monkeypatch):
         panel.S.HIFI_STATUS_CACHE = "Hifi: On"

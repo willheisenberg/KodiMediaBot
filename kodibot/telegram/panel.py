@@ -21,6 +21,7 @@ from kodibot.core import partyvideo
 from kodibot.core import queue_state
 from kodibot.core import spektra
 from kodibot.core import spotify_connect
+from kodibot.core import youtube_live
 from kodibot.core import homeassistant as ha
 from kodibot.config import CFG
 from kodibot.telegram.i18n import LANG, localized_asset, repeat_mode_label, t
@@ -42,6 +43,11 @@ TITLE_MAX_LEN = 120
 PANEL_STATUS_MIN_WIDTH = 67
 PANEL_STATUS_MIN_WIDTH_IDLE = 67
 PANEL_STATUS_MIN_WIDTH_NO_PREVIEW = 124
+
+LIVE_MARKER = "● LIVE"
+TIMESHIFT_MARKER = "◷"
+# A live stream trails its edge by a second or two even when never paused.
+LIVE_EDGE_TOLERANCE_S = 3
 
 BUTTON_REFERENCE_PATH = localized_asset(
     "panel_button_reference.png",
@@ -340,7 +346,10 @@ def build_panel_status_parts(progress_text=None, min_width=PANEL_STATUS_MIN_WIDT
     if playlist_text:
         status_parts.append(f"📺 {playlist_text}")
     if progress_text:
-        status_parts.append(f"⏱ {progress_text}")
+        if progress_text.startswith((LIVE_MARKER, TIMESHIFT_MARKER)):
+            status_parts.append(progress_text)
+        else:
+            status_parts.append(f"⏱ {progress_text}")
     status_flag_disabled = not (
         CFG.panel_show_hifi
         and CFG.panel_show_airplay
@@ -1077,7 +1086,7 @@ async def get_now_playing_text():
         props_resp, item_resp = await asyncio.gather(
             kodi_api.kodi_call_async(
                 "Player.GetProperties",
-                {"playerid": pid, "properties": ["time", "totaltime", "playlistid", "position"]},
+                {"playerid": pid, "properties": ["time", "totaltime", "playlistid", "position", "live"]},
             ),
             kodi_api.kodi_call_async(
                 "Player.GetItem",
@@ -1138,7 +1147,7 @@ async def get_now_playing_text():
         # still need time/totaltime for the progress display.
         props = (await kodi_api.kodi_call_async(
             "Player.GetProperties",
-            {"playerid": pid, "properties": ["time", "totaltime", "playlistid", "position"]},
+            {"playerid": pid, "properties": ["time", "totaltime", "playlistid", "position", "live"]},
         )).get("result", {})
 
     playlist_text = await kodi_playlist_position_text(props)
@@ -1151,11 +1160,35 @@ async def get_now_playing_text():
         queue_state.LAST_PROGRESS_TOTAL = props.get("totaltime")
         queue_state.LAST_PROGRESS_INDEX = queue_state.DISPLAY_INDEX
     safe_name = html.escape(name, quote=False)
-    progress_text = f"{cur} / {total}"
+    if props.get("live"):
+        progress_text = await live_progress_text()
+    elif youtube_live.live_video_id(item.get("file"), kodi_api.kodi_time_seconds(props.get("totaltime"))):
+        progress_text = live_offset_text(int(queue_state.paused_behind_seconds()))
+    else:
+        progress_text = f"{cur} / {total}"
     if link:
         safe_link = html.escape(link, quote=True)
         return f'▶ <a href="{safe_link}">{safe_name}</a>', progress_text, playlist_text
     return f"▶ {safe_name}", progress_text, playlist_text
+
+
+async def live_progress_text():
+    """Live marker, or how far playback trails the live edge."""
+    resp = await kodi_api.kodi_call_async(
+        "XBMC.GetInfoLabels", {"labels": kodi_api.LIVE_OFFSET_LABELS},
+    )
+    return live_offset_text(kodi_api.live_offset_seconds((resp or {}).get("result", {})))
+
+
+def live_offset_text(behind):
+    """Live marker, followed by "◷ −MM:SS" for a stream that many seconds behind."""
+    if behind is None or behind <= LIVE_EDGE_TOLERANCE_S:
+        return LIVE_MARKER
+    minutes, seconds = divmod(behind, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{LIVE_MARKER} {TIMESHIFT_MARKER} −{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{LIVE_MARKER} {TIMESHIFT_MARKER} −{minutes:02d}:{seconds:02d}"
 
 
 async def update_now_playing_message(ctx, chat_id):

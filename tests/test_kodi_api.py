@@ -305,3 +305,4 @@ def test_kodi_playlist_goto_without_playlist_is_inactive(mock_call, mock_pid):
 def test_kodi_playlist_goto_without_player(mock_pid):
     mock_pid.return_value = None
     assert kodi_api.kodi_playlist_goto("next") == "inactive"
+

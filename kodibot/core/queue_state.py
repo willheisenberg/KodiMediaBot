@@ -9,7 +9,7 @@ import asyncio
 import requests
 from yt_dlp import YoutubeDL
 
-from kodibot.core import kodi_api, spotify_connect
+from kodibot.core import kodi_api, spotify_connect, youtube_live
 from kodibot.config import CFG
 from kodibot.telegram import media
 
@@ -59,6 +59,16 @@ RESUME_ATTEMPTS = {}
 RESUME_MAX_ATTEMPTS = 8
 RESUME_MIN_REMAINING_SEC = 10
 RESUME_SEEK_WAIT_SEC = 20
+# Over HLS YouTube serves live streams as a 30 s window; inputstream.adaptive
+# plays 16 s (its minimum live_delay) behind its end, 14-18 s as the window
+# moves on in 5 s segments. That leaves 12-16 s of pause before playback falls
+# out of the window and resumes without sound (seen after 20 s); set higher to
+# try it out. Over DASH the sound survives longer pauses (40 s tried).
+YT_LIVE_MAX_PAUSE_S = 30
+# When Kodi last paused; None while playing.
+PAUSED_AT = None
+# Seconds paused, summed over earlier pauses since playback started.
+PAUSED_TOTAL_S = 0.0
 RESUME_STALE_PROGRESS_SEC = 12
 
 LIST_DIRTY = False
@@ -205,7 +215,9 @@ def report_overdue_play_start(now=None) -> bool:
 # ── WS callback handlers (registered with kodi_api) ────────────────
 def _handle_ws_play(*, item, item_params):
     """Called from kodi_api WS listener on Player.OnPlay/OnAVStart."""
-    global BOT_EXPECTING_WS
+    global BOT_EXPECTING_WS, PAUSED_AT, PAUSED_TOTAL_S
+    PAUSED_AT = None
+    PAUSED_TOTAL_S = 0.0
     # Every play start (bot-initiated or not) begins a fresh playback
     # session, so any per-file state the UI layer keeps for the previous one
     # is stale.
@@ -252,11 +264,28 @@ def _handle_ws_play(*, item, item_params):
 
 
 def _handle_ws_pause():
+    global PAUSED_AT
+    PAUSED_AT = time.time()
     schedule_now_playing_refresh()
 
 
 def _handle_ws_resume():
+    global PAUSED_AT, PAUSED_TOTAL_S
+    if PAUSED_AT is not None:
+        PAUSED_TOTAL_S += time.time() - PAUSED_AT
+    PAUSED_AT = None
     schedule_now_playing_refresh()
+
+
+def paused_behind_seconds():
+    """Seconds paused since playback started, the running pause included.
+
+    A YouTube live stream trails live by that much; Kodi's own times cannot
+    tell, as they only cover YouTube's 30 s window.
+    """
+    paused_at = PAUSED_AT
+    running = time.time() - paused_at if paused_at is not None else 0.0
+    return PAUSED_TOTAL_S + running
 
 
 # ── Spotify Connect (see spotify_connect) ──────────────────────────
@@ -384,16 +413,20 @@ def seek_relative_seconds(delta_sec: int):
         return False
     props = kodi_api.kodi_call(
         "Player.GetProperties",
-        {"playerid": pid, "properties": ["time", "totaltime", "canseek"]}
+        {"playerid": pid, "properties": ["time", "totaltime", "canseek", "live"]}
     ).get("result", {})
     if not props.get("canseek"):
         return False
+    if props.get("live"):
+        return _seek_live_relative(pid, delta_sec)
     cur = props.get("time")
     total = props.get("totaltime")
     cur_sec = kodi_api.kodi_time_seconds(cur)
     total_sec = kodi_api.kodi_time_seconds(total)
     if cur_sec is None:
         return False
+    if total_sec is not None and youtube_live.live_video_id(_player_file(pid), total_sec):
+        return _seek_youtube_live(pid, delta_sec, cur_sec, total_sec)
     if total_sec is not None and delta_sec > 0 and cur_sec + delta_sec >= total_sec:
         return skip_queue()
     if total_sec is None:
@@ -404,6 +437,79 @@ def seek_relative_seconds(delta_sec: int):
     s = int(new_sec % 60)
     kodi_api.kodi_call("Player.Seek", {"playerid": pid, "value": {"time": {"hours": h, "minutes": m, "seconds": s}}})
     return True
+
+
+def _seek_youtube_live(pid, delta_sec, cur_sec, total_sec):
+    """Seek a YouTube live stream by delta seconds, never past live.
+
+    Kodi's times only cover YouTube's window (HLS) or the add-on's buffer
+    (DASH), so how far behind live playback is comes from the pauses. Over
+    HLS playback must also stay inside the window, or the sound stops.
+    """
+    global PAUSED_TOTAL_S
+    delta_sec = min(delta_sec, int(paused_behind_seconds()))
+    if not youtube_live.is_dash_buffer(total_sec):
+        delta_sec = max(delta_sec, -cur_sec)
+    if delta_sec == 0:
+        return True
+    kodi_api.kodi_call("Player.Seek", {"playerid": pid, "value": {"seconds": delta_sec}})
+    PAUSED_TOTAL_S = max(0.0, PAUSED_TOTAL_S - delta_sec)
+    return True
+
+
+def _seek_live_relative(pid, delta_sec: int):
+    """Seek a live stream (timeshift or DVR window) by delta seconds.
+
+    Its time/totaltime are zero, so Kodi seeks relatively. Kodi does not stop
+    at the live edge on its own: a seek past it leaves Time ahead of Duration
+    until the stream restarts, and every offset after that reads too small.
+    So a forward seek is capped at the edge and refused when it is unknown.
+    """
+    if delta_sec > 0:
+        labels = kodi_api.kodi_call(
+            "XBMC.GetInfoLabels", {"labels": kodi_api.LIVE_OFFSET_LABELS}
+        ).get("result", {})
+        behind = kodi_api.live_offset_seconds(labels)
+        if behind is None:
+            return False
+        delta_sec = min(delta_sec, behind)
+        if delta_sec <= 0:
+            return True
+    kodi_api.kodi_call("Player.Seek", {"playerid": pid, "value": {"seconds": delta_sec}})
+    return True
+
+
+def _player_file(pid):
+    return kodi_api.kodi_call(
+        "Player.GetItem", {"playerid": pid, "properties": ["file"]}
+    ).get("result", {}).get("item", {}).get("file")
+
+
+def play_pause(pid):
+    """Toggle pause; a YouTube live stream paused too long over HLS reopens live.
+
+    The add-on's timeshift buffer outlives YouTube's 30 s window only for the
+    picture: resumed after a longer pause, the sound stays silent. Reopening
+    the stream starts it live with sound. A short pause resumes in place.
+    """
+    props = kodi_api.kodi_call(
+        "Player.GetProperties", {"playerid": pid, "properties": ["speed", "totaltime"]}
+    ).get("result", {})
+    video_id = None
+    total_sec = kodi_api.kodi_time_seconds(props.get("totaltime"))
+    if props.get("speed") == 0 and not youtube_live.is_dash_buffer(total_sec):
+        video_id = youtube_live.live_video_id(_player_file(pid), total_sec)
+    short_pause = PAUSED_AT is not None and paused_behind_seconds() <= YT_LIVE_MAX_PAUSE_S
+    if not video_id or short_pause:
+        kodi_api.kodi_call("Player.PlayPause", {"playerid": pid})
+        return
+    with LOCK:
+        idx = CURRENT_INDEX
+        qitem = QUEUE[idx] if idx is not None and idx < len(QUEUE) else None
+    if qitem and kodi_api.extract_youtube_id(qitem.get("url")) == video_id:
+        play_index(idx)
+    else:
+        kodi_api.kodi_call("Player.Open", {"item": {"file": make_youtube(video_id)["url"]}})
 
 
 # Seek to a percentage position (0-100).

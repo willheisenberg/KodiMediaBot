@@ -504,3 +504,242 @@ class TestOverduePlayStart:
         with self._waiting(expecting=0), caplog.at_level("WARNING", logger="kodibot.core.queue_state"):
             assert queue_state.report_overdue_play_start(late) is False
         assert not caplog.records
+
+
+class TestSeekRelative:
+    """Live streams seek relatively and stop at the live edge."""
+
+    def _seek(self, delta, props, labels=None, file=""):
+        calls = []
+
+        def fake_call(method, params=None):
+            calls.append((method, params))
+            if method == "Player.GetProperties":
+                return {"result": props}
+            if method == "XBMC.GetInfoLabels":
+                return {"result": labels or {}}
+            if method == "Player.GetItem":
+                return {"result": {"item": {"file": file}}}
+            if method == "Player.Seek":
+                return {"result": {}}
+            raise AssertionError(method)
+
+        with patch.object(queue_state.kodi_api, "get_active_playerid", return_value=0), \
+                patch.object(queue_state.kodi_api, "kodi_call", side_effect=fake_call):
+            ok = queue_state.seek_relative_seconds(delta)
+        seeks = [params["value"] for method, params in calls if method == "Player.Seek"]
+        return ok, seeks
+
+    def _live_props(self):
+        # Kodi reports zero times for PVR channels, even with timeshift.
+        zero = {"hours": 0, "minutes": 0, "seconds": 0}
+        return {"canseek": True, "live": True, "time": zero, "totaltime": zero}
+
+    def test_non_live_seeks_to_absolute_time(self):
+        props = {
+            "canseek": True,
+            "live": False,
+            "time": {"hours": 0, "minutes": 0, "seconds": 10},
+            "totaltime": {"hours": 0, "minutes": 1, "seconds": 0},
+        }
+
+        ok, seeks = self._seek(10, props)
+
+        assert ok is True
+        assert seeks == [{"time": {"hours": 0, "minutes": 0, "seconds": 20}}]
+
+    def test_live_seeks_back_relatively(self):
+        ok, seeks = self._seek(-10, self._live_props())
+
+        assert ok is True
+        assert seeks == [{"seconds": -10}]
+
+    def test_live_forward_within_buffer(self):
+        ok, seeks = self._seek(10, self._live_props(), {"Player.Time": "01:00", "Player.Duration": "01:25"})
+
+        assert ok is True
+        assert seeks == [{"seconds": 10}]
+
+    def test_live_forward_stops_at_live_edge(self):
+        ok, seeks = self._seek(30, self._live_props(), {"Player.Time": "01:00", "Player.Duration": "01:25"})
+
+        assert ok is True
+        assert seeks == [{"seconds": 25}]
+
+    def test_live_forward_at_edge_does_nothing(self):
+        ok, seeks = self._seek(10, self._live_props(), {"Player.Time": "01:25", "Player.Duration": "01:25"})
+
+        assert ok is True
+        assert seeks == []
+
+    def test_live_forward_without_known_edge_fails(self):
+        ok, seeks = self._seek(10, self._live_props(), {})
+
+        assert ok is False
+        assert seeks == []
+
+    # YouTube live: Kodi reports a plain item, 30 s over HLS (YouTube's window)
+    # and 4 h over DASH (the add-on's timeshift buffer). Its times cannot tell
+    # how far behind live playback is; the pauses since the start can.
+    YT_LIVE_FILE = (
+        "https://manifest.googlevideo.com/api/manifest/hls_variant"
+        "/id/82O6yOy_XwE.22/source/yt_live_broadcast/file/index.m3u8"
+    )
+
+    def setup_method(self):
+        queue_state.PAUSED_AT = None
+        queue_state.PAUSED_TOTAL_S = 0.0
+
+    def _yt_props(self, seconds, total=30):
+        return {
+            "canseek": True,
+            "live": False,
+            "time": {"hours": 0, "minutes": 0, "seconds": seconds},
+            "totaltime": {"hours": total // 3600, "minutes": total % 3600 // 60, "seconds": total % 60},
+        }
+
+    def test_youtube_live_forward_never_skips_the_track(self):
+        queue_state.PAUSED_TOTAL_S = 8.0
+
+        with patch.object(queue_state, "skip_queue", side_effect=AssertionError("skipped")):
+            ok, seeks = self._seek(30, self._yt_props(25), file=self.YT_LIVE_FILE)
+
+        assert ok is True
+        assert seeks == [{"seconds": 8}]
+        assert queue_state.PAUSED_TOTAL_S == 0.0
+
+    def test_youtube_live_forward_at_live_does_nothing(self):
+        ok, seeks = self._seek(10, self._yt_props(16), file=self.YT_LIVE_FILE)
+
+        assert ok is True
+        assert seeks == []
+
+    def test_youtube_live_forward_within_the_offset(self):
+        queue_state.PAUSED_TOTAL_S = 8.0
+
+        ok, seeks = self._seek(5, self._yt_props(5), file=self.YT_LIVE_FILE)
+
+        assert ok is True
+        assert seeks == [{"seconds": 5}]
+        assert queue_state.PAUSED_TOTAL_S == 3.0
+
+    def test_hls_youtube_live_back_stops_at_window_start(self):
+        ok, seeks = self._seek(-30, self._yt_props(14), file=self.YT_LIVE_FILE)
+
+        assert ok is True
+        assert seeks == [{"seconds": -14}]
+        assert queue_state.PAUSED_TOTAL_S == 14.0
+
+    def test_dash_youtube_live_back_uses_the_buffer(self):
+        ok, seeks = self._seek(-60, self._yt_props(7, total=4 * 3600), file=self.YT_LIVE_FILE)
+
+        assert ok is True
+        assert seeks == [{"seconds": -60}]
+        assert queue_state.PAUSED_TOTAL_S == 60.0
+
+
+class TestPlayPause:
+    """Over HLS a YouTube live stream paused too long reopens at the live edge."""
+
+    YT_LIVE_FILE = TestSeekRelative.YT_LIVE_FILE
+
+    def setup_method(self):
+        queue_state.QUEUE.clear()
+        queue_state.CURRENT_INDEX = None
+        queue_state.PAUSED_AT = None
+        queue_state.PAUSED_TOTAL_S = 0.0
+
+    def _toggle(self, speed, file="", total=30):
+        calls = []
+
+        def fake_call(method, params=None):
+            calls.append((method, params))
+            if method == "Player.GetProperties":
+                return {"result": {"speed": speed, "totaltime": {"hours": total // 3600, "minutes": 0, "seconds": total % 3600}}}
+            if method == "Player.GetItem":
+                return {"result": {"item": {"file": file}}}
+            return {"result": "OK"}
+
+        played = []
+        with patch.object(queue_state.kodi_api, "kodi_call", side_effect=fake_call), \
+                patch.object(queue_state, "play_index", side_effect=played.append):
+            queue_state.play_pause(1)
+        return [method for method, _ in calls], calls, played
+
+    def test_playing_stream_is_paused(self):
+        methods, _calls, played = self._toggle(1, self.YT_LIVE_FILE)
+
+        assert "Player.PlayPause" in methods
+        assert played == []
+
+    def test_paused_ordinary_item_resumes_in_place(self):
+        methods, _calls, played = self._toggle(0, "smb://movies/film.mkv")
+
+        assert "Player.PlayPause" in methods
+        assert "Player.Open" not in methods
+        assert played == []
+
+    def test_short_pause_on_youtube_live_resumes_in_place(self):
+        queue_state._handle_ws_pause()
+        queue_state.PAUSED_AT -= queue_state.YT_LIVE_MAX_PAUSE_S - 2
+
+        methods, _calls, played = self._toggle(0, self.YT_LIVE_FILE)
+
+        assert "Player.PlayPause" in methods
+        assert "Player.Open" not in methods
+        assert played == []
+
+    def test_pauses_add_up_until_the_next_start(self):
+        queue_state._handle_ws_pause()
+        queue_state.PAUSED_AT -= 7
+        queue_state._handle_ws_resume()
+        queue_state._handle_ws_pause()
+        queue_state.PAUSED_AT -= 5
+
+        assert round(queue_state.paused_behind_seconds()) == 12
+
+        queue_state._handle_ws_resume()
+        assert queue_state.PAUSED_AT is None
+        assert round(queue_state.paused_behind_seconds()) == 12
+
+        queue_state._handle_ws_play(item={}, item_params={})
+        assert queue_state.paused_behind_seconds() == 0
+
+    def test_many_short_pauses_reopen_like_one_long_pause(self):
+        queue_state.PAUSED_TOTAL_S = queue_state.YT_LIVE_MAX_PAUSE_S - 1
+        queue_state._handle_ws_pause()
+        queue_state.PAUSED_AT -= 2
+
+        methods, calls, _played = self._toggle(0, self.YT_LIVE_FILE)
+
+        assert "Player.PlayPause" not in methods
+        assert any(method == "Player.Open" for method, _ in calls)
+
+    def test_paused_youtube_live_from_queue_restarts_queue_item(self):
+        queue_state.QUEUE.append(queue_state.make_youtube("82O6yOy_XwE", "Star TV"))
+        queue_state.CURRENT_INDEX = 0
+        queue_state._handle_ws_pause()
+        queue_state.PAUSED_AT -= queue_state.YT_LIVE_MAX_PAUSE_S + 1
+
+        methods, _calls, played = self._toggle(0, self.YT_LIVE_FILE)
+
+        assert played == [0]
+        assert "Player.PlayPause" not in methods
+
+    def test_dash_youtube_live_resumes_in_place_after_a_long_pause(self):
+        queue_state._handle_ws_pause()
+        queue_state.PAUSED_AT -= queue_state.YT_LIVE_MAX_PAUSE_S + 60
+
+        methods, _calls, played = self._toggle(0, self.YT_LIVE_FILE, total=4 * 3600)
+
+        assert "Player.PlayPause" in methods
+        assert "Player.Open" not in methods
+        assert played == []
+
+    def test_paused_external_youtube_live_reopens_plugin_url(self):
+        methods, calls, played = self._toggle(0, self.YT_LIVE_FILE)
+
+        opened = [params for method, params in calls if method == "Player.Open"]
+        assert opened == [{"item": {"file": "plugin://plugin.video.youtube/play/?video_id=82O6yOy_XwE"}}]
+        assert "Player.PlayPause" not in methods
+        assert played == []

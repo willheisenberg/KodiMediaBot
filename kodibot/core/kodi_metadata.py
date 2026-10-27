@@ -28,6 +28,39 @@ def kodi_time_seconds(t):
     return t.get("hours", 0) * 3600 + t.get("minutes", 0) * 60 + t.get("seconds", 0)
 
 
+# Player.GetProperties reports zero times for PVR channels, so how far a live
+# stream trails its edge comes from InfoLabels instead.
+LIVE_OFFSET_LABELS = ["Player.Time", "Player.Duration"]
+
+
+def label_seconds(label):
+    """Seconds of a Kodi time label ("MM:SS" or "H:MM:SS"), None if unusable."""
+    try:
+        parts = [int(part) for part in (label or "").split(":")]
+    except ValueError:
+        return None
+    if len(parts) not in (2, 3):
+        return None
+    seconds = 0
+    for part in parts:
+        seconds = seconds * 60 + part
+    return seconds
+
+
+def live_offset_seconds(labels):
+    """Seconds a live stream trails its edge, None if Kodi does not tell.
+
+    With PVR timeshift or a DVR window Duration is the live edge and Time the
+    position. PVR.TimeshiftOffset is derived from the same values, so it adds
+    nothing.
+    """
+    cur = label_seconds(labels.get("Player.Time"))
+    edge = label_seconds(labels.get("Player.Duration"))
+    if cur is None or edge is None:
+        return None
+    return max(edge - cur, 0)
+
+
 def normalize_title(s):
     if not s:
         return ""
