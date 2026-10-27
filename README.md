@@ -133,6 +133,55 @@ cat /storage/.kodi/userdata/addon_data/plugin.audio.soundcloud/cache/api-client-
 `pvr.iptvsimple` is only required if the playlist should also appear in Kodi's
 native TV/PVR interface. The bot's own TV search reads `IPTV_M3U_URL` directly.
 
+### Add-on settings for pausing live streams
+
+> **Tested only on a Raspberry Pi 5 Model B with LibreELEC 12.2.1 (Kodi 21.3
+> Omega)**, with `pvr.iptvsimple` 21.11.0.3, `inputstream.ffmpegdirect` 21.3.8.3,
+> `inputstream.adaptive` 21.5.25.1, `plugin.video.youtube` 7.4.4 and
+> `plugin.audio.soundcloud` 4.1.0. Other hardware, LibreELEC or add-on versions
+> may behave differently.
+
+For a live stream the panel shows `● LIVE` instead of the elapsed time, and
+`● LIVE ◷ −00:25` once playback is behind live. Seeking forward stops at live.
+
+**Radio and TV channels (`pvr.iptvsimple`):** without timeshift Kodi plays a
+channel straight from the stream and ignores pause. Enable it under
+`Add-ons -> PVR IPTV Simple Client -> Configure -> Timeshift -> Enable timeshift`
+and restart the add-on (or Kodi). Playback then runs through
+`inputstream.ffmpegdirect`, which buffers 1 hour by default
+(`Add-ons -> Inputstream FFmpeg Direct -> Configure -> Timeshift`). The buffer is
+written to `/storage/.kodi/userdata/addon_data/inputstream.ffmpegdirect/timeshift`
+while a channel plays, paused or not; on a Pi that is the SD card, so point
+that path at a USB drive if card wear matters. Do not seek past live with the
+Kodi remote: Kodi does not stop there, and its times stay off until the channel
+is restarted. The bot's seek buttons stop at live.
+
+**YouTube live streams (`plugin.video.youtube`):** set
+`Add-ons -> YouTube -> Configure -> Advanced -> InputStream.Adaptive -> Use for live streams`
+to **MPEG-DASH** (default: Adaptive HLS). Over HLS YouTube serves only a 30 second
+window and `inputstream.adaptive` plays 16 seconds (its minimum
+[`live_delay`](https://github.com/xbmc/inputstream.adaptive/wiki/Integration))
+behind its end, so after a pause of roughly 12–16 seconds playback falls out
+of the window and resumes without sound. Over DASH the sound survived a
+40 second pause in testing. The bot still handles HLS: there it reopens a live
+stream paused for more than 30 seconds in total, so it starts live with sound.
+Kodi does not mark YouTube live streams as live; the bot recognises them by the
+manifest URL or, failing that, asks yt-dlp once per video.
+
+**YouTube add-on 7.4.4, hand patch:** on this box the `android_vr` client is
+commented out in
+`plugin.video.youtube/resources/lib/youtube_plugin/youtube/client/player_client.py`
+(group `auth_enabled|no_kids|…`). YouTube requires a PO token for that client
+the add-on does not have; with it enabled, the sound of ordinary videos stops
+after about a minute (HTTP 403 on the audio track). An add-on update reverts the
+patch. See anxdpanic/plugin.video.youtube issues #1481 and #1483.
+
+**SoundCloud (`plugin.audio.soundcloud`):** no settings changed. Known
+limitation: SoundCloud serves HLS with fMP4 segments, and Kodi's demuxer ends
+playback about 20 seconds after a seek (including the bot's resume seek).
+Routing the stream through `inputstream.adaptive` or `inputstream.ffmpegdirect`
+did not help in testing (jaylinski/kodi-addon-soundcloud issue #65).
+
 ## LibreELEC deployment
 
 The deployment uses the following persistent files on LibreELEC. The SSH keys
