@@ -1163,7 +1163,10 @@ async def handle_text(update, ctx):
             val = int(m.group(1))
             if 0 <= val <= 100:
                 ok = UI.queue_state.seek_percent(val)
-                await UI.send_toast_message(ctx, chat_id, UI.t("seeked") if ok else UI.t("seek_failed"))
+                if ok == UI.queue_state.SEEK_PREPARING:
+                    await UI.send_toast_message(ctx, chat_id, UI.t("seek_preparing"))
+                else:
+                    await UI.send_toast_message(ctx, chat_id, UI.t("seeked") if ok else UI.t("seek_failed"))
             else:
                 await UI.send_toast_message(ctx, chat_id, UI.t("enter_percent"))
         else:

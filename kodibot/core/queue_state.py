@@ -1,8 +1,10 @@
 import logging
+import os
 import re
 import subprocess
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import unquote
 
@@ -10,7 +12,7 @@ import asyncio
 import requests
 from yt_dlp import YoutubeDL
 
-from kodibot.core import kodi_api, kodi_ws, spotify_connect, youtube_live
+from kodibot.core import kodi_api, kodi_ws, soundcloud_seek, spotify_connect, youtube_live
 from kodibot.core.kodi_metadata import YOUTUBE_AUDIO_ONLY_PARAM
 from kodibot.config import CFG
 from kodibot.telegram import media
@@ -71,6 +73,9 @@ RESUME_SEEK_TOLERANCE_SEC = 10
 # Player.OnPlay/OnAVStart events seen so far.  A resume seek compares it with
 # the count from before Player.Open, so it cannot act on the stopping player.
 PLAY_STARTS = 0
+# Returned by the seek functions while a SoundCloud copy is still being made.
+SEEK_PREPARING = "preparing"
+_SC_SEEK_JOB = None
 # Over HLS YouTube serves live streams as a 30 s window; inputstream.adaptive
 # plays 16 s (its minimum live_delay) behind its end, 14-18 s as the window
 # moves on in 5 s segments. That leaves 12-16 s of pause before playback falls
@@ -430,6 +435,9 @@ def seek_relative_seconds(delta_sec: int):
         "Player.GetProperties",
         {"playerid": pid, "properties": ["time", "totaltime", "canseek", "live"]}
     ).get("result", {})
+    sc_item = _soundcloud_stream_item(pid)
+    if sc_item:
+        return _seek_soundcloud_relative(sc_item, delta_sec, props)
     if not props.get("canseek"):
         return False
     if props.get("live"):
@@ -534,8 +542,12 @@ def seek_percent(percent: int):
         return False
     props = kodi_api.kodi_call(
         "Player.GetProperties",
-        {"playerid": pid, "properties": ["canseek"]}
+        {"playerid": pid, "properties": ["canseek", "totaltime"]}
     ).get("result", {})
+    sc_item = _soundcloud_stream_item(pid)
+    total_sec = kodi_api.kodi_time_seconds(props.get("totaltime"))
+    if sc_item and total_sec:
+        return _start_soundcloud_seek(sc_item, total_sec * percent // 100)
     if not props.get("canseek"):
         return False
     kodi_api.kodi_call("Player.Seek", {"playerid": pid, "value": {"percentage": percent}})
@@ -588,6 +600,75 @@ def _seek_until_at(t, context, starts_seen, cancel_event):
         cancel_event.wait(delay)
     if not cancel_event.is_set():
         log.warning("Resume seek gave up ctx=%s target_sec=%s seeks=%d", context, target_sec, seeks)
+
+
+def _soundcloud_stream_item(pid):
+    """The queue's SoundCloud item while Kodi plays its stream, not a local copy."""
+    with LOCK:
+        idx = DISPLAY_INDEX
+        item = QUEUE[idx] if idx is not None and idx < len(QUEUE) else None
+    if not item or not is_soundcloud_item(item):
+        return None
+    current = _player_file(pid)
+    return None if current and current == soundcloud_seek.copy_url(item.get("link")) else item
+
+
+def _seek_soundcloud_relative(item, delta_sec, props):
+    with LOCK:
+        job = _SC_SEEK_JOB
+    pending = job and job["link"] == item.get("link") and not job["cancel"].is_set()
+    cur_sec = job["target"] if pending else kodi_api.kodi_time_seconds(props.get("time"))
+    if cur_sec is None:
+        return False
+    total_sec = kodi_api.kodi_time_seconds(props.get("totaltime"))
+    if total_sec and delta_sec > 0 and cur_sec + delta_sec >= total_sec:
+        return skip_queue()
+    return _start_soundcloud_seek(item, max(0, cur_sec + delta_sec))
+
+
+def _start_soundcloud_seek(item, target_sec, cancel_event=None):
+    """Move to ``target_sec`` by way of a local copy; a running job just retargets."""
+    global _SC_SEEK_JOB
+    link = item.get("link")
+    with LOCK:
+        job = _SC_SEEK_JOB
+        if job and job["link"] == link and not job["cancel"].is_set():
+            job["target"] = target_sec
+            return SEEK_PREPARING
+        job = {"link": link, "target": target_sec, "cancel": cancel_event or _SC_START_CANCEL}
+        _SC_SEEK_JOB = job
+    threading.Thread(target=_run_soundcloud_seek, args=(item, job), daemon=True).start()
+    return SEEK_PREPARING
+
+
+def _run_soundcloud_seek(item, job):
+    global _SC_SEEK_JOB
+    media.ensure_upload_dir()
+    path = os.path.join(CFG.upload_dir, f"soundcloud-seek-{uuid.uuid4().hex}.m4a")
+    try:
+        stream_url = resolve_soundcloud_stream_url(job["link"])
+        done = bool(stream_url) and soundcloud_seek.remux(stream_url, path, job["cancel"])
+    except Exception as e:
+        log.warning("SoundCloud seek failed link=%s err=%s", job["link"], e)
+        done = False
+    with LOCK:
+        if _SC_SEEK_JOB is job:
+            _SC_SEEK_JOB = None
+    if not done or job["cancel"].is_set():
+        if os.path.exists(path):
+            os.remove(path)
+        if not done and not job["cancel"].is_set():
+            log.warning("SoundCloud seek keeps the stream, no local copy link=%s", job["link"])
+        return
+    entry = media.register_temp_media(path, item.get("title"))
+    soundcloud_seek.remember_copy(job["link"], entry["url"])
+    target = int(job["target"])
+    log.info("SoundCloud seek switches to local copy link=%s target_sec=%s", job["link"], target)
+    # Without the SoundCloud link, so play_item treats it as the plain file it is.
+    play_item(
+        make_item(item.get("title"), entry["url"], "audio"),
+        resume_time={"hours": target // 3600, "minutes": target % 3600 // 60, "seconds": target % 60},
+    )
 
 
 def is_soundcloud_item(item: dict):
@@ -786,10 +867,11 @@ def play_item(item: dict, resume_time=None):
         log.info("play_item soundcloud open_mode=plugin_direct title=%s source=%s", item.get("title"), source_link)
         res = kodi_api.kodi_call("Player.Open", {"item": {"file": plugin_url}})
         log.debug("play_item open soundcloud res=%s", res)
-        schedule_soundcloud_plugin_fallback(item, source_link, resume_time=resume_time, cancel_event=start_cancel)
+        schedule_soundcloud_plugin_fallback(item, source_link, cancel_event=start_cancel)
         schedule_playback_refresh()
-        if resume_time is not None:
-            seek_when_player_ready(resume_time, "soundcloud", starts_seen, start_cancel)
+        # A seek in this stream would end playback; resume through a local copy.
+        if kodi_api.kodi_time_seconds(resume_time):
+            _start_soundcloud_seek(item, kodi_api.kodi_time_seconds(resume_time), start_cancel)
     elif kind == "audio":
         playlistid = 0
         kodi_add_to_playlist(item["url"], playlistid)

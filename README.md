@@ -191,11 +191,15 @@ the add-on does not have; with it enabled, the sound of ordinary videos stops
 after about a minute (HTTP 403 on the audio track). An add-on update reverts the
 patch. See anxdpanic/plugin.video.youtube issues #1481 and #1483.
 
-**SoundCloud (`plugin.audio.soundcloud`):** no settings changed. Known
-limitation: SoundCloud serves HLS with fMP4 segments, and Kodi's demuxer ends
-playback about 20 seconds after a seek (including the bot's resume seek).
-Routing the stream through `inputstream.adaptive` or `inputstream.ffmpegdirect`
-did not help in testing (jaylinski/kodi-addon-soundcloud issue #65).
+**SoundCloud (`plugin.audio.soundcloud`):** no settings changed. SoundCloud
+serves HLS with fMP4 segments, and Kodi's demuxer ends playback about 20 seconds
+after a seek. Routing the stream through `inputstream.adaptive` or
+`inputstream.ffmpegdirect` did not help in testing
+(jaylinski/kodi-addon-soundcloud issue #65). As a temporary workaround the first
+seek in a queued SoundCloud track makes the bot's ffmpeg copy the track, without
+re-encoding, into a temporary `.m4a` in `UPLOAD_DIR` (about 70 MB per hour). The
+stream plays on meanwhile; then Kodi switches to the file at the requested
+position and seeks in it normally. The file is deleted when playback of it stops.
 
 ## LibreELEC deployment
 

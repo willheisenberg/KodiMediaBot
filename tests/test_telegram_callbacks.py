@@ -396,3 +396,29 @@ async def test_youtube_mode_button_switches_saves_and_reopens(mock_ui, audio_onl
     )
     update.callback_query.answer.assert_any_call(text=ui_callbacks.t(toast))
     mock_ui.update_now_playing_message.assert_awaited_once_with(ctx, 123)
+
+
+@pytest.mark.asyncio
+async def test_soundcloud_seek_says_it_is_preparing(mock_ui):
+    mock_ui.queue_state.SEEK_PREPARING = "preparing"
+    mock_ui.queue_state.seek_relative_seconds.return_value = "preparing"
+    ctx = MagicMock()
+    ctx.user_data = {}
+    update = _seek_update("seek:+30s")
+
+    await ui_callbacks.on_button(update, ctx)
+
+    update.callback_query.answer.assert_any_call(text=ui_callbacks.t("seek_preparing"))
+
+
+@pytest.mark.asyncio
+async def test_soundcloud_percent_seek_says_it_is_preparing(mock_ui):
+    mock_ui.queue_state.SEEK_PREPARING = "preparing"
+    mock_ui.queue_state.seek_percent.return_value = "preparing"
+    ctx = MagicMock()
+    ctx.user_data = {"await_seek_percent": True, "await_seek_percent_msg_id": 55}
+    update = _seek_update("seek_to:50")
+
+    await ui_callbacks.on_button(update, ctx)
+
+    update.callback_query.answer.assert_any_call(text=ui_callbacks.t("seek_preparing"))

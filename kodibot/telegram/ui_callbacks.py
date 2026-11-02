@@ -467,7 +467,10 @@ async def on_button(update, ctx):
                 sent = True
             else:
                 ok = UI.queue_state.seek_relative_seconds(delta)
-                await q.answer(text=t("seeked") if ok else t("seek_failed"))
+                if ok == UI.queue_state.SEEK_PREPARING:
+                    await q.answer(text=t("seek_preparing"))
+                else:
+                    await q.answer(text=t("seeked") if ok else t("seek_failed"))
                 sent = True
 
     elif cmd == "repeat":
@@ -556,7 +559,10 @@ async def on_button(update, ctx):
     elif cmd.startswith("seek_to:"):
         pct = int(cmd.split(":")[1])
         ok = await asyncio.to_thread(UI.queue_state.seek_percent, pct)
-        await q.answer(text=t("seeked_to", pct=pct) if ok else t("seek_failed"))
+        if ok == UI.queue_state.SEEK_PREPARING:
+            await q.answer(text=t("seek_preparing"))
+        else:
+            await q.answer(text=t("seeked_to", pct=pct) if ok else t("seek_failed"))
         # A failed seek closes the prompt too instead of leaving it half-open
         if q.message:
             await UI.delete_message_if_present(ctx, chat_id, q.message.message_id)

@@ -8,6 +8,7 @@ import unicodedata
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
 from kodibot.core import kodi_api as KA
+from kodibot.core import soundcloud_seek
 
 
 def format_kodi_time(t):
@@ -931,6 +932,8 @@ def kodi_item_matches_queue(item, qitem):
         return True
     q_link = qitem.get("link") or ""
     if q_link and "soundcloud.com" in q_link:
+        if item_file and item_file == soundcloud_seek.copy_url(q_link):
+            return True
         if item_file and "sndcdn" in item_file:
             return True
         item_sc_url = extract_soundcloud_url(item_file)
