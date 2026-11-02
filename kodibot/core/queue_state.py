@@ -9,7 +9,8 @@ import asyncio
 import requests
 from yt_dlp import YoutubeDL
 
-from kodibot.core import kodi_api, spotify_connect, youtube_live
+from kodibot.core import kodi_api, kodi_ws, spotify_connect, youtube_live
+from kodibot.core.kodi_metadata import YOUTUBE_AUDIO_ONLY_PARAM
 from kodibot.config import CFG
 from kodibot.telegram import media
 
@@ -23,6 +24,8 @@ NEXT_INDEX = 0
 LOCK = threading.Lock()
 AUTOPLAY_ENABLED = True
 REPEAT_MODE = "off"
+# Queued YouTube videos play without their video track.
+YOUTUBE_AUDIO_ONLY = False
 EXTERNAL_PLAYBACK = False
 BOT_EXPECTING_WS = 0
 
@@ -59,6 +62,14 @@ RESUME_ATTEMPTS = {}
 RESUME_MAX_ATTEMPTS = 8
 RESUME_MIN_REMAINING_SEC = 10
 RESUME_SEEK_WAIT_SEC = 20
+RESUME_SEEK_POLL_SEC = 0.3
+# Time for Kodi to carry out a seek before it is checked and, if need be, repeated.
+RESUME_SEEK_SETTLE_SEC = 2.0
+# A seek lands on a segment boundary, not on the exact second.
+RESUME_SEEK_TOLERANCE_SEC = 10
+# Player.OnPlay/OnAVStart events seen so far.  A resume seek compares it with
+# the count from before Player.Open, so it cannot act on the stopping player.
+PLAY_STARTS = 0
 # Over HLS YouTube serves live streams as a 30 s window; inputstream.adaptive
 # plays 16 s (its minimum live_delay) behind its end, 14-18 s as the window
 # moves on in 5 s segments. That leaves 12-16 s of pause before playback falls
@@ -215,7 +226,8 @@ def report_overdue_play_start(now=None) -> bool:
 # ── WS callback handlers (registered with kodi_api) ────────────────
 def _handle_ws_play(*, item, item_params):
     """Called from kodi_api WS listener on Player.OnPlay/OnAVStart."""
-    global BOT_EXPECTING_WS, PAUSED_AT, PAUSED_TOTAL_S
+    global BOT_EXPECTING_WS, PAUSED_AT, PAUSED_TOTAL_S, PLAY_STARTS
+    PLAY_STARTS += 1
     PAUSED_AT = None
     PAUSED_TOTAL_S = 0.0
     # Every play start (bot-initiated or not) begins a fresh playback
@@ -528,43 +540,51 @@ def seek_percent(percent: int):
 
 
 # Try to seek to a time once a player is available.
-def seek_when_player_ready(t, context=""):
-    def _seek():
-        end = time.time() + RESUME_SEEK_WAIT_SEC
-        start_ts = time.time()
-        last_log_ts = 0.0
-        while time.time() < end:
-            players = kodi_api.get_active_players()
-            pid = players[0]["playerid"] if players else None
-            if pid is not None:
-                try:
-                    props = kodi_api.kodi_call(
-                        "Player.GetProperties",
-                        {"playerid": pid, "properties": ["totaltime", "canseek"]}
-                    ).get("result", {})
-                    if not props.get("canseek"):
-                        log.debug("Resume seek skip canseek=false playerid=%s ctx=%s", pid, context)
+def seek_when_player_ready(t, context="", starts_seen=0, cancel_event=None):
+    """Seek the track started after ``starts_seen`` play events to ``t``.
+
+    Player.Stop returns while the old player still runs and an add-on takes a
+    while to open its stream, so the player reported first may be the old one
+    or may not accept a seek yet.  Hence the repeat until Kodi reports the
+    position.
+    """
+    cancel_event = cancel_event or _SC_START_CANCEL
+    threading.Thread(
+        target=_seek_until_at, args=(t, context, starts_seen, cancel_event), daemon=True,
+    ).start()
+
+
+def _seek_until_at(t, context, starts_seen, cancel_event):
+    target_sec = kodi_api.kodi_time_seconds(t)
+    if target_sec is None:
+        log.debug("Resume seek skip invalid target=%s ctx=%s", t, context)
+        return
+    end = time.time() + RESUME_SEEK_WAIT_SEC
+    seeks = 0
+    while time.time() < end and not cancel_event.is_set():
+        delay = RESUME_SEEK_POLL_SEC
+        try:
+            players = kodi_api.get_active_players() if PLAY_STARTS != starts_seen else []
+            if players:
+                pid = players[0]["playerid"]
+                props = kodi_api.kodi_call(
+                    "Player.GetProperties",
+                    {"playerid": pid, "properties": ["time", "totaltime", "canseek"]},
+                ).get("result", {})
+                cur_sec = kodi_api.kodi_time_seconds(props.get("time"))
+                if props.get("canseek") and kodi_api.kodi_time_seconds(props.get("totaltime")) and cur_sec is not None:
+                    if abs(cur_sec - target_sec) <= RESUME_SEEK_TOLERANCE_SEC:
+                        log.info("Resume seek done ctx=%s target_sec=%s seeks=%d", context, target_sec, seeks)
                         return
-                    target_sec = kodi_api.kodi_time_seconds(t)
-                    if target_sec is None:
-                        log.debug( f"RESUME SEEK skip invalid times playerid={pid} ctx={context} " f"target={t}" )
-                        return
-                    log.debug( f"RESUME SEEK playerid={pid} ctx={context} target_sec={target_sec}" )
-                    kodi_api.kodi_call(
-                        "Player.Seek",
-                        {"playerid": pid, "value": {"time": t}}
-                    )
-                except Exception:
-                    pass
-                return
-            now = time.time()
-            if now - last_log_ts >= 1.0:
-                elapsed = now - start_ts
-                log.debug( f"RESUME SEEK waiting for playerid ctx={context} elapsed={elapsed:.1f}s players={players}" )
-                last_log_ts = now
-            time.sleep(0.3)
-        log.warning("Resume seek gave up: no playerid ctx=%s", context)
-    threading.Thread(target=_seek, daemon=True).start()
+                    log.debug("Resume seek playerid=%s ctx=%s cur=%s target=%s", pid, context, cur_sec, target_sec)
+                    kodi_api.kodi_call("Player.Seek", {"playerid": pid, "value": {"time": t}})
+                    seeks += 1
+                    delay = RESUME_SEEK_SETTLE_SEC
+        except Exception as e:
+            log.debug("Resume seek retry ctx=%s err=%s", context, e)
+        cancel_event.wait(delay)
+    if not cancel_event.is_set():
+        log.warning("Resume seek gave up ctx=%s target_sec=%s seeks=%d", context, target_sec, seeks)
 
 
 def is_soundcloud_item(item: dict):
@@ -642,6 +662,7 @@ def open_soundcloud_resolved_playlist_item(title: str, source_link: str, resume_
             return False
     if cancel_event is not None and cancel_event.is_set():
         return False
+    starts_seen = PLAY_STARTS
     # The addon uses setResolvedUrl: it needs Kodi's playable playlist context.
     # Player.Open(file=plugin_url) can return OK without creating a player.
     res = kodi_api.kodi_call("Player.Open", {"item": {"playlistid": playlistid, "position": position}})
@@ -649,7 +670,7 @@ def open_soundcloud_resolved_playlist_item(title: str, source_link: str, resume_
     log.debug("play_item open soundcloud resolved_playlist_start res=%s", res)
     schedule_playback_refresh()
     if resume_time is not None:
-        seek_when_player_ready(resume_time, context="soundcloud")
+        seek_when_player_ready(resume_time, "soundcloud", starts_seen, cancel_event)
     return True
 
 
@@ -716,6 +737,9 @@ def play_item(item: dict, resume_time=None):
     cancel_soundcloud_start()
     start_cancel = threading.Event()
     _SC_START_CANCEL = start_cancel
+    # May ask yt-dlp, so before anything stops: the old track plays on meanwhile.
+    open_url = youtube_open_url(item)
+    starts_seen = PLAY_STARTS
     if CANCEL_RECONNECT_CB:
         try:
             CANCEL_RECONNECT_CB()
@@ -762,7 +786,7 @@ def play_item(item: dict, resume_time=None):
         schedule_soundcloud_plugin_fallback(item, source_link, resume_time=resume_time, cancel_event=start_cancel)
         schedule_playback_refresh()
         if resume_time is not None:
-            seek_when_player_ready(resume_time, context="soundcloud")
+            seek_when_player_ready(resume_time, "soundcloud", starts_seen, start_cancel)
     elif kind == "audio":
         playlistid = 0
         kodi_add_to_playlist(item["url"], playlistid)
@@ -770,15 +794,57 @@ def play_item(item: dict, resume_time=None):
         log.debug("play_item open direct audio res=%s", res)
         schedule_playback_refresh()
         if resume_time is not None:
-            seek_when_player_ready(resume_time, context="audio")
+            seek_when_player_ready(resume_time, "audio", starts_seen, start_cancel)
     else:
         playlistid = 1
-        kodi_add_to_playlist(item["url"], playlistid)
+        kodi_add_to_playlist(open_url, playlistid)
         res = kodi_api.kodi_call("Player.Open", {"item": {"playlistid": playlistid}})
         log.debug("play_item open video res=%s", res)
         schedule_playback_refresh()
         if resume_time is not None:
-            seek_when_player_ready(resume_time, context="video")
+            seek_when_player_ready(resume_time, "video", starts_seen, start_cancel)
+
+
+def youtube_open_url(item: dict):
+    """The URL to open for a queue item; the queued URL itself never changes.
+
+    Live streams stay on video: their pause and seek handling depends on how
+    the add-on opens them.
+    """
+    url = item["url"]
+    if not YOUTUBE_AUDIO_ONLY or not url.startswith("plugin://plugin.video.youtube/play/"):
+        return url
+    video_id = kodi_api.extract_youtube_id(url)
+    if video_id and youtube_live.is_live(video_id):
+        return url
+    return url + YOUTUBE_AUDIO_ONLY_PARAM
+
+
+def toggle_youtube_audio_only():
+    global YOUTUBE_AUDIO_ONLY
+    YOUTUBE_AUDIO_ONLY = not YOUTUBE_AUDIO_ONLY
+    return YOUTUBE_AUDIO_ONLY
+
+
+def reopen_current_youtube():
+    """Reopen the playing queue video at its position in the current mode."""
+    with LOCK:
+        idx = DISPLAY_INDEX
+        item = QUEUE[idx] if idx is not None and idx < len(QUEUE) else None
+    if not item or not item["url"].startswith("plugin://plugin.video.youtube/play/"):
+        return
+    pid = kodi_api.get_active_playerid()
+    if pid is None:
+        return
+    file_url = _player_file(pid)
+    if not kodi_ws.is_youtube_playback_file(file_url):
+        return
+    props = kodi_api.kodi_call(
+        "Player.GetProperties", {"playerid": pid, "properties": ["time", "totaltime"]}
+    ).get("result", {})
+    if youtube_live.live_video_id(file_url, kodi_api.kodi_time_seconds(props.get("totaltime"))):
+        return
+    resume_item_at_time(item, props.get("time"))
 
 
 # Start playback and then seek to a saved timestamp.

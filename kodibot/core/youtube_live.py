@@ -62,6 +62,21 @@ def live_video_id(file_url, total_sec):
     return video_id if known else None
 
 
+def is_live(video_id):
+    """Whether a video is a live stream, asking yt-dlp if it is unknown.
+
+    Blocks on the lookup; run it off the event loop. A failed lookup counts
+    as not live and is asked again next time.
+    """
+    with _LOCK:
+        known = _LIVE.get(video_id)
+    if known is None:
+        _lookup(video_id)
+        with _LOCK:
+            known = _LIVE.get(video_id)
+    return bool(known)
+
+
 def is_dash_buffer(total_sec):
     """Whether Kodi's length is the add-on's DASH buffer, not YouTube's window."""
     return total_sec == DASH_BUFFER_SEC

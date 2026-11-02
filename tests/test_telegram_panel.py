@@ -654,8 +654,8 @@ class TestPanelSectionFlags:
             panel_show_airplay=False,
         )
 
-        assert parts[0] == "🔁 Repeat: off"
-        assert set(parts[1]) == {"─"}
+        assert parts[:2] == ["🔁 Repeat: off", "▶ 🎬"]
+        assert set(parts[2]) == {"─"}
         assert len(" | ".join(parts)) == panel.PANEL_STATUS_MIN_WIDTH
 
     def test_status_line_keeps_enabled_sections(self, monkeypatch):
@@ -670,6 +670,7 @@ class TestPanelSectionFlags:
             "🟢 Hifi: On",
             "AirPlay: On",
             "🔁 Repeat: one",
+            "▶ 🎬",
             "🔊 42",
             "⏱ 00:01 / 00:02",
         ]
@@ -686,6 +687,7 @@ class TestPanelSectionFlags:
             "🟢 Hifi: On",
             "AirPlay: On",
             "🔁 Repeat: off",
+            "▶ 🎬",
             "🔊 42",
             "📺 7/12",
             "⏱ 00:01 / 00:02",
@@ -720,7 +722,7 @@ class TestPanelSectionFlags:
 
         parts = self._status_parts(monkeypatch)
 
-        assert parts == ["Hifi: On", "AirPlay: On", "🔁 Repeat: off", "Vol: 1"]
+        assert parts == ["Hifi: On", "AirPlay: On", "🔁 Repeat: off", "▶ 🎬", "Vol: 1"]
         assert all("─" not in part for part in parts)
 
     def test_status_line_filler_shrinks_for_visible_sections(self, monkeypatch):
@@ -735,7 +737,7 @@ class TestPanelSectionFlags:
             panel_show_airplay=True,
         )
 
-        assert parts[:-1] == ["🟢 Hifi: On", "AirPlay: On", "🔁 Repeat: off"]
+        assert parts[:-1] == ["🟢 Hifi: On", "AirPlay: On", "🔁 Repeat: off", "▶ 🎬"]
         assert set(parts[-1]) == {"─"}
         assert len(" | ".join(parts)) == panel.PANEL_STATUS_MIN_WIDTH
 
@@ -753,7 +755,7 @@ class TestPanelSectionFlags:
             panel_show_airplay=False,
         )
 
-        assert parts[:-1] == ["🔁 Repeat: off", "⏱ 00:00 / 00:00"]
+        assert parts[:-1] == ["🔁 Repeat: off", "▶ 🎬", "⏱ 00:00 / 00:00"]
         assert set(parts[-1]) == {"─"}
         assert len(" | ".join(parts)) == panel.PANEL_STATUS_MIN_WIDTH_NO_PREVIEW
 
@@ -925,3 +927,47 @@ class TestAvTrackKodiMarkup:
         label = panel.format_av_track(0, "DD+5.1 [ger]", "")
 
         assert "[ger]" in label
+
+
+class TestYoutubeModeSwitch:
+    def _mode_button(self):
+        buttons = [b for row in panel.build_controls_panel() for b in row]
+        return next(b for b in buttons if b.callback_data == "youtube:mode")
+
+    def test_video_mode_offers_audio_and_reports_video(self, monkeypatch):
+        monkeypatch.setattr(queue_state, "YOUTUBE_AUDIO_ONLY", False)
+
+        assert self._mode_button().text == "▶ 🎧"
+        assert "▶ 🎬" in panel.build_panel_status_parts()
+
+    def test_audio_mode_offers_video_and_reports_audio(self, monkeypatch):
+        monkeypatch.setattr(queue_state, "YOUTUBE_AUDIO_ONLY", True)
+
+        assert self._mode_button().text == "▶ 🎬"
+        assert "▶ 🎧" in panel.build_panel_status_parts()
+
+    def test_mode_survives_a_restart(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(panel, "CFG", dataclasses.replace(panel.CFG, ui_state_file=str(tmp_path / "ui.json")))
+        monkeypatch.setattr(queue_state, "YOUTUBE_AUDIO_ONLY", True)
+        panel.save_ui_state()
+        queue_state.YOUTUBE_AUDIO_ONLY = False
+
+        panel.load_ui_state()
+
+        assert queue_state.YOUTUBE_AUDIO_ONLY is True
+
+    def test_state_file_without_mode_means_video(self, monkeypatch, tmp_path):
+        state_file = tmp_path / "ui.json"
+        state_file.write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(panel, "CFG", dataclasses.replace(panel.CFG, ui_state_file=str(state_file)))
+        monkeypatch.setattr(queue_state, "YOUTUBE_AUDIO_ONLY", True)
+
+        panel.load_ui_state()
+
+        assert queue_state.YOUTUBE_AUDIO_ONLY is False
+
+
+def test_current_button_has_no_play_symbol(monkeypatch):
+    for lang in ("en", "de"):
+        monkeypatch.setattr(i18n, "LANG", lang)
+        assert "▶" not in i18n.t("list_current")

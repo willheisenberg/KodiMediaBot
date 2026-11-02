@@ -161,6 +161,10 @@ def kodi_item_name(item):
     return label or title or ""
 
 
+# Appended to a queued YouTube plugin URL when it is opened in audio-only mode.
+YOUTUBE_AUDIO_ONLY_PARAM = "&audio_only=true"
+
+
 def extract_youtube_id(url):
     if not url:
         return ""
@@ -923,7 +927,7 @@ def kodi_item_matches_queue(item, qitem):
         return False
     item_file = item.get("file") or ""
     q_url = qitem.get("url") or ""
-    if item_file and q_url and item_file == q_url:
+    if item_file and q_url and item_file.removesuffix(YOUTUBE_AUDIO_ONLY_PARAM) == q_url:
         return True
     q_link = qitem.get("link") or ""
     if q_link and "soundcloud.com" in q_link:

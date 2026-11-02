@@ -743,3 +743,171 @@ class TestPlayPause:
         assert opened == [{"item": {"file": "plugin://plugin.video.youtube/play/?video_id=82O6yOy_XwE"}}]
         assert "Player.PlayPause" not in methods
         assert played == []
+
+
+class TestYoutubeAudioOnly:
+    VIDEO = queue_state.make_youtube("82O6yOy_XwE", "Clip")
+    AUDIO_URL = VIDEO["url"] + "&audio_only=true"
+
+    def _play(self, item, live=False):
+        with patch.multiple(
+            "kodibot.core.queue_state",
+            release_spotify_device=lambda: None,
+            kodi_add_to_playlist=lambda url, playlistid: added.append((url, playlistid)),
+            schedule_playback_refresh=lambda: None,
+            set_expecting_ws=lambda n: None,
+        ), patch.object(queue_state.media, "cleanup_active_image_session"), patch.multiple(
+            "kodibot.core.kodi_api",
+            stop_all_players=lambda: None,
+            kodi_clear_all_playlists=lambda: None,
+            kodi_call=lambda *a, **k: {},
+        ), patch.object(queue_state.youtube_live, "is_live", return_value=live) as is_live:
+            added = []
+            queue_state.play_item(item)
+        return added, is_live
+
+    def test_video_mode_opens_the_queued_url_without_a_lookup(self):
+        with patch.object(queue_state, "YOUTUBE_AUDIO_ONLY", False):
+            added, is_live = self._play(self.VIDEO)
+        assert added == [(self.VIDEO["url"], 1)]
+        is_live.assert_not_called()
+
+    def test_audio_mode_opens_audio_and_leaves_the_queue_item_alone(self):
+        item = dict(self.VIDEO)
+        with patch.object(queue_state, "YOUTUBE_AUDIO_ONLY", True):
+            added, _ = self._play(item)
+        assert added == [(self.AUDIO_URL, 1)]
+        assert item == self.VIDEO
+
+    def test_audio_mode_keeps_live_streams_on_video(self):
+        with patch.object(queue_state, "YOUTUBE_AUDIO_ONLY", True):
+            added, _ = self._play(self.VIDEO, live=True)
+        assert added == [(self.VIDEO["url"], 1)]
+
+    def test_audio_mode_ignores_other_video_items(self):
+        item = queue_state.make_item("Film", "smb://movies/film.mkv", "video")
+        with patch.object(queue_state, "YOUTUBE_AUDIO_ONLY", True):
+            assert queue_state.youtube_open_url(item) == "smb://movies/film.mkv"
+
+    def test_toggle_flips_the_mode(self):
+        with patch.object(queue_state, "YOUTUBE_AUDIO_ONLY", False):
+            assert queue_state.toggle_youtube_audio_only() is True
+            assert queue_state.toggle_youtube_audio_only() is False
+
+    def _reopen(self, item, file_url, live=None, pid=1):
+        position = {"hours": 0, "minutes": 1, "seconds": 2, "milliseconds": 0}
+        result = {"result": {"time": position, "totaltime": {"hours": 0, "minutes": 3, "seconds": 0}}}
+        with patch.multiple(
+            "kodibot.core.queue_state", QUEUE=[item], DISPLAY_INDEX=0, _player_file=lambda p: file_url,
+        ), patch.object(queue_state.kodi_api, "get_active_playerid", return_value=pid), patch.object(
+            queue_state.kodi_api, "kodi_call", return_value=result,
+        ), patch.object(queue_state.youtube_live, "live_video_id", return_value=live), patch.object(
+            queue_state, "resume_item_at_time",
+        ) as resume:
+            queue_state.reopen_current_youtube()
+        return resume, position
+
+    def test_reopen_resumes_the_playing_video_at_its_position(self):
+        resume, position = self._reopen(self.VIDEO, self.VIDEO["url"])
+        resume.assert_called_once_with(self.VIDEO, position)
+
+    def test_reopen_leaves_a_live_stream_alone(self):
+        resume, _ = self._reopen(self.VIDEO, self.VIDEO["url"], live="82O6yOy_XwE")
+        resume.assert_not_called()
+
+    def test_reopen_needs_a_running_player(self):
+        resume, _ = self._reopen(self.VIDEO, self.VIDEO["url"], pid=None)
+        resume.assert_not_called()
+
+    def test_reopen_leaves_other_playback_alone(self):
+        resume, _ = self._reopen(self.VIDEO, "http://radio.example/stream")
+        resume.assert_not_called()
+
+    def test_reopen_leaves_a_soundcloud_track_alone(self):
+        item = queue_state.make_soundcloud("https://soundcloud.com/artist/track")
+        resume, _ = self._reopen(item, item["url"])
+        resume.assert_not_called()
+
+
+class TestResumeSeek:
+    """The seek has to reach the new player, however long it takes to open."""
+
+    TARGET = {"hours": 0, "minutes": 2, "seconds": 0, "milliseconds": 0}
+
+    @staticmethod
+    def _at(sec, total=300, canseek=True):
+        clock = {"hours": 0, "minutes": sec // 60, "seconds": sec % 60, "milliseconds": 0}
+        length = {"hours": 0, "minutes": total // 60, "seconds": total % 60, "milliseconds": 0}
+        return {"time": clock, "totaltime": length, "canseek": canseek}
+
+    def _run(self, states, starts=1, starts_seen=0, wait_sec=5, cancel=None):
+        """Run the seek against a player whose state advances with every read."""
+        states = list(states)
+        seeks = []
+
+        def kodi_call(method, params=None):
+            if method == "Player.Seek":
+                seeks.append(params["value"]["time"])
+                return {}
+            return {"result": states.pop(0) if len(states) > 1 else states[0]}
+
+        with patch.multiple(
+            "kodibot.core.queue_state",
+            PLAY_STARTS=starts,
+            RESUME_SEEK_POLL_SEC=0.001,
+            RESUME_SEEK_SETTLE_SEC=0.001,
+            RESUME_SEEK_WAIT_SEC=wait_sec,
+        ), patch.object(queue_state.kodi_api, "get_active_players", return_value=[{"playerid": 1}]), patch.object(
+            queue_state.kodi_api, "kodi_call", side_effect=kodi_call,
+        ):
+            queue_state._seek_until_at(self.TARGET, "test", starts_seen, cancel or threading.Event())
+        return seeks
+
+    def test_waits_until_the_new_player_accepts_a_seek(self):
+        seeks = self._run([self._at(0, canseek=False), self._at(0, total=0), self._at(0), self._at(120)])
+        assert seeks == [self.TARGET]
+
+    def test_repeats_a_seek_kodi_dropped(self):
+        seeks = self._run([self._at(1), self._at(2), self._at(120)])
+        assert seeks == [self.TARGET, self.TARGET]
+
+    def test_old_player_is_left_alone_until_kodi_reports_a_new_start(self):
+        seeks = self._run([self._at(50)], starts=3, starts_seen=3, wait_sec=0.02)
+        assert seeks == []
+
+    def test_cancelled_start_stops_the_seek(self):
+        cancel = threading.Event()
+        cancel.set()
+        assert self._run([self._at(0)], cancel=cancel) == []
+
+    def test_ws_play_event_counts_as_a_new_start(self):
+        with patch.multiple(
+            "kodibot.core.queue_state", PLAY_STARTS=4, BOT_EXPECTING_WS=1, ON_PLAY_STARTED=None,
+        ):
+            queue_state._handle_ws_play(item={}, item_params={})
+            assert queue_state.PLAY_STARTS == 5
+
+    def test_play_item_hands_over_the_count_from_before_the_open(self):
+        seen = {}
+
+        def kodi_call(method, params=None):
+            if method == "Player.Open":
+                queue_state.PLAY_STARTS += 1
+            return {}
+
+        with patch.multiple(
+            "kodibot.core.queue_state",
+            PLAY_STARTS=7,
+            release_spotify_device=lambda: None,
+            kodi_add_to_playlist=lambda url, playlistid: None,
+            schedule_playback_refresh=lambda: None,
+            set_expecting_ws=lambda n: None,
+            seek_when_player_ready=lambda t, ctx, starts, cancel: seen.update(starts=starts),
+        ), patch.object(queue_state.media, "cleanup_active_image_session"), patch.multiple(
+            "kodibot.core.kodi_api",
+            stop_all_players=lambda: None,
+            kodi_clear_all_playlists=lambda: None,
+            kodi_call=kodi_call,
+        ):
+            queue_state.play_item(queue_state.make_youtube("82O6yOy_XwE", "Clip"), resume_time=self.TARGET)
+        assert seen == {"starts": 7}

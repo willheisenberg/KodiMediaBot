@@ -86,3 +86,29 @@ class TestLiveVideoId:
         with patch.object(youtube_live, "_start_lookup", side_effect=AssertionError("lookup")):
             assert youtube_live.live_video_id("smb://movies/film.mkv", 30) is None
             assert youtube_live.live_video_id(None, None) is None
+
+
+class TestIsLive:
+    def setup_method(self):
+        youtube_live._LIVE.clear()
+        youtube_live._PENDING.clear()
+
+    def test_known_answer_needs_no_lookup(self):
+        youtube_live._LIVE["82O6yOy_XwE"] = True
+        with patch.object(youtube_live, "_lookup", side_effect=AssertionError("lookup")):
+            assert youtube_live.is_live("82O6yOy_XwE") is True
+
+    def test_unknown_video_is_looked_up_once(self):
+        def answer(video_id):
+            youtube_live._LIVE[video_id] = True
+
+        with patch.object(youtube_live, "_lookup", side_effect=answer) as lookup:
+            assert youtube_live.is_live("82O6yOy_XwE") is True
+            assert youtube_live.is_live("82O6yOy_XwE") is True
+        lookup.assert_called_once_with("82O6yOy_XwE")
+
+    def test_failed_lookup_counts_as_not_live(self):
+        with patch.object(youtube_live, "_lookup") as lookup:
+            assert youtube_live.is_live("82O6yOy_XwE") is False
+            assert youtube_live.is_live("82O6yOy_XwE") is False
+        assert lookup.call_count == 2

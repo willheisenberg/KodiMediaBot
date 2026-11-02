@@ -306,3 +306,9 @@ def test_kodi_playlist_goto_without_player(mock_pid):
     mock_pid.return_value = None
     assert kodi_api.kodi_playlist_goto("next") == "inactive"
 
+
+
+def test_audio_only_playback_matches_its_queue_item():
+    url = "plugin://plugin.video.youtube/play/?video_id=82O6yOy_XwE"
+    item = {"file": url + "&audio_only=true"}
+    assert kodi_api.kodi_item_matches_queue(item, {"url": url}) is True

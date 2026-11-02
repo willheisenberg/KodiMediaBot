@@ -475,6 +475,14 @@ async def on_button(update, ctx):
         await q.answer(text=t("repeat_status", mode=repeat_mode_label(UI.queue_state.REPEAT_MODE)))
         sent = True
 
+    elif cmd == "youtube:mode":
+        audio_only = UI.queue_state.toggle_youtube_audio_only()
+        UI.save_ui_state()
+        UI.schedule_playback_action(ctx, chat_id, UI.queue_state.reopen_current_youtube)
+        await q.answer(text=t("youtube_audio_mode" if audio_only else "youtube_video_mode"))
+        await UI.update_now_playing_message(ctx, chat_id)
+        sent = True
+
     elif cmd == "deleteall":
         with UI.queue_state.LOCK:
             queue_count = len(UI.queue_state.QUEUE)

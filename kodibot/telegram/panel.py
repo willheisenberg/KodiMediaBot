@@ -86,6 +86,7 @@ def save_ui_state():
             "last_bot_id": S.LAST_BOT_ID,
             "prev_bot_id": S.PREV_BOT_ID,
             "last_cleanup_id": S.LAST_CLEANUP_ID,
+            "youtube_audio_only": queue_state.YOUTUBE_AUDIO_ONLY,
         }
         parent = os.path.dirname(CFG.ui_state_file)
         if parent:
@@ -134,6 +135,7 @@ def load_ui_state():
         for k, v in raw.items():
             target[int(k)] = v
             chats.add(int(k))
+    queue_state.YOUTUBE_AUDIO_ONLY = bool(data.get("youtube_audio_only", False))
     log.info("UI state loaded file=%s chats=%d", state_file, len(chats))
     if migrated_from_legacy:
         save_ui_state()
@@ -213,6 +215,10 @@ def build_main_control_panel(play_label):
     return rows
 
 
+def youtube_mode_label(audio_only):
+    return "▶ 🎧" if audio_only else "▶ 🎬"
+
+
 def build_controls_panel():
     return [
         [
@@ -232,6 +238,7 @@ def build_controls_panel():
         [
             InlineKeyboardButton(t("percent_seek"), callback_data="seek:percent"),
             InlineKeyboardButton(t("repeat"), callback_data="repeat"),
+            InlineKeyboardButton(youtube_mode_label(not queue_state.YOUTUBE_AUDIO_ONLY), callback_data="youtube:mode"),
         ],
         [
             InlineKeyboardButton("🗑 №", callback_data="delete:ask"),
@@ -339,6 +346,7 @@ def build_panel_status_parts(progress_text=None, min_width=PANEL_STATUS_MIN_WIDT
     if CFG.panel_show_airplay:
         status_parts.append(S.AIRPLAY_STATUS_CACHE)
     status_parts.append(t("repeat_status", mode=repeat_mode_label(queue_state.REPEAT_MODE)))
+    status_parts.append(youtube_mode_label(queue_state.YOUTUBE_AUDIO_ONLY))
     if CFG.panel_show_volume and hifi_text != t("hifi_standby_status"):
         status_parts.append(S.DENON_VOLUME_CACHE)
     if visuals_enabled():

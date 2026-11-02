@@ -377,3 +377,22 @@ async def test_successful_seek_to_closes_the_prompt(mock_ui):
     mock_ui.queue_state.seek_percent.assert_called_once_with(50)
     assert not ctx.user_data.get("await_seek_percent")
 
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("audio_only,toast", [(True, "youtube_audio_mode"), (False, "youtube_video_mode")])
+async def test_youtube_mode_button_switches_saves_and_reopens(mock_ui, audio_only, toast):
+    mock_ui.queue_state.toggle_youtube_audio_only.return_value = audio_only
+    ctx = MagicMock()
+    ctx.user_data = {}
+    update = _seek_update("youtube:mode")
+
+    await ui_callbacks.on_button(update, ctx)
+
+    mock_ui.queue_state.toggle_youtube_audio_only.assert_called_once_with()
+    mock_ui.save_ui_state.assert_called_once_with()
+    mock_ui.schedule_playback_action.assert_called_once_with(
+        ctx, 123, mock_ui.queue_state.reopen_current_youtube
+    )
+    update.callback_query.answer.assert_any_call(text=ui_callbacks.t(toast))
+    mock_ui.update_now_playing_message.assert_awaited_once_with(ctx, 123)

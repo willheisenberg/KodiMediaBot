@@ -21,6 +21,8 @@ Those temporary media files are deleted again after playback stops.
   edited in place across container restarts and redeployments.
 - YouTube and SoundCloud queues with play/pause, next/previous, repeat, seeking,
   queue editing and saved playlists.
+- A switch that plays queued YouTube links as audio only or as video (see
+  [Audio-only YouTube](#audio-only-youtube)).
 - Spotify playlists, albums and tracks, resolved to the matching YouTube videos
   and queued — no Spotify account or API key required (see
   [Spotify links](#spotify-links)).
@@ -132,6 +134,17 @@ cat /storage/.kodi/userdata/addon_data/plugin.audio.soundcloud/cache/api-client-
 
 `pvr.iptvsimple` is only required if the playlist should also appear in Kodi's
 native TV/PVR interface. The bot's own TV search reads `IPTV_M3U_URL` directly.
+
+### Audio-only YouTube
+
+`🎛 Controls` → `▶ 🎧` / `▶ 🎬` switches queued YouTube links between video and
+audio only. The button shows the mode it switches to, the status line the current
+one. A video that is
+playing restarts at the same position in the new mode, and a paused one resumes.
+The queue and saved playlists stay unchanged, tracks resolved from Spotify follow
+the switch, and SoundCloud is not affected. The mode survives a restart. Live
+streams always stay on video, so in audio mode the bot asks yt-dlp once per video
+whether it is live, which can delay its first start.
 
 ### Add-on settings for pausing live streams
 
