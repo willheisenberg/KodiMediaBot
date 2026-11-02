@@ -957,3 +957,119 @@ class TestSoundcloudSets:
             )
         assert result == ["https://soundcloud.com/a/two"]
         assert "/tracks/1" in caplog.text
+
+
+class TestVisualWindowCheck:
+    VIS = {"result": {"currentwindow": {"id": queue_state.VISUALISATION_WINDOW_ID, "label": "Visualisation"}}}
+    HOME = {"result": {"currentwindow": {"id": 10000, "label": "Home"}}}
+
+    def _run(self, windows, players=None, delays=(0, 0), current=True, **state):
+        windows = list(windows)
+        calls = []
+
+        def kodi_call(method, params=None):
+            calls.append((method, params))
+            return windows.pop(0) if method == "GUI.GetProperties" else {}
+
+        check = threading.Event()
+        defaults = dict(BOT_EXPECTING_WS=0, LAST_PLAYED_RADIO=None, AUTOPLAY_ENABLED=False, NEXT_INDEX=0, QUEUE=[])
+        with patch.multiple(
+            "kodibot.core.queue_state",
+            VISUAL_WINDOW_CHECK_DELAYS_SEC=delays,
+            _VISUAL_WINDOW_CHECK=check if current else threading.Event(),
+            **{**defaults, **state},
+        ), patch.object(queue_state.kodi_api, "get_active_players", return_value=players or []), patch.object(
+            queue_state.kodi_api, "kodi_call", side_effect=kodi_call,
+        ):
+            queue_state._check_visual_window(check)
+        return [c for c in calls if c[0] == "GUI.ActivateWindow"], calls
+
+    def test_leftover_window_goes_home(self):
+        left, _ = self._run([self.VIS])
+        assert left == [("GUI.ActivateWindow", {"window": "home"})]
+
+    def test_window_that_opens_late_is_caught_by_the_second_look(self):
+        left, _ = self._run([self.HOME, self.VIS])
+        assert left == [("GUI.ActivateWindow", {"window": "home"})]
+
+    def test_other_windows_stay(self):
+        left, _ = self._run([self.HOME, self.HOME])
+        assert left == []
+
+    def test_failed_kodi_call_changes_nothing(self):
+        left, _ = self._run([{}, {}])
+        assert left == []
+
+    def test_running_player_keeps_the_window(self):
+        left, calls = self._run([self.VIS], players=[{"playerid": 0}])
+        assert left == []
+        assert calls == []
+
+    def test_starting_track_keeps_the_window(self):
+        left, calls = self._run([self.VIS], BOT_EXPECTING_WS=2)
+        assert left == []
+        assert calls == []
+
+    def test_next_queue_track_keeps_the_window(self):
+        left, _ = self._run([self.VIS], AUTOPLAY_ENABLED=True, NEXT_INDEX=0, QUEUE=[{"url": "x"}])
+        assert left == []
+
+    def test_end_of_queue_goes_home(self):
+        left, _ = self._run([self.VIS], AUTOPLAY_ENABLED=True, NEXT_INDEX=1, QUEUE=[{"url": "x"}])
+        assert len(left) == 1
+
+    def test_radio_reconnect_keeps_the_window(self):
+        left, _ = self._run([self.VIS], LAST_PLAYED_RADIO={"url": "x"})
+        assert left == []
+
+    def test_newer_stop_replaces_this_check(self):
+        left, calls = self._run([self.VIS], current=False)
+        assert left == []
+        assert calls == []
+
+    def test_stop_event_schedules_a_check(self):
+        with patch.object(queue_state, "_schedule_visual_window_check") as schedule, patch.object(
+            queue_state, "schedule_now_playing_refresh",
+        ):
+            queue_state._handle_ws_stop(item_params={}, player_params={})
+        schedule.assert_called_once_with()
+
+    def _stop(self, players=(), **state):
+        with patch.multiple(
+            "kodibot.core.queue_state",
+            release_spotify_device=lambda: None,
+            schedule_playback_refresh=lambda: None,
+            **state,
+        ), patch.object(queue_state.media, "cleanup_active_image_session"), patch.multiple(
+            "kodibot.core.kodi_api",
+            get_active_players=lambda: list(players),
+            stop_all_players=lambda: None,
+            kodi_clear_all_playlists=lambda: None,
+        ), patch.object(queue_state, "_schedule_visual_window_check") as schedule:
+            queue_state.hard_stop_and_clear()
+            return schedule, queue_state.BOT_EXPECTING_WS
+
+    def test_stop_forgets_a_start_kodi_never_confirmed(self):
+        # A leftover count would read as "a track is starting" and keep the window.
+        _, expecting = self._stop(BOT_EXPECTING_WS=1)
+        assert expecting == 0
+
+    def test_stop_with_nothing_playing_checks_right_away(self):
+        # Kodi sends no stop event then, so nothing else would leave the window.
+        schedule, _ = self._stop()
+        schedule.assert_called_once_with(delays=(0.0,))
+
+    def test_stop_during_playback_leaves_the_check_to_the_stop_event(self):
+        schedule, _ = self._stop(players=[{"playerid": 0, "type": "audio"}])
+        schedule.assert_not_called()
+
+    def test_given_delays_replace_the_default_ones(self):
+        check = threading.Event()
+        with patch.object(queue_state, "_VISUAL_WINDOW_CHECK", check), patch.object(
+            queue_state, "_next_playback_pending", return_value=False,
+        ), patch.object(queue_state.kodi_api, "get_active_players", return_value=[]), patch.object(
+            queue_state.kodi_api, "kodi_call", side_effect=lambda method, params=None: self.VIS,
+        ) as kodi_call, patch.object(queue_state.time, "sleep") as sleep:
+            queue_state._check_visual_window(check, delays=(0.0,))
+        sleep.assert_called_once_with(0.0)
+        kodi_call.assert_any_call("GUI.ActivateWindow", {"window": "home"})

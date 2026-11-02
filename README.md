@@ -120,7 +120,9 @@ appears as soon as one of the two flags is on and shows only the enabled addons.
 button follows the state the addon reports, and the 🌌 marker in the status line shows
 “on” while either Party Video or Spektra runs. Kodi shows one visualisation at a time, so
 the bot keeps them exclusive: switching Spektra on stops a running Party Video, and
-starting Party Video switches Spektra off.
+starting Party Video switches Spektra off. If the fullscreen visualisation is left
+open after playback stopped, the bot returns to Kodi's home screen, so no black
+screen stays behind.
 Upload cleanup requires confirmation and only removes videos directly inside the
 upload folder; library files, symlinks and the active visual source are preserved.
 An upload kept for a visual can be removed using this menu after stopping it.

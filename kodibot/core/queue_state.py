@@ -75,6 +75,12 @@ RESUME_SEEK_TOLERANCE_SEC = 10
 PLAY_STARTS = 0
 # Returned by the seek functions while a SoundCloud copy is still being made.
 SEEK_PREPARING = "preparing"
+# Kodi's fullscreen visualisation.  A visual add-on can still open it just after
+# playback stopped; without a player it stays behind as a black screen.
+VISUALISATION_WINDOW_ID = 12006
+# Waits before each look at the window, since it can open late.
+VISUAL_WINDOW_CHECK_DELAYS_SEC = (2.0, 4.0)
+_VISUAL_WINDOW_CHECK = None
 _SC_SEEK_JOB = None
 # Over HLS YouTube serves live streams as a 30 s window; inputstream.adaptive
 # plays 16 s (its minimum live_delay) behind its end, 14-18 s as the window
@@ -353,9 +359,49 @@ def _is_library_video(item) -> bool:
     return (item or {}).get("type") in _LIBRARY_VIDEO_TYPES
 
 
+def _schedule_visual_window_check(delays=None):
+    """Look for a leftover visualisation window; a newer stop replaces the check."""
+    global _VISUAL_WINDOW_CHECK
+    check = threading.Event()
+    _VISUAL_WINDOW_CHECK = check
+    threading.Thread(target=_check_visual_window, args=(check, delays), daemon=True).start()
+
+
+def _check_visual_window(check, delays=None):
+    for delay in delays or VISUAL_WINDOW_CHECK_DELAYS_SEC:
+        time.sleep(delay)
+        if check is not _VISUAL_WINDOW_CHECK or _next_playback_pending():
+            return
+        try:
+            if kodi_api.get_active_players():
+                return
+            window = kodi_api.kodi_call(
+                "GUI.GetProperties", {"properties": ["currentwindow"]}
+            ).get("result", {}).get("currentwindow", {})
+            log.info("Visualisation window check, nothing plays, window=%s", window)
+            if window.get("id") == VISUALISATION_WINDOW_ID:
+                log.info("Leaving the visualisation window, nothing plays")
+                kodi_api.kodi_call("GUI.ActivateWindow", {"window": "home"})
+                return
+        except Exception as e:
+            log.warning("Visualisation window check failed: %s", e)
+            return
+
+
+def _next_playback_pending():
+    """Whether the bot is about to start something, so the window is still wanted."""
+    if get_expecting_ws() > 0:
+        return True
+    with LOCK:
+        if LAST_PLAYED_RADIO:
+            return True
+        return bool(AUTOPLAY_ENABLED and NEXT_INDEX is not None and NEXT_INDEX < len(QUEUE))
+
+
 def _handle_ws_stop(item_params=None, player_params=None):
     global EXPECTED_STOP, LAST_PLAYED_RADIO
     schedule_now_playing_refresh()
+    _schedule_visual_window_check()
     
     player_id = (player_params or {}).get("playerid")
     stopped_type = (item_params or {}).get("type")
@@ -942,7 +988,7 @@ def resume_item_at_time(item: dict, t):
 
 def hard_stop_and_clear():
     global AUTOPLAY_ENABLED, CURRENT_INDEX, DISPLAY_INDEX, NEXT_INDEX, LAST_PROGRESS_TS, LAST_PROGRESS_TIME, LAST_PROGRESS_TOTAL, LAST_PROGRESS_INDEX, EXTERNAL_PLAYBACK
-    global EXPECTED_STOP, LAST_PLAYED_RADIO
+    global EXPECTED_STOP, LAST_PLAYED_RADIO, BOT_EXPECTING_WS
     cancel_soundcloud_start()
     
     # Check if both picture and audio players are active concurrently
@@ -988,6 +1034,9 @@ def hard_stop_and_clear():
     global PLAY_INDEX_TS
     PLAY_INDEX_TS = 0.0
     schedule_playback_refresh()
+    # With nothing playing Kodi sends no stop event, and no window will open late.
+    if not active:
+        _schedule_visual_window_check(delays=(0.0,))
 
 
 # Advance to the next queue item and start playback.
