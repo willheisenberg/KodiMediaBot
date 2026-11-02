@@ -1312,6 +1312,12 @@ async def handle_text(update, ctx):
                     UI.schedule_cleanup(ctx, chat_id, prev_id)
                     await UI.update_list_message(ctx, chat_id)
                 return
+    # The track pattern also matches a discover link cut off before its name.
+    if sc and not UI.queue_state.is_sc_track_url(sc.group(0)):
+        await UI.send_toast_message(ctx, chat_id, UI.t("soundcloud_track_failed"))
+        UI.schedule_cleanup(ctx, chat_id, prev_id)
+        await UI.update_list_message(ctx, chat_id)
+        return
     if sc:
         try:
             item = UI.queue_state.make_soundcloud(sc.group(0))

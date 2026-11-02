@@ -911,3 +911,49 @@ class TestResumeSeek:
         ):
             queue_state.play_item(queue_state.make_youtube("82O6yOy_XwE", "Clip"), resume_time=self.TARGET)
         assert seen == {"starts": 7}
+
+
+class TestSoundcloudSets:
+    DISCOVER = "https://soundcloud.com/discover/sets/liked-by::350337"
+    API = "https://api-v2.soundcloud.com/tracks/"
+
+    def test_discover_link_is_a_set_not_a_track(self):
+        assert queue_state.is_sc_set_url(self.DISCOVER)
+        assert not queue_state.is_sc_track_url(self.DISCOVER)
+
+    def test_discover_link_cut_off_before_its_name_is_neither(self):
+        assert not queue_state.is_sc_set_url("https://soundcloud.com/discover/sets")
+        assert not queue_state.is_sc_track_url("https://soundcloud.com/discover/sets")
+
+    def _expand(self, entries, lookups):
+        def extract_info(url, download=False, process=True):
+            if process:
+                return {"entries": entries}
+            answer = lookups[url]
+            if isinstance(answer, Exception):
+                raise answer
+            return {"webpage_url": answer}
+
+        with patch.object(queue_state, "YoutubeDL") as ydl:
+            ydl.return_value.__enter__.return_value.extract_info.side_effect = extract_info
+            return queue_state.expand_soundcloud_set(self.DISCOVER)
+
+    def test_api_entries_become_track_links_in_set_order(self):
+        result = self._expand(
+            [{"url": self.API + "1"}, {"url": "https://soundcloud.com/a/direct"}, {"url": self.API + "2"}],
+            {self.API + "1": "https://soundcloud.com/a/one", self.API + "2": "https://soundcloud.com/a/two"},
+        )
+        assert result == [
+            "https://soundcloud.com/a/one",
+            "https://soundcloud.com/a/direct",
+            "https://soundcloud.com/a/two",
+        ]
+
+    def test_failed_lookup_drops_only_that_track(self, caplog):
+        with caplog.at_level("WARNING", logger="kodibot.core.queue_state"):
+            result = self._expand(
+                [{"url": self.API + "1"}, {"url": self.API + "2"}],
+                {self.API + "1": RuntimeError("gone"), self.API + "2": "https://soundcloud.com/a/two"},
+            )
+        assert result == ["https://soundcloud.com/a/two"]
+        assert "/tracks/1" in caplog.text

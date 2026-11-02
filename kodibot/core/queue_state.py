@@ -3,6 +3,7 @@ import re
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import unquote
 
 import asyncio
@@ -90,6 +91,8 @@ SC_DISPLAY_RE = re.compile(r"^https?://(www\.)?soundcloud\.com/([^/]+)/([^/?#]+)
 SC_TRACK_RE = re.compile(r"^https?://(www\.)?soundcloud\.com/[^/]+/[^/?#]+")
 SC_SET_RE = re.compile(r"^https?://(www\.)?soundcloud\.com/[^/]+/sets/[^/?#]+")
 SC_BASE_RE = re.compile(r"^https?://(www\.)?soundcloud\.com/")
+SC_API_TRACK_RE = re.compile(r"^https?://api-v2\.soundcloud\.com/tracks/")
+SC_SET_LOOKUPS = 5
 SC_HTML_RE = re.compile(r'https?://soundcloud\.com/[^\s"\'<>]+')
 YT_TITLE_CACHE = {}
 YT_TITLE_CACHE_TTL = 3600.0
@@ -1181,7 +1184,7 @@ def is_sc_track_url(url):
 
 
 def is_sc_set_url(url):
-    return bool(SC_SET_RE.match(url)) and "discover/sets" not in url
+    return bool(SC_SET_RE.match(url))
 
 
 # Resolve a SoundCloud short link to a full track URL.
@@ -1226,12 +1229,25 @@ def expand_soundcloud_set(url):
     except Exception:
         return []
     entries = info.get("entries") or []
-    urls = []
-    for e in entries:
-        u = e.get("webpage_url") or e.get("url")
-        if u and u.startswith("http"):
-            urls.append(u)
-    return [u for u in urls if is_sc_track_url(u)]
+    urls = [e.get("webpage_url") or e.get("url") for e in entries]
+    urls = [u for u in urls if u and u.startswith("http")]
+    with ThreadPoolExecutor(max_workers=SC_SET_LOOKUPS) as pool:
+        urls = list(pool.map(_soundcloud_track_url, urls))
+    return [u for u in urls if u and is_sc_track_url(u)]
+
+
+def _soundcloud_track_url(url):
+    """The track's soundcloud.com link; yt-dlp lists some set entries by API URL."""
+    if not SC_API_TRACK_RE.match(url):
+        return url
+    opts = {"quiet": True, "skip_download": True, "socket_timeout": CFG.sc_search_timeout}
+    try:
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False, process=False)
+        return (info or {}).get("webpage_url") or ""
+    except Exception as e:
+        log.warning("SoundCloud set entry lookup failed url=%s err=%s", url, e)
+        return ""
 
 
 def queue_soundcloud_set(url):

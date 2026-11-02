@@ -186,3 +186,48 @@ async def test_handle_text_youtube_playlist_and_video_skips_cleanup(mock_ui):
     )
 
     assert not mock_ui.schedule_cleanup.called
+
+
+def _text_update(text):
+    update = MagicMock()
+    update.message.text = text
+    update.effective_message.text = text
+    update.effective_chat.id = 123
+    update.effective_user.id = 789
+    return update
+
+
+@pytest.mark.asyncio
+async def test_discover_link_is_queued_as_a_set_with_its_full_url(batch_ui):
+    url = "https://soundcloud.com/discover/sets/liked-by::350337"
+    batch_ui.spotify.parse_spotify_url.return_value = None
+    ctx = MagicMock()
+    ctx.user_data = {}
+
+    await ui_text.handle_text(_text_update(url), ctx)
+
+    batch_ui.queue_state.queue_soundcloud_set_async.assert_awaited_once_with(url)
+    batch_ui.queue_state.queue_item.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cut_off_discover_link_is_not_queued_as_a_track(batch_ui):
+    batch_ui.spotify.parse_spotify_url.return_value = None
+    ctx = MagicMock()
+    ctx.user_data = {}
+
+    await ui_text.handle_text(_text_update("https://soundcloud.com/discover/sets"), ctx)
+
+    batch_ui.queue_state.queue_item.assert_not_called()
+    batch_ui.send_toast_message.assert_awaited_once_with(ctx, 123, batch_ui.t("soundcloud_track_failed"))
+
+
+@pytest.mark.asyncio
+async def test_discover_link_in_a_batch_stays_whole(batch_ui):
+    url = "https://soundcloud.com/discover/sets/liked-by::350337"
+    ctx = MagicMock()
+    ctx.user_data = {}
+
+    await ui_text.queue_multiple_links([url, "https://youtu.be/SPM6lZ9Zo88"], ctx, 123)
+
+    batch_ui.queue_state.queue_soundcloud_set_async.assert_awaited_once_with(url)
