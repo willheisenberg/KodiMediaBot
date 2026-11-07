@@ -828,6 +828,26 @@ class TestYoutubeAudioOnly:
         resume, _ = self._reopen(item, item["url"])
         resume.assert_not_called()
 
+    # TEMPORARY with the "YouTube reopen" diagnostics in reopen_current_youtube.
+    @pytest.mark.parametrize("kwargs, reason", [
+        ({"pid": None}, "no active player"),
+        ({"file_url": "http://radio.example/stream"}, "Kodi plays something else"),
+        ({"live": "82O6yOy_XwE"}, "live stream"),
+    ])
+    def test_reopen_logs_why_it_skips(self, caplog, kwargs, reason):
+        file_url = kwargs.pop("file_url", self.VIDEO["url"])
+        with caplog.at_level("INFO", logger="kodibot.core.queue_state"):
+            self._reopen(self.VIDEO, file_url, **kwargs)
+        assert f"YouTube reopen skip: {reason}" in caplog.text
+
+    def test_reopen_logs_a_missing_queue_item(self, caplog):
+        with patch.multiple("kodibot.core.queue_state", QUEUE=[], DISPLAY_INDEX=None), patch.object(
+            queue_state, "resume_item_at_time",
+        ) as resume, caplog.at_level("INFO", logger="kodibot.core.queue_state"):
+            queue_state.reopen_current_youtube()
+        resume.assert_not_called()
+        assert "YouTube reopen skip: no queue item display_index=None" in caplog.text
+
 
 class TestResumeSeek:
     """The seek has to reach the new player, however long it takes to open."""
@@ -1073,3 +1093,18 @@ class TestVisualWindowCheck:
             queue_state._check_visual_window(check, delays=(0.0,))
         sleep.assert_called_once_with(0.0)
         kodi_call.assert_any_call("GUI.ActivateWindow", {"window": "home"})
+
+
+# TEMPORARY with the caller log in clear_bot_playback_state.
+def test_clearing_the_bot_state_logs_its_caller(caplog):
+    """A reset queue position must name who reset it."""
+
+    def spotify_takeover_like():
+        queue_state.clear_bot_playback_state()
+
+    with patch.multiple("kodibot.core.queue_state", DISPLAY_INDEX=3), patch.object(
+        queue_state, "cancel_soundcloud_start",
+    ), caplog.at_level("INFO", logger="kodibot.core.queue_state"):
+        spotify_takeover_like()
+        assert queue_state.DISPLAY_INDEX is None
+    assert "Bot playback state cleared display_index=3 by=test_queue_state.py:spotify_takeover_like" in caplog.text

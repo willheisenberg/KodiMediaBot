@@ -135,16 +135,23 @@ def remember_last_seen(chat_id, message_id):
 
 
 def schedule_playback_action(ctx, chat_id, action, *args):
+    """Run a blocking playback action off the loop, one at a time."""
+    # TEMPORARY: the queued/start/done lines diagnose the YouTube switch that
+    # did nothing after Spotify via Soloist (2026-11-07). Remove them once
+    # fixed; keep the ERROR warning.
+    name = getattr(action, "__name__", action)
+    log.info("PLAYBACK ACTION queued action=%s busy=%s", name, PLAYBACK_TASK_LOCK.locked())
+
     async def _run():
+        queued_at = time.monotonic()
         async with PLAYBACK_TASK_LOCK:
+            started_at = time.monotonic()
+            log.info("PLAYBACK ACTION start action=%s waited=%.1fs", name, started_at - queued_at)
             try:
                 await asyncio.to_thread(action, *args)
             except Exception as e:
-                log.info(
-                    "PLAYBACK ACTION ERROR action=%s err=%s",
-                    getattr(action, "__name__", action),
-                    e,
-                )
+                log.warning("PLAYBACK ACTION ERROR action=%s err=%s", name, e)
+            log.info("PLAYBACK ACTION done action=%s took=%.1fs", name, time.monotonic() - started_at)
 
     asyncio.get_running_loop().create_task(_run())
 

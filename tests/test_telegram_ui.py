@@ -65,3 +65,59 @@ class TestPlaybackUiRefresh:
         assert calls == [
             ("panel", S.APP_INSTANCE, 1234),
         ]
+
+
+# TEMPORARY with the playback action diagnostics in ui.schedule_playback_action:
+# remove the queued/start/done tests together with those log lines.
+class TestPlaybackAction:
+    """A playback action stuck on the lock must show up in the log."""
+
+    def test_logs_queue_start_and_end(self, monkeypatch, caplog):
+        monkeypatch.setattr(ui, "PLAYBACK_TASK_LOCK", asyncio.Lock())
+        ran = []
+
+        def reopen():
+            ran.append(True)
+
+        async def run():
+            ui.schedule_playback_action(None, 1234, reopen)
+            await asyncio.sleep(0.05)
+
+        with caplog.at_level("INFO", logger=ui.log.name):
+            asyncio.run(run())
+        assert ran == [True]
+        assert "PLAYBACK ACTION queued action=reopen busy=False" in caplog.text
+        assert "PLAYBACK ACTION start action=reopen" in caplog.text
+        assert "PLAYBACK ACTION done action=reopen" in caplog.text
+
+    def test_logs_when_an_earlier_action_still_holds_the_lock(self, monkeypatch, caplog):
+        lock = asyncio.Lock()
+        monkeypatch.setattr(ui, "PLAYBACK_TASK_LOCK", lock)
+
+        async def run():
+            await lock.acquire()
+            ui.schedule_playback_action(None, 1234, lambda: None)
+            await asyncio.sleep(0.05)
+            assert "PLAYBACK ACTION start" not in caplog.text
+            lock.release()
+            await asyncio.sleep(0.05)
+
+        with caplog.at_level("INFO", logger=ui.log.name):
+            asyncio.run(run())
+        assert "busy=True" in caplog.text
+        assert "PLAYBACK ACTION start" in caplog.text
+
+    def test_logs_a_failing_action(self, monkeypatch, caplog):
+        monkeypatch.setattr(ui, "PLAYBACK_TASK_LOCK", asyncio.Lock())
+
+        def skip_queue():
+            raise RuntimeError("kodi gone")
+
+        async def run():
+            ui.schedule_playback_action(None, 1234, skip_queue)
+            await asyncio.sleep(0.05)
+
+        with caplog.at_level("INFO", logger=ui.log.name):
+            asyncio.run(run())
+        assert "PLAYBACK ACTION ERROR action=skip_queue err=kodi gone" in caplog.text
+        assert "PLAYBACK ACTION done action=skip_queue" in caplog.text

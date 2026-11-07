@@ -4,6 +4,7 @@ import re
 import subprocess
 import threading
 import time
+import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import unquote
@@ -456,6 +457,15 @@ def mark_list_dirty():
 # Clear bot playback state without stopping Kodi playback.
 def clear_bot_playback_state():
     global AUTOPLAY_ENABLED, CURRENT_INDEX, DISPLAY_INDEX, EXTERNAL_PLAYBACK
+    # TEMPORARY diagnostics for the YouTube audio/video switch that did nothing
+    # after Spotify via Soloist (2026-11-07). Remove once that bug is fixed.
+    # Many callers reset the queue position; without the caller a later
+    # "no queue item" cannot be traced back.
+    caller = traceback.extract_stack(limit=2)[0]
+    log.info(
+        "Bot playback state cleared display_index=%s by=%s:%s",
+        DISPLAY_INDEX, os.path.basename(caller.filename), caller.name,
+    )
     cancel_soundcloud_start()
     with LOCK:
         AUTOPLAY_ENABLED = False
@@ -959,22 +969,32 @@ def toggle_youtube_audio_only():
 
 def reopen_current_youtube():
     """Reopen the playing queue video at its position in the current mode."""
+    # TEMPORARY: the "YouTube reopen" log lines below diagnose the switch that
+    # did nothing after Spotify via Soloist (2026-11-07). Remove once fixed.
     with LOCK:
         idx = DISPLAY_INDEX
         item = QUEUE[idx] if idx is not None and idx < len(QUEUE) else None
-    if not item or not item["url"].startswith("plugin://plugin.video.youtube/play/"):
+    if not item:
+        log.info("YouTube reopen skip: no queue item display_index=%s queue=%d", idx, len(QUEUE))
+        return
+    if not item["url"].startswith("plugin://plugin.video.youtube/play/"):
+        log.info("YouTube reopen skip: not a YouTube item url=%s", item["url"])
         return
     pid = kodi_api.get_active_playerid()
     if pid is None:
+        log.info("YouTube reopen skip: no active player")
         return
     file_url = _player_file(pid)
     if not kodi_ws.is_youtube_playback_file(file_url):
+        log.info("YouTube reopen skip: Kodi plays something else file=%.120s", file_url)
         return
     props = kodi_api.kodi_call(
         "Player.GetProperties", {"playerid": pid, "properties": ["time", "totaltime"]}
     ).get("result", {})
     if youtube_live.live_video_id(file_url, kodi_api.kodi_time_seconds(props.get("totaltime"))):
+        log.info("YouTube reopen skip: live stream")
         return
+    log.info("YouTube reopen audio_only=%s at=%s title=%s", YOUTUBE_AUDIO_ONLY, props.get("time"), item.get("title"))
     resume_item_at_time(item, props.get("time"))
 
 
