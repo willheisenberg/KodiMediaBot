@@ -193,6 +193,26 @@ the add-on does not have; with it enabled, the sound of ordinary videos stops
 after about a minute (HTTP 403 on the audio track). An add-on update reverts the
 patch. See anxdpanic/plugin.video.youtube issues #1481 and #1483.
 
+**YouTube add-on 7.4.4, second hand patch (audio only):** with `audio_only` the
+add-on skips its MPEG-DASH manifest and plays one progressive audio stream. It
+picks that stream by the add-on language (`youtube.language`, default `en-US`)
+before the original track, so a German video plays with YouTube's
+machine-dubbed English track, and Kodi has no other track to switch to. Two
+lines in the same `player_client.py` let the add-on build an audio-only manifest,
+as a commented-out line in `_generate_mpd_manifest` already provides for: the
+original track plays and the bot's audio menu lists every language.
+
+```text
+-        if use_mpd and not audio_only:
++        if use_mpd:
+...
+-        if not video_data or not audio_data:
++        if (not video_data and not self._audio_only) or not audio_data:
+```
+
+The add-on sets `reuselanguageinvoker`, so Kodi has to restart before the patch
+takes effect. An add-on update reverts it.
+
 **SoundCloud (`plugin.audio.soundcloud`):** no settings changed. SoundCloud
 serves HLS with fMP4 segments, and Kodi's demuxer ends playback about 20 seconds
 after a seek. Routing the stream through `inputstream.adaptive` or
